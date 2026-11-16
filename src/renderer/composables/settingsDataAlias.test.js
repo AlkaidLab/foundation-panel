@@ -7,6 +7,8 @@ const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 test('the settings data is the product\'s, not the panel\'s: components import it through @settings-data, which the build points at the product checkout', () => {
   assert.match(read('../components/SidebarMenu.vue'), /import \{ SEARCH_INDEX \} from '@settings-data'/)
   assert.doesNotMatch(read('../components/SidebarMenu.vue'), /SEARCH_INDEX[^\n]*from 'foundation-ui\/settings/, 'the index does not come from the shared package any more')
+  assert.match(read('../components/SunshineFrame.vue'), /import \{ SEARCH_INDEX \} from '@settings-data'/)
+  assert.match(read('../components/SunshineFrame.vue'), /parseSettingsHash\(path\.slice\(at\), SEARCH_INDEX\)/)
   assert.match(read('../components/m3e/SettingsHubPage.vue'), /import '@settings-data'/)
   const vite = read('../../../vite.config.js')
   assert.match(vite, /find: \/\^@settings-data\$\/, replacement: settingsData/)
