@@ -11,6 +11,7 @@
 //! the host's install id (`<config>/telemetry/install_id`); at most 20 stay, none is kept once error reports are turned off, and nothing here
 //! waits on anything the panel needs to start.
 
+mod asked;
 mod logpack;
 mod logscrub;
 mod meta;
@@ -40,6 +41,24 @@ pub(crate) struct State {
 static STATE: OnceLock<State> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(true);
 static PANIC_REPORTS: AtomicUsize = AtomicUsize::new(0);
+/// A report of an earlier run was waiting when this run started: the previous run failed. Told to the person once (`take_recovered`, the window asks for it when it is up).
+static RECOVERED: AtomicBool = AtomicBool::new(false);
+
+/// The reports (file stems) the previous run left behind, as found at the start.
+static LEFT_BEHIND: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the previous run left a crash or panic report behind that the person has not answered the question about; true once per run, then false. The window asks at its start and, when it is true, asks the person whether
+/// to tell the developers. Nothing is recorded here: if the program ends before the person answers, the next start asks again (the report may be waiting for this answer).
+pub(crate) fn take_recovered() -> bool {
+    RECOVERED.swap(false, Ordering::SeqCst)
+}
+
+/// The person answered (the window tells: feedback sent, or let go): the reports found at the start no longer bring the question back, although a report that could not be uploaded stays pending.
+pub(crate) fn mark_answered() {
+    if let (Some(state), Ok(stems)) = (STATE.get(), LEFT_BEHIND.lock()) {
+        asked::answered(&state.pending, &stems);
+    }
+}
 static SEEN_PANICS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
 
 /// A panic that fires in a loop is one report, and a run sends at most a handful.
@@ -171,6 +190,12 @@ fn uploader() {
 pub(crate) fn install(version: &str, config_dir: PathBuf) {
     let pending = pending_dir();
     let _ = std::fs::create_dir_all(&pending);
+    // before the uploader starts: what is waiting here was written by an earlier run
+    let (ask, left) = asked::unasked_at_start(&pending);
+    RECOVERED.store(ask, Ordering::SeqCst);
+    if let Ok(mut slot) = LEFT_BEHIND.lock() {
+        *slot = left;
+    }
     let state = State { pending, config_dir, version: version.to_string(), os_version: os_version(), started: Instant::now() };
     if STATE.set(state).is_err() {
         return;

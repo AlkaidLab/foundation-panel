@@ -228,6 +228,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::toggle_dark_mode,
+            commands::crash_recovered_ask,
+            commands::crash_recovered_answered,
             toolbar::handle_toolbar_menu_action,
             toolbar::save_toolbar_position,
             toolbar::is_primary_mouse_button_pressed,
