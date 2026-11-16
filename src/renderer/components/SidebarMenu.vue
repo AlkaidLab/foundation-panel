@@ -5,7 +5,7 @@
       <template v-if="backButton" #back><MCaptionBack :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #version><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="openUpdates" /></template>
       <template #brand><MBrand class="panel-caption__brand" :size="20" data-tauri-drag-region /></template>
-      <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
+      <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MFeedbackButton :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
       <template #search><div class="panel-caption__search" data-tauri-drag-region><MUnifiedSearch :search="uni" :texts="searchT" :compact="compactSearch || caption.tight.value" :height="38" /></div></template>
       <template #connect><button type="button" class="m-caption-connect" :aria-label="connectT.title" :data-tip="connectT.title" :disabled="hostUnusable" @click="connect.show('pair')"><MIcon name="person_add" /><span>{{ connectT.title }}</span></button></template>
       <template #controls><div class="panel-caption__controls">
@@ -141,7 +141,7 @@ import { qrSvgDataUrl } from '../composables/qrSvg.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, openDevReport, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { MFeedbackButton, openFeedbackHere, askDevReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
@@ -577,12 +577,19 @@ const onFramePin = (event) => {
   if (d.op === 'pin') pinToHome('panel-home', d.spec); else if (d.op === 'unpin') unpinFromHome('panel-home', d.spec)
 }
 let unlistenConnect = null
+let unlistenFeedback = null
 onMounted(async () => {
   pairing.start()
   window.addEventListener('message', onFramePin)
   try { const { listen } = await import('@tauri-apps/api/event'); unlistenConnect = await listen('open-connect', (event) => connect.show(event.payload?.tab === 'install' ? 'install' : 'pair')) } catch { /* not in the app window */ }
+  // the tray menu's 反馈问题… opens the one feedback panel; a crash that was recovered at the start asks once whether to tell the developers (a short decision in a centred dialog, then the drawer); the answer of `crash_recovered_ask` is true once, when the previous run left a crash report behind
+  try {
+    const { listen } = await import('@tauri-apps/api/event')
+    unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
+  } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {
@@ -763,7 +770,8 @@ const ctxCallbacks = {
   doctor: () => { componentStatus.openPage(); void componentStatus.checkAll() },
   openWebUi: async () => { const base = String((await sunshine.getUrl()) || ''); if (base) await openExternalUrl(base) },
   openDevtools: () => { invoke('dev_open_devtools').catch(() => useNotify().snack(devmodeTexts(locale.value).ctxDevtoolsFail)) },
-  reportHere: ({ route, place, text }) => { void openDevReport({ kind: 'feedback', draft: { title: '', description: `${devmodeTexts(locale.value).ctxReport}: ${route}${place ? ` (${place})` : ''}${text ? ` — ${text}` : ''}\n\n` } }) },
+  // 反馈此处的问题: the one feedback panel, with the page and what was under the pointer (the text shows in the panel and is not sent)
+  reportHere: ({ place, text }) => { void openFeedbackHere({ place, text }) },
   get pet() { return [{ id: 'pet-settings', label: contextTexts(locale.value).petSettings, icon: 'pets', run: () => openPanelPage('pet') }] },
 }
 // the rows that have a tile on the overview that opens them: 固定到概览 pins that tile (the same functions as the pin of the search results)
