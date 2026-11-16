@@ -1017,8 +1017,9 @@ fn installed_is_prerelease(current_version: &str, catalog: &ReleaseCatalog) -> b
         .into_iter()
         .flatten()
         .any(|candidate| candidate.prerelease
-                && crate::version_compare::compare_versions(current_version, &candidate.version)
-                    == Some(Ordering::Equal))
+                && crate::version_compare::version_key(current_version).is_some_and(|installed| {
+                    crate::version_compare::version_key(&candidate.version) == Some(installed)
+                }))
 }
 
 /// The note for a check that found nothing newer. An unreachable prerelease side comes first: "up to date" would be a claim the
