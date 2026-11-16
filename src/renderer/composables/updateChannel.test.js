@@ -2,7 +2,7 @@ import './_testing/foundationUi.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const { CHANNEL_CHOSEN_KEY, CHANNEL_EVENT, INCLUDE_PRERELEASE_KEY, channelChosen, saveUpdateChannel } = await import('./updateChannel.js')
+const { CHANNEL_CHOSEN_KEY, CHANNEL_EVENT, INCLUDE_PRERELEASE_KEY, channelChosen, rememberChannel, saveUpdateChannel } = await import('./updateChannel.js')
 
 const memory = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), m } }
 
@@ -28,4 +28,25 @@ test('saving the channel writes the native preference and the stored copy, leave
   const fresh = memory()
   await assert.rejects(saveUpdateChannel(async () => { throw new Error('no') }, true, { storage: fresh, win: null }))
   assert.equal(fresh.getItem(CHANNEL_CHOSEN_KEY), null)
+})
+
+test('a storage that refuses one write keeps neither the other write nor the native save from happening', async () => {
+  const refusing = (failKey) => { const m = memory(); return { ...m, setItem: (k, v) => { if (k === failKey) throw new Error('QuotaExceededError'); m.setItem(k, v) } } }
+  const noMark = refusing(CHANNEL_CHOSEN_KEY)
+  assert.doesNotThrow(() => rememberChannel(true, noMark))
+  assert.equal(noMark.getItem(INCLUDE_PRERELEASE_KEY), 'true', 'the preference is stored although the mark is refused')
+  const noPref = refusing(INCLUDE_PRERELEASE_KEY)
+  assert.doesNotThrow(() => rememberChannel(false, noPref))
+  assert.equal(noPref.getItem(CHANNEL_CHOSEN_KEY), '1', 'the mark is stored although the preference is refused')
+  const calls = []
+  await saveUpdateChannel(async (name) => { calls.push(name) }, true, { storage: refusing(CHANNEL_CHOSEN_KEY), win: null })
+  assert.deepEqual(calls, ['set_include_prerelease_preference'])
+})
+
+test('the sidebar saves the channel through the same helper, before the native call and outside it', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('./useSidebarState.js', import.meta.url), 'utf8')
+  const body = src.slice(src.indexOf('const setIncludePrerelease'), src.indexOf('const initAdminStatus'))
+  assert.ok(body.indexOf('rememberChannel(value)') > 0 && body.indexOf('rememberChannel(value)') < body.indexOf("invoke('set_include_prerelease_preference'"))
+  assert.doesNotMatch(body, /localStorage\.setItem/, 'no direct storage write left in front of the native save')
 })

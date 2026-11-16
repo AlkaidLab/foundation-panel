@@ -12,13 +12,17 @@ export function channelChosen(storage) {
   return read(CHANNEL_CHOSEN_KEY, storage) === '1' || read(INCLUDE_PRERELEASE_KEY, storage) === 'true'
 }
 
+/** Stores the channel and the mark that it was chosen. Each write on its own: a full storage that refuses one must not stop the other, nor the native save that goes with it. */
+export function rememberChannel(include, storage) {
+  const s = storage || globalThis.localStorage
+  for (const [key, value] of [[INCLUDE_PRERELEASE_KEY, String(!!include)], [CHANNEL_CHOSEN_KEY, '1']]) {
+    try { s?.setItem(key, value) } catch { /* not remembered: the native side holds it */ }
+  }
+}
+
 /** Saves the channel (`include`: 测试版) in the native side and in localStorage, marks it as chosen and tells the window (CHANNEL_EVENT). Rejects when the native side refuses. */
 export async function saveUpdateChannel(invoke, include, { storage, win = globalThis.window } = {}) {
   await invoke('set_include_prerelease_preference', { include: !!include })
-  try {
-    const s = storage || globalThis.localStorage
-    s?.setItem(INCLUDE_PRERELEASE_KEY, String(!!include))
-    s?.setItem(CHANNEL_CHOSEN_KEY, '1')
-  } catch { /* not remembered: the native side holds it */ }
+  rememberChannel(include, storage)
   try { win?.dispatchEvent?.(new CustomEvent(CHANNEL_EVENT, { detail: !!include })) } catch { /* no window */ }
 }

@@ -3,7 +3,7 @@ import { ElMessage } from './notifyMessage.js'
 import { useRouter, ROUTES } from './useRouter.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
-import { CHANNEL_CHOSEN_KEY, CHANNEL_EVENT } from './updateChannel.js'
+import { CHANNEL_CHOSEN_KEY, CHANNEL_EVENT, rememberChannel } from './updateChannel.js'
 import { isCurrentVersionUnknown, isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
 
 const STORAGE_KEYS = {
@@ -162,8 +162,8 @@ export function useSidebarState() {
    */
   const setIncludePrerelease = async (value) => {
     includePrerelease.value = value
-    localStorage.setItem(STORAGE_KEYS.INCLUDE_PRERELEASE, value.toString())
-    localStorage.setItem(CHANNEL_CHOSEN_KEY, '1')
+    // a storage that refuses (full) must not keep the native side from being saved
+    rememberChannel(value)
 
     try {
       const invoke = await getInvoke()
