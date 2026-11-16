@@ -1379,6 +1379,13 @@ pub fn set_update_source(app: AppHandle, source: String) -> Result<bool, String>
     Ok(true)
 }
 
+/// Tauri命令：匿名使用统计里的 update_source 取值来源：最近一次真正用到的来源（mirror / cnb / github），
+/// 还没有下载过时是用户的设置（auto / cnb / github / mirror），永远不是空串。
+#[tauri::command]
+pub fn get_update_source_used(app: AppHandle) -> String {
+    preferences::used_update_source(&app)
+}
+
 /// 读取安全存储中的 CDK；存储不可用或为空都按“无 CDK”处理。
 async fn read_stored_cdk() -> Option<String> {
     match tauri::async_runtime::spawn_blocking(|| cdk_store::read(mirrorchyan::CREDENTIAL_TARGET))
@@ -2201,6 +2208,7 @@ pub async fn download_update(
             .unwrap_or(outcome.downloaded),
     );
 
+    preferences::record_used_update_source(&app_handle, outcome.source);
     info!(
         "✅ 下载完成: {} bytes，来源: {}",
         outcome.downloaded, outcome.source
