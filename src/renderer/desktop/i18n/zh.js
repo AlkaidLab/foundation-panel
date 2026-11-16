@@ -1936,8 +1936,8 @@ export const zh = {
     mirrorFallback: {
       version_lag: 'Mirror酱 暂未同步此版本，已改用 {source} 下载',
       cdk_invalid: 'Mirror酱 的 CDK 无效或已过期，已改用 {source} 下载',
-      quota: 'Mirror酱 的下载额度已用完，已改用 {source} 下载',
-      network: '暂时连不上 Mirror酱，已改用 {source} 下载',
+      quota: 'Mirror酱 的下载额度不足，已改用 {source} 下载',
+      network: '没有连上 Mirror酱，已改用 {source} 下载',
       no_cdk: '尚未设置 Mirror酱 的 CDK，已改用 {source} 下载',
     },
     installNow: '立即安装',
