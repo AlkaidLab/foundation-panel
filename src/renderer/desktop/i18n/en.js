@@ -21,6 +21,7 @@ export const en = {
     "restartFailed": "Could not restart the app. See the log for details.",
     "checkingUpdates": "Checking for updates...",
     "checkUpdatesFailed": "Could not check for updates. See the log for details.",
+    "currentVersionUnknown": "The installed version could not be read, so no update check was made. Make sure Sunshine is installed and running, then try again.",
     "prereleaseUnavailable": "The prerelease information cannot be fetched right now, so it is unknown whether a newer prerelease exists. Try again later.",
     "versionSkipped": "Version {version} will be skipped during the next automatic update check.",
     "windowCreateFailed": "Could not create the {title} window. See the log for details.",

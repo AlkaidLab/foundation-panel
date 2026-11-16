@@ -32,7 +32,7 @@
       <template #detail="{ entry }">
         <!-- while the host cannot be used the status page (the overlay) is the whole content area; a page that needs the host is not drawn under it -->
         <template v-if="offlineShown && !isWebPage" />
-        <PanelHome v-else-if="entry.id === ROUTES.HOME" :runtime="runtime" :update-available="!!updateInfo" @open="openDestination" @webui-navigate="openWebUi" />
+        <PanelHome v-else-if="entry.id === ROUTES.HOME" :runtime="runtime" :update-available="updateAvailable(updateInfo)" @open="openDestination" @webui-navigate="openWebUi" />
         <Welcome v-else-if="entry.id === ROUTES.WELCOME" :key="guideRun" @close="closeWelcome" @open-privacy="closeWelcome(); router.navigate(ROUTES.ABOUT)" @webui-navigate="openWebUi" @open-doctor="openDoctor" />
         <WebStreamSettings v-else-if="entry.id === ROUTES.WEB_STREAM" @close="goHome" />
         <VddSettings v-else-if="entry.id === ROUTES.VDD_SETTINGS" @close="back" @webui-navigate="openWebUi" />
@@ -202,6 +202,7 @@ import { useHostReach } from '../composables/useHostReach.js'
 import { ROW_OF_ROUTE, railItems, pageItems, barItems, barCurrent } from '../composables/panelNav.js'
 import { rtssInstalled, readRtssInstall } from '../composables/rtssInstall.js'
 import { rowKeywords, parseSettingsHash } from 'foundation-ui/settings/index.js'
+import { hasUpdate } from '../composables/updateCheckError.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { useDualSenseStatus } from '../composables/useDualSenseStatus.js'
 import { useDualSenseText } from '../composables/useDualSenseText.js'
@@ -256,6 +257,8 @@ const openWebUi = (path) => {
 const goHome = () => openWebUi('/')
 // 新手引导 opens over the page it was opened from (帮助与关于): closing it, with its button or Esc, goes back there; started alone (first run) it opens the overview
 const closeWelcome = () => (router.nav.canPop.value ? router.goBack() : goHome())
+// the result of a check also stands for "up to date" (is_latest, shown as the sheet of the newest version): only a result that offers a newer version is an update to show on the overview
+const updateAvailable = hasUpdate
 const handleCheckForUpdates = async (channel = null) => {
   const result = await checkForUpdates(channel)
   recordUpdateCheck()

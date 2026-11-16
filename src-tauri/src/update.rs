@@ -28,6 +28,8 @@ use metadata::{
 /// The start of the error text of a manual check that could not say "up to date" because the prerelease information was unreachable;
 /// the panel shows its own sentence for it (it matches this prefix).
 pub(crate) const PRERELEASE_UNAVAILABLE_ERROR: &str = "prerelease_unavailable";
+/// The start of the error text of a check that could not read the installed version; the panel says so in its own words (it matches this prefix).
+pub(crate) const CURRENT_VERSION_UNKNOWN_ERROR: &str = "current_version_unknown";
 const UPDATER_HELPER_ARG: &str = "--updater-helper";
 const UPDATE_RESULT_ARG: &str = "--update-result";
 
@@ -315,6 +317,18 @@ pub(crate) fn last_seen_update() -> Option<String> {
     SEEN_UPDATE.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
+/// The installed version, or the error of a check that cannot tell whether anything is newer (and so reports no update).
+fn known_current_version(read: Result<String, String>) -> Result<String, String> {
+    match read {
+        Ok(version) if !version.trim().is_empty() => Ok(version),
+        Ok(_) => Err(format!("{CURRENT_VERSION_UNKNOWN_ERROR}: empty")),
+        Err(error) => {
+            warn!("⚠️ 获取 Sunshine 版本失败，无法确认当前版本，不报告更新: {error}");
+            Err(format!("{CURRENT_VERSION_UNKNOWN_ERROR}: {error}"))
+        }
+    }
+}
+
 /// 检查更新核心逻辑。
 ///
 /// `manual=true` 时已是最新也返回 `Some(info { is_latest: true })`，
@@ -341,13 +355,8 @@ async fn check_for_updates_in_channel(
     );
 
     // 获取当前 Sunshine 版本
-    let current_version = match get_current_sunshine_version().await {
-        Ok(ver) => ver,
-        Err(e) => {
-            warn!("⚠️ 获取 Sunshine 版本失败: {}, 使用默认版本 0.0.0", e);
-            "0.0.0".to_string()
-        }
-    };
+    // Without the installed version nothing can be compared: "0.0.0" made every release look like an update (a false "update available").
+    let current_version = known_current_version(get_current_sunshine_version().await)?;
 
     let catalog = resolve_catalog(channel).await?;
     let candidate = select_compatible_candidate(&catalog, channel)
@@ -2499,6 +2508,26 @@ mod download_source_tests {
             serialized["detail"],
             "diagnostic details stay out of the localized UI"
         );
+    }
+
+    #[test]
+    fn an_unreadable_installed_version_is_an_error_not_a_reason_to_offer_everything() {
+        assert_eq!(known_current_version(Ok("2026.1112.025657".to_string())).unwrap(), "2026.1112.025657");
+        for bad in [Err("host did not answer".to_string()), Ok(String::new()), Ok("  ".to_string())] {
+            let error = known_current_version(bad).unwrap_err();
+            assert!(error.starts_with(CURRENT_VERSION_UNKNOWN_ERROR), "{error}");
+        }
+        // the old fallback: 0.0.0 is older than every release, so every candidate looked like an update
+        let release = ReleaseCandidate {
+            version: "v2026.1112.25657.杂鱼".to_string(),
+            prerelease: false,
+            github_release_id: None,
+            published_at: None,
+            release_notes: String::new(),
+            release_page: String::new(),
+            assets: Vec::new(),
+        };
+        assert!(!candidate_is_newer_than("Unknown", &release));
     }
 }
 

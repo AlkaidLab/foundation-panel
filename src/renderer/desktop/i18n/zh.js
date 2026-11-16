@@ -21,6 +21,7 @@ export const zh = {
     "restartFailed": "重启失败，请查看日志了解详情。",
     "checkingUpdates": "正在检查更新...",
     "checkUpdatesFailed": "检查更新失败，请查看日志了解详情。",
+    "currentVersionUnknown": "无法确认当前安装的版本，所以没有检查更新。请确认 Sunshine 已安装并正常运行后再试。",
     "prereleaseUnavailable": "暂时取不到预发布版本的信息，无法确认是否有更新的预发布版本，请稍后再试。",
     "versionSkipped": "已忽略版本 {version}，下次自动检查更新时将跳过此版本",
     "windowCreateFailed": "{title}窗口创建失败，请查看日志了解详情。",

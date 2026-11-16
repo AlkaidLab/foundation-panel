@@ -9,4 +9,10 @@ export const isPrereleaseUnavailable = (error) => {
 }
 
 /** The sentence for a failed manual check: the prerelease one when that is the reason, the general one otherwise. */
-export const updateCheckFailureText = (error, texts) => (isPrereleaseUnavailable(error) ? texts.prereleaseUnavailable : texts.checkUpdatesFailed)
+export const updateCheckFailureText = (error, texts) => (isPrereleaseUnavailable(error) ? texts.prereleaseUnavailable : isCurrentVersionUnknown(error) ? texts.currentVersionUnknown : texts.checkUpdatesFailed)
+
+/** Whether a check result offers a newer version: a result with is_latest is the answer "up to date" (the sheet of the newest version), not an update. */
+export const hasUpdate = (info) => !!info && !info.is_latest
+
+// "current_version_unknown: <reason>": the installed version could not be read, so nothing could be compared (a check never reports an update it cannot confirm).
+export const isCurrentVersionUnknown = (error) => /^current_version_unknown(:|$)/.test(typeof error === 'string' ? error : String(error?.message ?? error ?? ''))

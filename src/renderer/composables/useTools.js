@@ -5,7 +5,7 @@ import { latencyClockTexts } from 'foundation-ui/vue'
 import { pickStreamMonitor, centredOn } from './streamMonitor.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
-import { isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
+import { isCurrentVersionUnknown, isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
 
 // Module-scoped reactive flag so all sidebar instances share state.
 const clipboardSyncEnabled = ref(false)
@@ -243,7 +243,7 @@ export function useTools() {
     } catch (error) {
       console.error('检查更新失败:', error)
       const text = updateCheckFailureText(error, t.value.toolActions)
-      if (isPrereleaseUnavailable(error)) ElMessage.warning(text)
+      if (isPrereleaseUnavailable(error) || isCurrentVersionUnknown(error)) ElMessage.warning(text)
       else ElMessage.error(text)
       return null
     }
