@@ -140,6 +140,13 @@ jobs:
           --skip usbip::signature::tests::a_signed_system_file_reads_as_signed
           --skip usbip::signature::tests::an_unsigned_script_and_a_missing_file_are_not_called_signed
 
+      # The tests above compile the test configuration, in which some functions exist that the release build does not have (a function under
+      # #[cfg(test)] used by production code passed every PR check and broke the release build). A pull request has no release build, so
+      # type-check the release configuration here: it compiles every crate like the release build does, without generating code.
+      - name: Check the release configuration compiles
+        if: github.event_name == 'pull_request'
+        run: cargo check --manifest-path src-tauri/Cargo.toml --release --bins --target x86_64-pc-windows-msvc
+
       - name: Build Tauri (release)
         if: github.event_name != 'pull_request'
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc
@@ -204,6 +211,13 @@ jobs:
       contents: write
 
     steps:
+      # The release text lives in the repository: .github/release-notes/<tag>.md
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes
+          sparse-checkout-cone-mode: false
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -219,12 +233,20 @@ jobs:
             echo "tag=v$(date +%Y.%m%d.%H%M%S)" >> "$GITHUB_OUTPUT"
           fi
 
+      # The notes file of the tag is the body of the release; a tag without one gets the generated notes.
+      - name: Find release notes
+        id: notes
+        run: |
+          file=".github/release-notes/${{ steps.version.outputs.tag }}.md"
+          if [ -s "$file" ]; then echo "path=$file" >> "$GITHUB_OUTPUT"; else echo "path=" >> "$GITHUB_OUTPUT"; fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Sunshine GUI ${{ steps.version.outputs.tag }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
