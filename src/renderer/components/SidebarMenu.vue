@@ -132,7 +132,7 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, getCurrentInstance, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, getCurrentInstance, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import { sunshine, sunshineService, tools, openExternalUrl } from '../tauri-adapter.js'
 import { SPONSORS } from '../config/sponsors.js'
 import QRCode from 'qrcode'
@@ -430,6 +430,8 @@ const panelTelemetry = createPanelTelemetry({
   getUpdateSourceMiss: async () => { try { return String(await invoke('get_update_source_miss')) } catch { return '' } },
 })
 watch(() => nav.current.value, (page) => { if (page) panelTelemetry.page(String(page)) }, { immediate: true })
+// the first-run guide counts its steps through the same sender (guide_funnel; usage statistics choice)
+provide('guideFunnel', (props) => panelTelemetry.sender.track.guideFunnel(props))
 const errorBack = () => { if (nav.canPop.value) nav.pop(); else router.navigate(ROUTES.HOME) }
 const osName = () => (typeof navigator === 'undefined' ? '' : String(navigator.userAgentData?.platform || navigator.platform || ''))
 // the last host log lines go along with a report (scrubbed by buildReport): read once at start, as the Web UI does
