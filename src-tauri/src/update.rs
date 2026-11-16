@@ -53,6 +53,8 @@ struct UpdateDownloadStatus {
     filename: String,
     path: Option<String>,
     error: Option<String>,
+    /// Why the download did not come from Mirror酱 although it is the chosen source (`mirrorchyan::Miss::word`); None when it did, or when it was not chosen.
+    fallback_reason: Option<String>,
 }
 
 impl Default for UpdateDownloadStatus {
@@ -67,6 +69,7 @@ impl Default for UpdateDownloadStatus {
             filename: String::new(),
             path: None,
             error: None,
+            fallback_reason: None,
         }
     }
 }
@@ -1386,6 +1389,12 @@ pub fn get_update_source_used(app: AppHandle) -> String {
     preferences::used_update_source(&app)
 }
 
+/// Tauri命令：最近一次下载里首选来源（Mirror酱）没有用上的原因（version_lag / cdk_invalid / quota / network / no_cdk）；用上了或没选 Mirror酱 时是空串。
+#[tauri::command]
+pub fn get_update_source_miss(app: AppHandle) -> String {
+    preferences::update_source_miss(&app)
+}
+
 /// 读取安全存储中的 CDK；存储不可用或为空都按“无 CDK”处理。
 async fn read_stored_cdk() -> Option<String> {
     match tauri::async_runtime::spawn_blocking(|| cdk_store::read(mirrorchyan::CREDENTIAL_TARGET))
@@ -1815,6 +1824,10 @@ fn emit_download_progress(
     phase: DownloadPhase,
     source: Option<&str>,
 ) {
+    let fallback_reason = download_status()
+        .lock()
+        .ok()
+        .and_then(|status| status.fallback_reason.clone());
     let _ = window.emit(
         "download-progress",
         serde_json::json!({
@@ -1822,7 +1835,8 @@ fn emit_download_progress(
             "total": total,
             "downloaded": downloaded,
             "phase": phase,
-            "source": source
+            "source": source,
+            "fallbackReason": fallback_reason
         }),
     );
 }
@@ -1910,8 +1924,14 @@ fn download_candidates(
 /// 绝不写日志；文件内容仍按本项目 metadata 的 SHA-256 校验后才安装。
 async fn mirror_download_candidate(
     app_handle: &AppHandle,
-) -> Option<github_download::DownloadCandidate> {
-    let cdk = read_stored_cdk().await?;
+    target_version: Option<&str>,
+) -> (
+    Option<github_download::DownloadCandidate>,
+    Option<mirrorchyan::Miss>,
+) {
+    let Some(cdk) = read_stored_cdk().await else {
+        return (None, Some(mirrorchyan::Miss::NoCdk));
+    };
     let current_version = get_current_sunshine_version()
         .await
         .unwrap_or_else(|error| {
@@ -1928,11 +1948,21 @@ async fn mirror_download_candidate(
         "Mirror酱 检查（下载候选）: {}",
         mirrorchyan::log_summary(&answer)
     );
-    let url = mirrorchyan::download_url_of(&answer)?;
-    Some(github_download::DownloadCandidate {
+    // Mirror酱 syncs on a timer: its newest version can be older than the release to install. Its file would fail the SHA-256 of that release, so it is not tried.
+    if let Some(miss) = mirrorchyan::miss_of(&answer, target_version) {
+        info!(
+            "Mirror酱 不用于本次下载（原因: {}；Mirror酱 的版本: {}，要安装的版本: {}）",
+            miss.word(),
+            mirrorchyan::version_of(&answer).unwrap_or("-"),
+            target_version.unwrap_or("-")
+        );
+        return (None, Some(miss));
+    }
+    let candidate = mirrorchyan::download_url_of(&answer).map(|url| github_download::DownloadCandidate {
         name: "Mirror酱",
         url,
-    })
+    });
+    (candidate, None)
 }
 
 /// 下载更新文件（带真实进度报告）
@@ -1944,6 +1974,7 @@ pub async fn download_update(
     expected_size: Option<u64>,
     expected_sha256: Option<String>,
     asset_type: Option<String>,
+    target_version: Option<String>,
     app_handle: AppHandle,
 ) -> Result<serde_json::Value, DownloadCommandError> {
     validate_download_url(&url, Some(&filename)).map_err(|detail| {
@@ -2028,11 +2059,15 @@ pub async fn download_update(
 
     // 来源为 mirror 且 CDK 有效时，Mirror酱 的下载地址排在最前；
     // 任何失败（无 CDK、CDK 错误、离线、地址不合规）都静默回退 CNB → GitHub。
-    let mirror_candidate = if preferences::update_source(&app_handle) == "mirror" {
-        mirror_download_candidate(&app_handle).await
+    let mirror_chosen = preferences::update_source(&app_handle) == "mirror";
+    let (mirror_candidate, mut mirror_miss) = if mirror_chosen {
+        mirror_download_candidate(&app_handle, target_version.as_deref()).await
     } else {
-        None
+        (None, None)
     };
+    if let Some(miss) = mirror_miss {
+        set_download_status(|status| status.fallback_reason = Some(miss.word().to_string()));
+    }
     let candidates = download_candidates(mirror_candidate, &url, fallback_url.as_deref());
 
     let mut last_progress_percent = 0;
@@ -2209,6 +2244,13 @@ pub async fn download_update(
     );
 
     preferences::record_used_update_source(&app_handle, outcome.source);
+    // Mirror酱 was tried and the file still came from elsewhere: its download failed.
+    if mirror_chosen && mirror_miss.is_none() && outcome.source != "Mirror酱" {
+        mirror_miss = Some(mirrorchyan::Miss::Network);
+        info!("Mirror酱 的下载没有成功，已改用 {}", outcome.source);
+        set_download_status(|status| status.fallback_reason = Some(mirrorchyan::Miss::Network.word().to_string()));
+    }
+    preferences::record_update_source_miss(&app_handle, mirror_miss.map(mirrorchyan::Miss::word));
     info!(
         "✅ 下载完成: {} bytes，来源: {}",
         outcome.downloaded, outcome.source
@@ -2241,7 +2283,8 @@ pub async fn download_update(
     Ok(serde_json::json!({
         "success": true,
         "file_path": file_path.to_string_lossy().to_string(),
-        "source": outcome.source
+        "source": outcome.source,
+        "fallback_reason": mirror_miss.map(mirrorchyan::Miss::word)
     }))
 }
 

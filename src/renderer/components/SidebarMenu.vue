@@ -423,6 +423,8 @@ const panelTelemetry = createPanelTelemetry({
   getVersion: panelVersion,
   // the source the last download really came from, else the setting (the native side never answers empty); outside the app: the remembered choice
   getUpdateSource: async () => { try { return String(await invoke('get_update_source_used')) } catch { try { return localStorage.getItem(SOURCE_KEY) || 'auto' } catch { return 'auto' } } },
+  // why the chosen source (Mirror酱) was not the one used in the last download: version_lag, cdk_invalid, quota, network, no_cdk; empty when it was used or not chosen
+  getUpdateSourceMiss: async () => { try { return String(await invoke('get_update_source_miss')) } catch { return '' } },
 })
 watch(() => nav.current.value, (page) => { if (page) panelTelemetry.page(String(page)) }, { immediate: true })
 const errorBack = () => { if (nav.canPop.value) nav.pop(); else router.navigate(ROUTES.HOME) }

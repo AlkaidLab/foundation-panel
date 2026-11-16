@@ -23,6 +23,9 @@ struct UpdatePreferences {
     /// 最近一次真正用到的来源（mirror / cnb / github，来自完成的下载）；空表示还没有下载过。
     #[serde(default)]
     used_update_source: String,
+    /// 最近一次下载里首选来源（Mirror酱）没有用上的原因，见 `mirrorchyan::Miss::word`；空表示用上了或没选 Mirror酱。
+    #[serde(default)]
+    update_source_miss: String,
 }
 
 fn preferences_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
@@ -233,6 +236,30 @@ pub(crate) fn record_used_update_source<R: Runtime>(app: &AppHandle<R>, candidat
     }
 }
 
+pub(crate) fn update_source_miss<R: Runtime>(app: &AppHandle<R>) -> String {
+    ensure(app);
+    app.try_state::<Arc<Mutex<UpdatePreferences>>>()
+        .map(|preferences| preferences.lock().unwrap().update_source_miss.clone())
+        .unwrap_or_default()
+}
+
+/// 记下这次下载里首选来源没有用上的原因（`None` 清除）；只在变化时写盘。
+pub(crate) fn record_update_source_miss<R: Runtime>(app: &AppHandle<R>, miss: Option<&str>) {
+    let word = miss.unwrap_or("");
+    ensure(app);
+    if let Some(preferences) = app.try_state::<Arc<Mutex<UpdatePreferences>>>() {
+        let snapshot = {
+            let mut preferences = preferences.lock().unwrap();
+            if preferences.update_source_miss == word {
+                return;
+            }
+            preferences.update_source_miss = word.to_string();
+            preferences.clone()
+        };
+        persist(app, &snapshot);
+    }
+}
+
 pub(crate) fn set_update_source<R: Runtime>(
     app: &AppHandle<R>,
     source: &str,
@@ -312,5 +339,6 @@ mod update_source_tests {
         let parsed: UpdatePreferences =
             serde_json::from_str(r#"{ "last_check_time": 1, "include_prerelease": false }"#).unwrap();
         assert_eq!(parsed.used_update_source, "");
+        assert_eq!(parsed.update_source_miss, "");
     }
 }

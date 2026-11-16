@@ -56,17 +56,18 @@ test('the update source of the start record comes from the native side, which ne
   globalThis.sessionStorage = { getItem: () => null, setItem: () => {} }
   globalThis.localStorage = { getItem: () => null, setItem: () => {} }
   try {
-    // the words of the contract: mirror, github, other (cnb and auto count as other)
-    for (const [native, wire] of [['mirror', 'mirror'], ['github', 'github'], ['cnb', 'other'], ['auto', 'other']]) {
+    // the words of the contract: mirror, cnb, github, other (auto counts as other); the miss only when there is one
+    for (const [native, wire] of [['mirror', 'mirror'], ['github', 'github'], ['cnb', 'cnb'], ['auto', 'other']]) {
       const calls = []
       const panel = createPanelTelemetry({
-        getBase: async () => 'http://127.0.0.1:19999/', getVersion: async () => '1.0.0', getUpdateSource: async () => native,
+        getBase: async () => 'http://127.0.0.1:19999/', getVersion: async () => '1.0.0', getUpdateSource: async () => native, getUpdateSourceMiss: async () => (native === 'cnb' ? 'version_lag' : ''),
         fetchFn: async (url, options) => { calls.push(JSON.parse(options.body)); return { ok: true, status: 200 } },
         win: { addEventListener() {}, removeEventListener() {} }, doc: undefined,
       })
       await panel.start({ startMs: 100 })
       await panel.stop()
       assert.equal(calls[0].events[0].props.update_source, wire, native)
+      assert.equal(calls[0].events[0].props.update_source_miss, native === 'cnb' ? 'version_lag' : undefined, native)
     }
   } finally { delete globalThis.sessionStorage; delete globalThis.localStorage }
 })

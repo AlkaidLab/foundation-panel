@@ -366,6 +366,7 @@ fn main() {
             update::update_mirrorchyan_check,
             update::set_update_source,
             update::get_update_source_used,
+            update::get_update_source_miss,
             update::download_update,
             update::download_update_status,
             update::check_cached_update,
