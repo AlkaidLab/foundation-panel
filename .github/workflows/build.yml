@@ -70,7 +70,10 @@ jobs:
         shell: bash
         run: |
           dir="$GITHUB_WORKSPACE/../foundation-sunshine"
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/AlkaidLab/foundation-sunshine "$dir"
+          sha="$(tr -d '[:space:]' < scripts/ci/foundation-sunshine.sha)"
+          git clone --filter=blob:none --sparse --no-checkout https://github.com/AlkaidLab/foundation-sunshine "$dir"
+          git -C "$dir" fetch --depth 1 origin "$sha"
+          git -C "$dir" checkout --detach "$sha"
           git -C "$dir" sparse-checkout set src_assets/common/assets/web/config/settingsData
           # a build without the data would draw label keys: stop here instead
           test -f "$SETTINGS_DATA_DIR/index.js"
