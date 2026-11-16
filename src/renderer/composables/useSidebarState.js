@@ -3,6 +3,7 @@ import { ElMessage } from './notifyMessage.js'
 import { useRouter, ROUTES } from './useRouter.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
+import { CHANNEL_CHOSEN_KEY, CHANNEL_EVENT } from './updateChannel.js'
 import { isCurrentVersionUnknown, isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
 
 const STORAGE_KEYS = {
@@ -134,6 +135,9 @@ export function useSidebarState() {
   /**
    * 初始化 beta 更新偏好
    */
+  // the first-run guide chooses the channel too (updateChannel.js): the window follows
+  if (typeof window !== 'undefined') window.addEventListener(CHANNEL_EVENT, (event) => { includePrerelease.value = !!event.detail })
+
   const initIncludePrerelease = async () => {
     try {
       const invoke = await getInvoke()
@@ -159,6 +163,7 @@ export function useSidebarState() {
   const setIncludePrerelease = async (value) => {
     includePrerelease.value = value
     localStorage.setItem(STORAGE_KEYS.INCLUDE_PRERELEASE, value.toString())
+    localStorage.setItem(CHANNEL_CHOSEN_KEY, '1')
 
     try {
       const invoke = await getInvoke()
