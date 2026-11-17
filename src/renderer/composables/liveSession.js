@@ -58,6 +58,15 @@ export function pipelineAverages(session) {
   return out
 }
 
+/** What the overview tiles read beyond the pipeline stages, from one perf session (/api/perf/current): the frame rates per stage (as the host sent them) and the capture method. Absent fields stay out. */
+export function perfExtras(session) {
+  const out = {}
+  if (!session) return out
+  if (session.frame_rates != null) out.frameRates = session.frame_rates
+  if (typeof session.capture === 'string') out.perfCapture = session.capture
+  return out
+}
+
 export const formatMs = (v) => (v == null ? '--' : `${Number(v).toFixed(2)} ms`)
 export const formatNumber = (v) => (v == null ? '--' : Number(v).toFixed(1))
 export const formatPercent = (v) => (v == null ? '--' : `${Math.round(v)}%`)

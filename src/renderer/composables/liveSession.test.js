@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { formatBitrate, validBitrate, liveSessions, perfSessionOf, budgetUsage, perfStatus, pipelineSegments, pipelineAverages, PIPELINE_FIELDS, formatUptime, BITRATE } from './liveSession.js'
+import { formatBitrate, validBitrate, liveSessions, perfSessionOf, budgetUsage, perfStatus, pipelineSegments, pipelineAverages, perfExtras, PIPELINE_FIELDS, formatUptime, BITRATE } from './liveSession.js'
 
 test('bitrates read as the tool window wrote them and stay in its range', () => {
   assert.equal(formatBitrate(20000), '20 Mbps')
@@ -44,4 +44,16 @@ test('the overview gets the stage averages as flat fields, only for stages that 
   assert.deepEqual(pipelineAverages(null), {})
   assert.deepEqual(pipelineAverages({ pipeline: { encode: { samples: 2 } } }), {}, 'no average, no field')
   assert.deepEqual(Object.keys(PIPELINE_FIELDS), ['capture_to_convert', 'convert', 'encode_queue', 'encode', 'packet_to_broadcast', 'total'])
+})
+
+test('the overview extra performance fields come from the session as the host sent them', () => {
+  assert.deepEqual(perfExtras(null), {})
+  assert.deepEqual(perfExtras(undefined), {})
+  const frameRates = { source: { fps: 60 }, capture: { fps: 60 }, submitted: { fps: 59.8 }, encoded: { fps: 59.9 }, repeated: { fps: 0 }, source_kind: 'display', enabled: true, ready: true }
+  const out = perfExtras({ frame_rates: frameRates, capture: 'wgc' })
+  assert.equal(out.frameRates, frameRates)
+  assert.equal(out.perfCapture, 'wgc')
+  assert.deepEqual(perfExtras({ frame_rates: frameRates, capture: 3 }), { frameRates })
+  assert.deepEqual(perfExtras({ capture: null }), {})
+  assert.deepEqual(perfExtras({}), {})
 })

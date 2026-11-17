@@ -13,7 +13,7 @@ import { openExternalUrl, sunshine, vdd as vddApi, virtualMicrophone } from '../
 import { hostBase, hostFetch } from '../composables/hostBase.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
-import { pipelineAverages } from '../composables/liveSession.js'
+import { pipelineAverages, perfExtras } from '../composables/liveSession.js'
 
 const props = defineProps({
   runtime: { type: Object, required: true },
@@ -141,8 +141,9 @@ const catalogueInput = computed(() => {
     sampleSec: SAMPLE_SEC, vddStore: state.vdd && state.vdd.installed !== false ? vddStore : null,
     reach: hostReach.view.report, reachChecking: hostReach.view.status === 'loading',
     sysinfo: nics.info.value,
+    mic: props.runtime.mic,
     host: { version: state.version, update: props.updateAvailable ? h.value.update : '' },
-    session: s ? { ...s, fpsMeasured: p?.frame_rates?.encoded?.fps, latencyMs: p?.host_latency?.avg_ms, latencyP95Ms: p?.host_latency?.p95_ms, ...pipelineAverages(p), uptimeMs: sessionClock.uptimeMs.value ?? p?.uptime_ms ?? s.uptimeMs } : null,
+    session: s ? { ...s, fpsMeasured: p?.frame_rates?.encoded?.fps, latencyMs: p?.host_latency?.avg_ms, latencyP95Ms: p?.host_latency?.p95_ms, ...pipelineAverages(p), ...perfExtras(p), uptimeMs: sessionClock.uptimeMs.value ?? p?.uptime_ms ?? s.uptimeMs } : null,
     history: { samples: history.samples, sessions: history.sessions, days: history.days, last: () => history.last() },
     sys: model.value.info.some((i) => i.id === 'memory') && state.memory ? { memTotal: state.memory.system_total_memory, memAvail: state.memory.system_available_memory } : null,
     recent: recentKeys.value, canRuntime: canRuntime.value, ds5Keys: ds5Keys.value,
