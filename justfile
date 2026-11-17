@@ -21,3 +21,7 @@ build:
 
 test:
     mise exec -- node scripts/dev-env.mjs test
+
+# Windows installer; arguments go to scripts/build-gui-component-installer.ps1 (for example -Beta).
+package *args:
+    mise exec -- node scripts/dev-env.mjs package {{args}}

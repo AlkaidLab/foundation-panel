@@ -69,8 +69,8 @@ just build
 just test
 ```
 
-Linux 的 build/test 使用与 CI 相同的 Dev Container。Windows 的安装包仍使用原有
-`npm run build:component:win` 发布入口和参数。
+Linux 的 build/test 使用与 CI 相同的 Dev Container。Windows 的安装包用 `just package`，参数原样传给
+`scripts/build-gui-component-installer.ps1`，构建前同样使用锁定的设置数据。
 
 ## 帮助与参与
 

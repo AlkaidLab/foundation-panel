@@ -128,11 +128,17 @@ function container(action) {
     '--workdir', '/workspaces/panel', image, 'just', action])
 }
 
-function main(action) {
+function main(action, ...extra) {
+  if (action === 'package' && !windows) throw new Error('package builds the Windows installer: run it on Windows')
   if (!['doctor', 'doctor-native'].includes(action)) mkdirSync(cache, { recursive: true })
   if (platform() === 'linux' && !process.env.PANEL_DEV_CONTAINER && action !== 'doctor-native') return container(action)
   if (action === 'setup') {
-    if (windows && !process.env.VCToolsInstallDir) run('winget', ['configure', '-f', 'configuration.dsc.yaml', '--accept-configuration-agreements'])
+    if (windows && !process.env.VCToolsInstallDir) {
+      run('winget', ['configure', '-f', 'configuration.dsc.yaml', '--accept-configuration-agreements'])
+      // A child process cannot change this process's environment: the MSVC variables exist only in a new Developer PowerShell.
+      console.log('MSVC build tools are installed. Open a new Developer PowerShell and run just setup again to finish.')
+      return
+    }
     if (platform() === 'darwin') run('brew', ['bundle', '--file', 'Brewfile'])
     run(windows ? 'corepack.cmd' : 'corepack', ['install'], { shell: windows })
     doctor()
@@ -166,8 +172,13 @@ function main(action) {
     else console.log(`SKIP Tauri app tests: ${appPlatformNote()}`)
     return
   }
+  if (action === 'package') {
+    // The installer script builds the renderer unless -SkipBuild is given; running it here keeps the pinned settings data (settings()).
+    run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build-gui-component-installer.ps1', ...extra])
+    return
+  }
   throw new Error(`Unknown action: ${action}`)
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { main(process.argv[2]) } catch (error) { console.error(error.message); process.exitCode = 1 }
+  try { main(...process.argv.slice(2)) } catch (error) { console.error(error.message); process.exitCode = 1 }
 }

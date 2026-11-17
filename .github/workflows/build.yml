@@ -60,11 +60,11 @@ jobs:
 
       # dev-env-mise-action: version and install; dev-env-msvc-action: environment activation.
       - name: Select locked tools
-        uses: jdx/mise-action@v3
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db  # v3.6.3
         with:
           version: 2026.11.9
       - name: Activate MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
 
       # Cache compiler outputs without restoring Cargo's target directory. This
       # avoids the stale Tauri proc-macro fingerprints previously seen with a
