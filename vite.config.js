@@ -7,9 +7,10 @@ import { dirname } from 'node:path'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+// dev-env-npm: preserve source aliases inside the integrity-locked package.
+const foundationUi = resolve(dirname(fileURLToPath(import.meta.resolve('foundation-ui'))), '..')
 
 const rendererSrcPath = join(__dirname, 'src', 'renderer')
-const foundationUi = process.env.FOUNDATION_UI_DIR || join(__dirname, '..', 'ds5-ui-m3e')
 // The settings data (the search index of the settings and the label tables) belongs to the product this panel is built into, Foundation Sunshine (GPL-3.0): it is
 // read at build time from that checkout (src_assets/common/assets/web/config/settingsData, one level up and over from this repository when it is the submodule, or
 // SETTINGS_DATA_DIR) and is not part of this repository. Without it the panel builds with an empty set and shows the label keys.
@@ -61,16 +62,16 @@ export default defineConfig(() => ({
     vuePlugin({ template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('md-') } } }),
   ],
   resolve: {
-    // foundation-ui is the shared Material 3 Expressive package (sibling checkout); Vue must stay a single copy.
+    // dev-env-npm: aliases use the locked package; Vue stays a single copy.
     dedupe: ['vue'],
     alias: [
+      { find: /^foundation-ui\/vue$/, replacement: join(foundationUi, 'src/vue/index.js') },
+      { find: /^foundation-ui\/all\.css$/, replacement: join(foundationUi, 'src/css/all.css') },
+      { find: /^foundation-ui\/(.*)$/, replacement: join(foundationUi, 'src/$1') },
       // every call to the host goes through this import: the timed one (src/renderer/tauri-core-timed.js) gives the package back with a timed invoke
       { find: /^@tauri-apps\/api\/core$/, replacement: join(rendererSrcPath, 'tauri-core-timed.js') },
       { find: '@', replacement: rendererSrcPath },
       { find: /^@settings-data$/, replacement: settingsData },
-      { find: /^foundation-ui\/vue$/, replacement: join(foundationUi, 'src/vue/index.js') },
-      { find: /^foundation-ui\/all\.css$/, replacement: join(foundationUi, 'src/css/all.css') },
-      { find: /^foundation-ui\/(.*)$/, replacement: join(foundationUi, 'src/$1') },
       { find: /^vue$/, replacement: join(__dirname, 'node_modules/vue/dist/vue.runtime.esm-bundler.js') },
     ],
   },

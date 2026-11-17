@@ -58,18 +58,19 @@ Foundation Panel 是基于 Tauri 2 和 Vue 3 的 Windows 桌面面板，用来�
 
 ## 构建
 
-```bash
-# 面板依赖同级目录 ../ds5-ui-m3e 中的 foundation-ui（Material 3 Expressive 组件），先把它放在那里（只需一次）：
-git clone https://github.com/AlkaidLab/foundation-ui ../ds5-ui-m3e
-# 设置的搜索索引和文案来自 Foundation Sunshine 的 config/settingsData；单独构建面板时指向一份 Foundation Sunshine 源码（不设置则界面显示标签键）：
-export SETTINGS_DATA_DIR=../foundation-sunshine/src_assets/common/assets/web/config/settingsData
-npm install
+三个平台的初始化步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本与系统依赖说明见
+[构建环境设计](docs/development-environment.md)。共享组件和设置数据均锁定到确定版本，
+无需准备相邻源码目录。
 
-npm run dev:renderer     # 仅启动前端开发服务器
-npm run test:renderer    # 前端测试
-npm run build            # 构建安装包（Windows）
-cargo test --manifest-path src-tauri/Cargo.toml --bin sunshine-gui
+```sh
+just setup
+just doctor
+just build
+just test
 ```
+
+Linux 的 build/test 使用与 CI 相同的 Dev Container。Windows 的安装包仍使用原有
+`npm run build:component:win` 发布入口和参数。
 
 ## 帮助与参与
 

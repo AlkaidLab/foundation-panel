@@ -18,8 +18,9 @@ test('the settings data is the product\'s, not the panel\'s: components import i
 
 test('without product data the set is empty and the shared labels answer the key (nothing throws)', async () => {
   const { register } = await import('node:module')
-  const root = process.env.FOUNDATION_UI_DIR
-  if (!root) return // the shared package is a sibling checkout; the other panel tests need it as well
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, resolve } = await import('node:path')
+  const root = resolve(dirname(fileURLToPath(import.meta.resolve('foundation-ui'))), '..')
   const { pathToFileURL } = await import('node:url')
   register('data:text/javascript,' + encodeURIComponent(`export async function resolve(s, c, n) { const m = /^foundation-ui\\/(settings\\/.+\\.js)$/.exec(s); if (m) return { url: new URL('src/' + m[1], ${JSON.stringify(pathToFileURL(root + '/').href)}).href, shortCircuit: true }; return n(s, c) }`))
   const { SEARCH_INDEX, LABELS } = await import('./settingsDataEmpty.js')

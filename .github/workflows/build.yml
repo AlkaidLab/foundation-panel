@@ -17,7 +17,6 @@ env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: 'true'
   RUSTC_WRAPPER: sccache
-  SETTINGS_DATA_DIR: ${{ github.workspace }}/../foundation-sunshine/src_assets/common/assets/web/config/settingsData
 
 concurrency:
   group: gui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -27,6 +26,25 @@ permissions:
   contents: read
 
 jobs:
+  build-linux:
+    name: Build Linux (locked Dev Container)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the development image
+        run: docker build --platform=linux/amd64 --file .devcontainer/Dockerfile --tag foundation-panel-dev:20261117 .
+      - name: Setup, check, build and test with the shared entry points
+        run: |
+          mkdir -p "$RUNNER_TEMP/panel-cache/tmp"
+          docker run --platform=linux/amd64 --rm --init \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/panel" \
+            --mount "type=bind,source=$RUNNER_TEMP/panel-cache,target=/workspaces/.cache" \
+            --workdir /workspaces/panel \
+            --env CARGO_BUILD_JOBS=2 \
+            --env CARGO_HOME=/workspaces/.cache/cargo \
+            foundation-panel-dev:20261117 \
+            sh -eu -c 'just setup && just doctor && just build && just test'
+
   build-windows:
     name: Build Windows (x64)
     runs-on: windows-latest
@@ -40,16 +58,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7.1.0
+      # dev-env-mise-action: version and install; dev-env-msvc-action: environment activation.
+      - name: Select locked tools
+        uses: jdx/mise-action@v3
         with:
-          node-version: 24.21.0
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
+          version: 2026.11.9
+      - name: Activate MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
 
       # Cache compiler outputs without restoring Cargo's target directory. This
       # avoids the stale Tauri proc-macro fingerprints previously seen with a
@@ -57,29 +72,8 @@ jobs:
       - name: Setup Rust compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # The panel imports foundation-ui from a sibling checkout named ds5-ui-m3e (package.json: "file:../ds5-ui-m3e").
-      - name: Fetch foundation-ui
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/AlkaidLab/foundation-ui "$GITHUB_WORKSPACE/../ds5-ui-m3e"
-          npm ci --prefix "$GITHUB_WORKSPACE/../ds5-ui-m3e"
-
-      # The shared settings UI is data-free. Reuse Foundation Sunshine's generated index and
-      # labels at build time; vite.config.js resolves them through SETTINGS_DATA_DIR.
-      - name: Fetch Foundation Sunshine settings data
-        shell: bash
-        run: |
-          dir="$GITHUB_WORKSPACE/../foundation-sunshine"
-          sha="$(tr -d '[:space:]' < scripts/ci/foundation-sunshine.sha)"
-          git clone --filter=blob:none --sparse --no-checkout https://github.com/AlkaidLab/foundation-sunshine "$dir"
-          git -C "$dir" fetch --depth 1 origin "$sha"
-          git -C "$dir" checkout --detach "$sha"
-          git -C "$dir" sparse-checkout set src_assets/common/assets/web/config/settingsData
-          # a build without the data would draw label keys: stop here instead
-          test -f "$SETTINGS_DATA_DIR/index.js"
-
-      - name: Install npm dependencies
-        run: npm ci
+      - name: Setup with the contributor entry point
+        run: just setup
 
       - name: Inject version from tag
         shell: bash
@@ -116,7 +110,10 @@ jobs:
           echo "Version injected into GUI and native plugin manifests"
 
       - name: Build frontend
-        run: npm run build:renderer
+        run: just build
+
+      - name: Test environment diagnostics
+        run: node --test scripts/dev-env.test.mjs
 
       - name: Test renderer logic
         run: npm run test:renderer

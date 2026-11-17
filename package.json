@@ -45,10 +45,15 @@
     "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-fs": "^2.7.1",
     "dompurify": "^3.4.16",
-    "foundation-ui": "file:../ds5-ui-m3e",
+    "foundation-ui": "https://codeload.github.com/AlkaidLab/foundation-ui/tar.gz/706734b6957cca9817463fa09b3ec4d4d03a9fd9",
     "markdown-it": "^14.3.2",
     "pixi.js": "^8.19.0",
     "qrcode": "^1.5.4",
     "vue": "^3.5.38"
-  }
+  },
+  "engines": {
+    "node": "24.22.3",
+    "npm": "11.19.1"
+  },
+  "packageManager": "npm@11.19.1"
 }
