@@ -8,6 +8,11 @@ export function usbipTransportNeedsCleanup(status = {}) {
   )
 }
 
+/** The external full usbip-win2 that the host's helper says may be replaced (it decides; the panel keeps no ownership rules). */
+export function usbipCanReplaceLegacy(status = {}) {
+  return Boolean(status.externally_managed && status.replaceable)
+}
+
 export const MICROPHONE_BACKENDS = Object.freeze(['auto', 'vb_cable', 'usbip_experimental', 'disabled'])
 
 /** The states of VB-CABLE the host reports (GET /api/audio/devices, vb_cable.state). */

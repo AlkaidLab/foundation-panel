@@ -27,6 +27,35 @@ pub(crate) fn classify_installer_exit_code(
     }
 }
 
+/// What `usbip-package.ps1 -Action replace` answers. 107 is the host refusing before it touched anything; 102 and 103
+/// come from the root-hub guard's rollback. Everything else is a failure whose real state the panel reads afterwards.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn classify_replace_exit_code(exit_code: Option<i32>) -> Result<InstallResult, String> {
+    match exit_code {
+        Some(0) => Ok(InstallResult::Ready),
+        Some(3010) => Ok(InstallResult::RebootRecommended),
+        Some(107) => Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string()),
+        Some(102) => Err("USBIP-REPLACE-002: the replacement was rolled back and the USB root hubs are healthy".to_string()),
+        Some(103) => Err("USBIP-REPLACE-003: the USB root hubs were not fully recovered after the replacement".to_string()),
+        code => Err(format!(
+            "USBIP-REPLACE-004: the replacement failed with exit code {}",
+            code.unwrap_or(-1)
+        )),
+    }
+}
+
+/// True when the host's `status` answer says this is an external installation the person may ask to replace.
+/// Anything unexpected is "no": the button only appears on a positive, well-formed answer.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn parse_host_replaceable(output: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(output.trim().trim_start_matches('\u{feff}'))
+        .map(|value| {
+            value["ownership"].as_str() == Some("external")
+                && value["replaceable"].as_bool() == Some(true)
+        })
+        .unwrap_or(false)
+}
+
 /// Directory next to the Sunshine installation where the installer is staged.
 #[cfg(target_os = "windows")]
 pub(crate) fn staging_root() -> std::path::PathBuf {
@@ -76,6 +105,42 @@ pub(crate) async fn ensure_pinned_usbip(
     run_host_package("install").await
 }
 
+/// Whether the host's lifecycle helper reports the installed USB/IP as one the person may replace. The ownership
+/// rules live only in that helper, so the panel asks it instead of keeping a third copy.
+#[cfg(target_os = "windows")]
+pub(super) async fn host_replaceable() -> bool {
+    let script = crate::sunshine::install_dir()
+        .join("scripts")
+        .join("usbip-package.ps1");
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+    if !script.is_file() {
+        return false;
+    }
+    let powershell =
+        std::path::PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let mut command = tokio::process::Command::new(powershell);
+    command
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .args(["-Action", "status"])
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+    let Ok(child) = command.spawn() else {
+        return false;
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            parse_host_replaceable(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => false,
+    }
+}
+
 /// Host-supplied lifecycle helper owns the global mutex through hub verification.
 #[cfg(target_os = "windows")]
 pub(super) async fn run_host_package(action: &str) -> Result<InstallResult, String> {
@@ -89,7 +154,8 @@ pub(super) async fn run_host_package(action: &str) -> Result<InstallResult, Stri
             "USBIP-SETUP-002: update the host to install the bundled USB/IP component".into(),
         );
     }
-    if action == "install" {
+    // `replace` takes over an installation the person confirmed; it needs the same verified payload as an install.
+    if action == "install" || action == "replace" {
         super::manager::verify_slim_payload(
             &crate::sunshine::install_dir().join("scripts").join("usbip"),
         )?;
@@ -117,10 +183,24 @@ pub(super) async fn run_host_package(action: &str) -> Result<InstallResult, Stri
         .await
         .map_err(|_| "USBIP-SETUP-010: USB/IP setup timed out".to_string())?
         .map_err(|error| format!("USBIP-SETUP-010: USB/IP setup failed: {error}"))?;
-    let result = classify_installer_exit_code(status.code())?;
-    if action == "install" {
+    let result = if action == "replace" {
+        classify_replace_exit_code(status.code())?
+    } else {
+        classify_installer_exit_code(status.code())?
+    };
+    if action == "install" || action == "replace" {
         super::manager::find_installation()?;
         super::manager::verify_driver_compatibility()?;
+        if action == "replace"
+            && super::usbip_uninstall_entries()?
+                .iter()
+                .any(|entry| !entry.slim)
+        {
+            return Err(
+                "USBIP-REPLACE-004: the old USB/IP registration remains after the replacement"
+                    .into(),
+            );
+        }
     } else if !super::usbip_uninstall_entries()?.is_empty() {
         return Err("USBIP-CLEAN-001: USB/IP registration remains after guarded cleanup".into());
     }
@@ -141,6 +221,48 @@ mod tests {
             classify_installer_exit_code(Some(3010)),
             Ok(InstallResult::RebootRecommended)
         );
+    }
+
+    #[test]
+    fn replace_exit_codes_map_to_results_the_person_can_act_on() {
+        assert_eq!(
+            classify_replace_exit_code(Some(0)),
+            Ok(InstallResult::Ready)
+        );
+        assert_eq!(
+            classify_replace_exit_code(Some(3010)),
+            Ok(InstallResult::RebootRecommended)
+        );
+        for (code, expected) in [
+            (Some(107), "USBIP-REPLACE-001:"),
+            (Some(102), "USBIP-REPLACE-002:"),
+            (Some(103), "USBIP-REPLACE-003:"),
+            (Some(1), "USBIP-REPLACE-004:"),
+            (Some(106), "USBIP-REPLACE-004:"),
+            (None, "USBIP-REPLACE-004:"),
+        ] {
+            let error = classify_replace_exit_code(code).unwrap_err();
+            assert!(error.starts_with(expected), "{code:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn host_status_offers_the_replacement_only_on_a_positive_well_formed_answer() {
+        let external = r#"{"ownership":"external","compatible":true,"reason":"gui-or-sdk","ready":true,"replaceable":true,"version":"0.9.8.1"}"#;
+        assert!(parse_host_replaceable(external));
+        // Windows PowerShell may prefix a byte order mark and end with a newline.
+        assert!(parse_host_replaceable(&format!("\u{feff}{external}\r\n")));
+        for refused in [
+            r#"{"ownership":"external","replaceable":false}"#,
+            r#"{"ownership":"managed","replaceable":true}"#,
+            r#"{"ownership":"legacy-owned","replaceable":true}"#,
+            r#"{"ownership":"external"}"#,
+            r#"{"ownership":"external","replaceable":"true"}"#,
+            "not json",
+            "",
+        ] {
+            assert!(!parse_host_replaceable(refused), "{refused}");
+        }
     }
 
     #[test]

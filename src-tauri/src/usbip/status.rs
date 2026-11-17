@@ -31,6 +31,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
     #[cfg(not(target_os = "windows"))]
     return Ok(UsbipStatus {
         externally_managed: false,
+        replaceable: false,
         supported: false,
         installed: false,
         ready: false,
@@ -49,6 +50,8 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
         // report a clean transport. Propagating the error surfaces the probe
         // as unavailable, hiding install and attach actions.
         let externally_managed = super::manager::externally_managed();
+        // Only an external installation can be offered for replacement; the host's helper decides which ones.
+        let replaceable = externally_managed && super::install::host_replaceable().await;
         let interfaces = super::device::enumerate_vhci_interfaces()?;
         let nodes = super::device::enumerate_transport_nodes()?;
         let installation = match super::manager::find_installation() {
@@ -59,6 +62,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
                     externally_managed || !matches!(registered_version, Ok(None));
                 return Ok(UsbipStatus {
                     externally_managed,
+                    replaceable,
                     supported: true,
                     installed: partially_installed,
                     ready: false,
@@ -87,6 +91,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
             );
             return Ok(UsbipStatus {
                 externally_managed,
+                replaceable,
                 supported: true,
                 installed: true,
                 ready: false,
@@ -102,6 +107,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
         match super::exec::list_attached().await {
             Ok(attached_devices) => Ok(UsbipStatus {
                 externally_managed,
+                replaceable,
                 supported: true,
                 installed: true,
                 // Residual instances break every usbip.exe operation; reflect
@@ -117,6 +123,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
             }),
             Err(detail) => Ok(UsbipStatus {
                 externally_managed,
+                replaceable,
                 supported: true,
                 installed: true,
                 ready: false,

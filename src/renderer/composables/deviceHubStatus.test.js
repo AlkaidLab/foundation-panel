@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  usbipCanReplaceLegacy,
   usbipTransportNeedsCleanup,
   MICROPHONE_BACKENDS,
   canTestMicrophone,
@@ -149,3 +150,12 @@ for (const version_valid of [true, false]) {
     assert.equal(usbipTransportNeedsCleanup({ ...status, externally_managed: false }), true)
   })
 }
+
+test('the replacement of an external USB/IP is offered only when the host says it may be replaced', () => {
+  assert.equal(usbipCanReplaceLegacy({ externally_managed: true, replaceable: true }), true)
+  assert.equal(usbipCanReplaceLegacy({ externally_managed: true, replaceable: false }), false)
+  assert.equal(usbipCanReplaceLegacy({ externally_managed: true }), false)
+  // the host's own package is never offered for replacement
+  assert.equal(usbipCanReplaceLegacy({ externally_managed: false, replaceable: true }), false)
+  assert.equal(usbipCanReplaceLegacy(), false)
+})

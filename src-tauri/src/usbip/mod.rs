@@ -64,6 +64,8 @@ pub struct UsbipStatus {
     pub attached_devices: Vec<UsbipAttachedDevice>,
     pub detail: String,
     pub externally_managed: bool,
+    /// An external installation the person may ask to replace with the host's own package (host `status`).
+    pub replaceable: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -71,6 +73,8 @@ pub struct UsbipStatus {
 enum ElevatedRequest {
     Install,
     Cleanup,
+    /// The person confirmed replacing an external USB/IP installation with the host's package.
+    ReplaceLegacy,
     Attach {
         remote: String,
         tcp_port: u16,
@@ -91,6 +95,8 @@ impl ElevatedRequest {
             // The silent uninstaller plus the devnode sweep stay well below a
             // single Inno install, but leave headroom for slow driver teardown.
             Self::Cleanup => std::time::Duration::from_secs(15 * 60),
+            // The host's helper allows its uninstall and install ten minutes in total; leave the same headroom.
+            Self::ReplaceLegacy => std::time::Duration::from_secs(15 * 60),
             Self::Attach { .. } | Self::Detach { .. } => {
                 COMMAND_TIMEOUT + std::time::Duration::from_secs(5)
             }
@@ -193,6 +199,18 @@ mod tests {
         assert!(validate_remote("-host.local").is_err());
         assert_eq!(validate_bus_id("3-3.2").unwrap(), "3-3.2");
         assert!(validate_bus_id("3-3 /tmp").is_err());
+    }
+
+    #[test]
+    fn replace_request_has_its_own_allowlisted_operation() {
+        let encoded = serde_json::to_string(&ElevatedRequest::ReplaceLegacy).unwrap();
+        assert_eq!(encoded, r#"{"operation":"replace_legacy"}"#);
+        assert!(matches!(
+            serde_json::from_str::<ElevatedRequest>(&encoded),
+            Ok(ElevatedRequest::ReplaceLegacy)
+        ));
+        // Cleanup of an external installation stays refused; the replacement is a different, confirmed operation.
+        assert!(serde_json::from_str::<ElevatedRequest>(r#"{"operation":"replace"}"#).is_err());
     }
 
     #[test]

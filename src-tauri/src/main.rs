@@ -342,6 +342,7 @@ fn main() {
             usbip::usbip_save_forwarding_config,
             usbip::usbip_install_transport,
             usbip::usbip_cleanup_transport,
+            usbip::usbip_replace_legacy_transport,
             usbip::usbip_list_remote,
             usbip::usbip_attach,
             usbip::usbip_detach,
