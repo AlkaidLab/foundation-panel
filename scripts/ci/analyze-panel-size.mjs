@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { brotliDecompressSync } from 'node:zlib'
+import { lineRanges } from './size-lines.mjs'
 
 const [exePath, pdbPath, pdbutil = 'llvm-pdbutil'] = process.argv.slice(2)
 if (!exePath || !pdbPath) {
@@ -124,14 +125,9 @@ function crateOf(path) {
 // Attribute disjoint line-table address ranges; overlapping folded ranges
 // from different crates are reported separately, never counted twice.
 const events = []
-let owner = '[other source]'
-for (const line of dump('-l').split('\n')) {
-  if (/\.(rs|c|cpp|cc|h) \(.*\)/.test(line)) owner = crateOf(line)
-  const range = line.match(/^\s+(\d+):([0-9A-Fa-f]+)-([0-9A-Fa-f]+), line\/addr/)
-  if (!range || Number(range[1]) !== text.index) continue
-  const lo = parseInt(range[2], 16), hi = parseInt(range[3], 16)
-  if (lo >= hi || hi > text.virtual_bytes) throw new Error('PDB line range outside .text')
-  events.push([lo, owner, 1], [hi, owner, -1])
+for (const range of lineRanges(dump('-l'), text.index, crateOf)) {
+  if (range.lo >= range.hi || range.hi > text.virtual_bytes) throw new Error('PDB line range outside .text')
+  events.push([range.lo, range.owner, 1], [range.hi, range.owner, -1])
 }
 events.sort((a, b) => a[0] - b[0])
 const active = new Map(), totals = new Map()

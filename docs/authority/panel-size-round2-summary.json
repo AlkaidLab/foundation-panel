@@ -55,7 +55,7 @@
     }
   ],
   "attribution_method": "Non-overlapping PDB source-line ranges after LTO; folded/mixed and missing ranges kept separate. This is source attribution, not pre-LTO crate object sizes.",
-  "text_attributed_fraction": 0.9807094092688116,
+  "text_attributed_fraction": 0.9806705832883212,
   "text_by_crate": [
     {
       "crate": "sunshine-gui",
@@ -99,7 +99,7 @@
     },
     {
       "crate": "[other source]",
-      "bytes": 142522
+      "bytes": 143158
     },
     {
       "crate": "[folded/mixed]",
@@ -530,10 +530,6 @@
       "bytes": 1368
     },
     {
-      "crate": "compiler-builtins",
-      "bytes": 1234
-    },
-    {
       "crate": "percent-encoding 2.3.2",
       "bytes": 1173
     },
@@ -604,6 +600,10 @@
     {
       "crate": "tracing-core 0.1.36",
       "bytes": 632
+    },
+    {
+      "crate": "compiler-builtins",
+      "bytes": 598
     },
     {
       "crate": "tokio-util 0.7.18",
