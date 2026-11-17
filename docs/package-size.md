@@ -154,6 +154,11 @@ component installer built in the same job.
 | this change (`opt-level = "s"`) | 29,193,728 | 10,474,184 | 12,891,820 |
 | change | -2,266,624 (-7.2%) | -1,319,016 (-11.2%) | -1,448,932 (-10.1%) |
 
+The same two trees built again after the locked toolchain (rustc 1.100.0) landed on
+`main`: executable 31,456,256 -> 29,189,632 bytes, 14,395,710 -> 12,931,756 bytes as
+zipped by the CI step, installer 13.67 -> 12.29 MiB. The ratios match the table; the
+xz size of these two executables was not taken.
+
 By section: `.text` 17,306,624 -> 16,380,928 (the image codecs: `image` 517,750 ->
 189,819 bytes of attributed code, `exr` 193,412 and `tiff` 139,346 gone),
 `.rdata` 12,999,680 -> 11,688,960 (the embedded Brotli assets 5,875,900 ->
