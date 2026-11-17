@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { ElMessage, ElNotification, ElMessageBox } from './notifyMessage.js'
+import { ElMessage, ElNotification, ElMessageBox, UPDATE_CHECK_MESSAGE } from './notifyMessage.js'
 import { openExternalUrl, tools, controllerMeta, sunshine } from '@/tauri-adapter.js'
 import { latencyClockTexts } from 'foundation-ui/vue'
 import { pickStreamMonitor, centredOn } from './streamMonitor.js'
@@ -206,18 +206,18 @@ export function useTools() {
       })
 
       // 显示提示
-      ElMessage.info(t.value.toolActions.requestingAdmin)
+      ElMessage.info({ message: t.value.toolActions.requestingAdmin, id: 'admin-restart' })
 
       // 调用 Tauri 命令
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke('restart_as_admin')
 
       // 如果到这里说明成功请求了重启
-      ElMessage.success(t.value.toolActions.restartingAsAdmin)
+      ElMessage.success({ message: t.value.toolActions.restartingAsAdmin, id: 'admin-restart' })
     } catch (error) {
       if (error !== 'cancel') {
         console.error('重启失败:', error)
-        ElMessage.error(t.value.toolActions.restartFailed)
+        ElMessage.error({ message: t.value.toolActions.restartFailed, id: 'admin-restart' })
       }
     }
   }
@@ -226,10 +226,14 @@ export function useTools() {
    * 检查更新，返回 UpdateInfo（包含 is_latest 标记）由调用方处理展示
    */
   const checkForUpdates = async (channel = null) => {
+    let progress = null
+    let failed = false
     try {
       const { invoke } = await import('@tauri-apps/api/core')
 
-      ElMessage.info(t.value.toolActions.checkingUpdates)
+      // one message for the whole check: the sentence stays until the answer comes (a slow check outlasts the usual 5 s), a failure replaces it where it stands
+      // (same id), an answer closes it because the dialog of the answer takes over
+      progress = ElMessage({ message: t.value.toolActions.checkingUpdates, id: UPDATE_CHECK_MESSAGE, duration: 0 })
 
       const hasExplicitChannel = channel === 'stable' || channel === 'prerelease'
       const result = hasExplicitChannel
@@ -242,10 +246,13 @@ export function useTools() {
       return null
     } catch (error) {
       console.error('检查更新失败:', error)
+      failed = true
       const text = updateCheckFailureText(error, t.value.toolActions)
-      if (isPrereleaseUnavailable(error) || isCurrentVersionUnknown(error)) ElMessage.warning(text)
-      else ElMessage.error(text)
+      if (isPrereleaseUnavailable(error) || isCurrentVersionUnknown(error)) ElMessage.warning({ message: text, id: UPDATE_CHECK_MESSAGE })
+      else ElMessage.error({ message: text, id: UPDATE_CHECK_MESSAGE })
       return null
+    } finally {
+      if (!failed) await progress?.close()
     }
   }
 

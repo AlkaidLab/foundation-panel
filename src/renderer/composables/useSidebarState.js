@@ -1,5 +1,5 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from './notifyMessage.js'
+import { ElMessage, UPDATE_CHECK_MESSAGE } from './notifyMessage.js'
 import { useRouter, ROUTES } from './useRouter.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
@@ -255,8 +255,8 @@ export function useSidebarState() {
       if (error) {
         console.error('Update check failed:', error)
         const text = updateCheckFailureText(error, t.value.toolActions)
-        if (isPrereleaseUnavailable(error) || isCurrentVersionUnknown(error)) ElMessage.warning(text)
-        else ElMessage.error(text)
+        if (isPrereleaseUnavailable(error) || isCurrentVersionUnknown(error)) ElMessage.warning({ message: text, id: UPDATE_CHECK_MESSAGE })
+        else ElMessage.error({ message: text, id: UPDATE_CHECK_MESSAGE })
       }
     })
     cleanupFns.push(unlistenCheckResult)
