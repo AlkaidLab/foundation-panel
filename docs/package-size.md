@@ -116,29 +116,152 @@ pruning; **large executable savings from it are not established**. The main
 targets for further measured work are application/framework monomorphization
 and already-compressed frontend content, not an assumed large AV1 encoder.
 
-## Feature selection
+## What round 2 changed
 
-The Windows `image` dependency now explicitly retains every previously
-enabled decoder and Rayon, while dropping only the `avif` encoder feature.
-PNG/BMP/JPEG clipboard images, PNG updater frames, PNG DPI covers, JPEG
-screenshots, ICO tray icons, and fallback decoding of custom tray images keep
-their existing format support. The application never requests AVIF output.
-`image` 0.25.10 requires **`avif-native`** for AVIF decoding, which was already
-disabled. Thus dropping **`avif`** removes an unused encoder, not an existing
-decoder. See `panel-image-features`, `panel-image-avif`, and
-`panel-cargo-features` (Feature unification) in the source index.
+Three changes, each lossless for what the application shows or does.
 
-The measured post-change executable size and Windows runtime verification
-remain pending. A dependency disappearing from the Windows feature graph is
-not evidence of a particular number of bytes disappearing from the linked
-executable.
+- **A decorative PNG nothing references.** `src/renderer/public/miside.png`
+  (671,087 bytes) was copied into every build. A search of this repository
+  and of foundation-ui finds no reference to it (the assistant avatar uses
+  `mita-pixel.png`). It is removed. Effect on the application: none.
+- **A web icon with 25 frames.** `src/assets/sunshine.ico` carried 25 PNG
+  frames from 16 to 256 px (442,663 bytes). It is displayed through `<img>`
+  and as the page icon, so the frames in between were never chosen. It keeps
+  the seven standard frames 16, 24, 32, 48, 64, 128 and 256 (92,790 bytes).
+  The kept frames are the original PNG streams, byte for byte. The tray and
+  executable icons are not touched.
+- **Image codecs the panel never uses.** The Windows `image` dependency now
+  enables `bmp`, `gif`, `ico`, `jpeg`, `png`, `webp` and `rayon`. It drops the
+  AVIF encoder and the EXR, TIFF, HDR, DDS, farbfeld, PNM, QOI and TGA
+  codecs. The panel reads PNG (clipboard frames, the updater sheet, the DPI
+  cover), BMP, JPEG and ICO (tray icons, with format guessing as the
+  fallback), and writes JPEG screenshots and PNG/BMP clipboard images; GIF and
+  WebP stay so a custom tray image or a pasted web image still decodes. A
+  clipboard image or custom tray icon in one of the dropped rare formats no
+  longer decodes. See `panel-image-features`, `panel-image-avif`,
+  `panel-cargo-features`.
 
-The following remain deliberate:
+## Measured result
+
+Windows CI builds from the same toolchain, the same foundation-ui commit
+(`b7a03fd`) and the same Foundation Sunshine settings data, dispatched from one
+fork. "xz" is `xz -9e -T1` of `sunshine-gui.exe`; "installer" is the NSIS
+component installer built in the same job.
+
+| Build | Executable | xz | Installer |
+| --- | ---: | ---: | ---: |
+| `main` before this change | 31,460,352 | 11,793,200 | 14,340,752 |
+| this change (`opt-level = "s"`) | 29,193,728 | 10,474,184 | 12,891,820 |
+| change | -2,266,624 (-7.2%) | -1,319,016 (-11.2%) | -1,448,932 (-10.1%) |
+
+By section: `.text` 17,306,624 -> 16,380,928 (the image codecs: `image` 517,750 ->
+189,819 bytes of attributed code, `exr` 193,412 and `tiff` 139,346 gone),
+`.rdata` 12,999,680 -> 11,688,960 (the embedded Brotli assets 5,875,900 ->
+4,854,931 bytes: PNG 1,511,812 -> 840,720 and the ICO 442,668 -> 92,795),
+`.pdata` 968,192 -> 941,056. The compressed target of 7,000,000 bytes is not
+met: the executable is 3.47 MB over it, and 4.85 MB of what remains is
+already-compressed assets (WebP 1.38 MB, JavaScript 2.17 MB, PNG 0.84 MB)
+that no executable-level setting shrinks further.
+
+Rejected, measured the same way (each as its own CI build of the same tree):
+
+| Variant | Executable | xz | Installer | Why not |
+| --- | ---: | ---: | ---: | --- |
+| `opt-level = "z"` | 24,771,072 | 9,718,896 | 11,760,494 | Hot image paths get slower (below) |
+| `panic = "abort"` | 17,220,096 | 8,821,268 | 10,390,512 | A panic in any thread would end the process; see below |
+| dependencies `z`, own code `s` | 29,305,856 | 10,489,840 | 12,841,076 | No saving: with fat LTO the merged module is optimised at the level of the final crate |
+| thin LTO, dependencies `z`, the image path `s` | 29,606,400 | 10,435,232 | 12,918,179 | 0.4% smaller xz than `s`: no use for the build time |
+
+`opt-level = "z"` does not slow the start: window visible and first content
+are within noise of the `s` build. It slows the work done on user actions.
+The same `image` calls compiled at `s` and at `z` (4K RGBA frame, same
+profile otherwise, median of nine, three alternating rounds): JPEG decode of a
+1920x1080 frame 10.9 -> 68.5 ms (6.3x), JPEG encode at quality 60 55.4 ->
+88.1 ms (+59%), WebP decode 20.3 -> 34.3 ms (+69%), triangle resize 4K ->
+1080p 121.8 -> 157.3 ms (+29%), PNG encode 471.9 -> 551.2 ms (+17%), PNG decode
+87.1 -> 84.6 ms (-3%). These run when a screenshot is attached to feedback, a
+clipboard image is synced or a DPI cover is drawn. A slowdown above 5% reverts
+the change.
+
+`panic = "abort"` would save 1.65 MB of xz because the unwind tables and
+cleanup landing pads go. It is not applied: the panic hook would still run,
+but a panic would then abort the whole process through the C runtime's fast
+fail, which bypasses the unhandled-exception filter the crash reporter also
+relies on; every thread that panics today unwinds and the panel keeps running
+(the observer lifetime guard in `text_context` and the
+`SUNSHINE_TEST_CRASH=panic` check depend on unwinding). Cargo documents the
+setting under `panel-cargo-profiles`; Microsoft documents the tables under
+`panel-ms-x64-unwind`.
+
+## Startup and first content
+
+Measured on a Windows Server 2025 CI runner with a warm WebView2 profile,
+process start to the main window being visible and to its pixels having
+changed (more than half of the sampled pixels differ from the first captured
+frame), five builds in shuffled order, 36 trials each, the same executable
+twice as a noise control. The window is captured with GDI `BitBlt`; no page
+instrumentation is used.
+
+| Build | window visible p50 / p95 | content p50 / p95 / mean |
+| --- | ---: | ---: |
+| before (two copies pooled, n = 72) | 1149 / 1416 ms | 1443 / 1728 / 1506 ms |
+| this change (two copies pooled, n = 72) | 1148 / 1442 ms | 1446 / 1733 / 1492 ms |
+| `opt-level = "z"` (n = 36) | 1164 / 1340 ms | 1442 / 1610 / 1457 ms |
+
+The two copies of the same executable differ by up to 0.7% at the median, so
+differences under about 1% are noise. This change: window -0.1%, content
++0.2% at the median. Both are inside the 2% limit.
+
+## Compatibility checks
+
+- Panic strategy, panic hook, `Location`: the release profile has no `panic`
+  key and `crash/` is untouched. A release build started with
+  `SUNSHINE_TEST_CRASH=panic` writes a report whose first frame is
+  `panic:mod.rs` at offset `0xdd` (line 221, the test panic), the same in the
+  `main`, this-change and `z` builds. Null-dereference and `abort` reports are
+  produced as before, with a minidump.
+- Archived symbols: the PDB written by the same build matches the
+  executable's GUID and age (the analysis script checks it), and frames from
+  those crash reports resolve through it with `llvm-symbolizer`
+  (`test_crash` at `crash/win.rs:376` and `:380`, `run_test_switch`, `install`,
+  `main`). The CI job still fails when no PDB is written.
+- The windows `image` feature set was checked with `cargo tree`; every
+  remaining format is still enabled, and `cargo test --release` for the
+  backend ran in the PR build (tray icon decoding, the DPI cover, the
+  clipboard paths).
+- `sunshine.ico` opens in Pillow and every kept frame decodes.
+- WebView2 creation and runtime detection, and everything else in `src-tauri`,
+  are unchanged. Windows 10 1803 with its supported WebView2 runtime was not
+  run; nothing in this change touches the code that depends on it. Only
+  Windows Server 2025 (build 26100) was run.
+
+## Not done, and what is left
+
+The remaining 4.85 MB of embedded assets and 6.8 MB of non-asset `.rdata` do
+not move with feature selection. Options and their measured or estimated
+effect, for a decision:
+
+- Unwinding is 1.65 MB of xz (measured with `panic = "abort"`), a behaviour
+  change as explained above.
+- The compression level of the embedded assets is Tauri's fixed quality-9
+  Brotli. Storing the assets uncompressed would save about 0.25 MB of xz but
+  adds 7.5 MB to the executable.
+- Lossless re-encoding of the remaining PNG files saves about 0.1 MB. WebP and
+  the hero images are lossy; recompressing them changes pixels.
+- Foundation-ui ships five sizes of the mascot and several decorative images.
+  Dropping sizes changes what loads on high-DPI screens.
+- Tauri's `removeUnusedCommands` needs the CLI build path; CI uses `cargo build`.
+
+## Deliberately unchanged
 
 - Tauri's default Brotli compression stays enabled. `tauri-codegen` 2.7.3 uses
   quality 9 for release (`panel-tauri-codegen-assets`, compression_settings
   and compress_file). Enabling it again cannot save these bytes.
-- Rayon stays enabled, preserving existing image-processing scheduling.
+- The `rayon` feature of `image` stays listed. The only code it linked (rayon-core,
+  12,719 bytes of attributed code) left the binary with the EXR codec, so it costs nothing.
+- Duplicate crate versions in the lock file (base64, getrandom, keyboard-types,
+  windows, windows-core) add up to under 25 KB of attributed code; unifying
+  them is not worth an incompatible bump.
 - Release devtools stay enabled because the application exposes commands
   that open them.
 - Reqwest versions are not forced together: a version appearing in the lock
@@ -165,7 +288,7 @@ source-line ranges to crates, and decodes complete Brotli asset streams.
 It uses only Node built-ins and LLVM. See `panel-ms-pe-format` (Section Table)
 and `panel-llvm-pdbutil` (dump) in the source index.
 
-Acceptance requires a before/after Windows release build with the same
+Acceptance required a before/after Windows release build with the same
 toolchain, frontend inputs, optimization profile, and PDB settings. Record
 raw and XZ bytes, PDB hash/GUID, and crash-frame symbolization. Measure process
 start to visible window and first content on the same Windows installation
@@ -177,13 +300,10 @@ Windows 10 1803 with its supported WebView2 runtime also needs a separate run.
 
 No new Backend, protocol, Adapter, OS call, or instruction-set requirement is
 introduced. The implementation stays in Rust/Tauri and uses Cargo's documented
-additive feature selection. Real-device behavior, resource authorization,
-cross-tenant isolation, startup latency, and the compressed-size budget are
-not yet verified for this change. Other operating systems are unchanged by
-the Windows-only feature selection and have not been built or run here.
-
-Further candidates are lossless image recompression, icon-frame deduplication,
-and reducing the large shared UI and translation chunks while preserving
-their contents. Their byte savings and runtime effects have not been measured;
-they are proposals, not claimed improvements. No competitor performance
-comparison or best-in-class claim is made by this packaging change.
+additive feature selection. Not verified: Windows 10 1803 and Windows builds
+other than Server 2025 build 26100, real GPUs and displays, and the
+installer's upgrade path from an installed panel (the installer is the same
+NSIS script with a smaller executable). Other operating systems are unchanged
+by the Windows-only feature selection and have not been built or run here.
+The size lab (workflows that dispatch the build, time the start and capture
+crash reports) is not part of the repository.

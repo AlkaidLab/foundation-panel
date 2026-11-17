@@ -139,8 +139,7 @@ winreg = "0.55"
 # sheet, DPI cover), BMP, JPEG, ICO (tray icons), plus GIF and WebP so a custom
 # tray image or a pasted web image still decodes. The default AVIF encoder and
 # the EXR, TIFF, HDR, DDS, farbfeld, PNM, QOI and TGA codecs are left out: nothing
-# in the panel reads or writes them. Rayon stays, so the image scheduling is the
-# same. Sources: panel-image-features, panel-image-avif (feature flags),
+# in the panel reads or writes them. Sources: panel-image-features, panel-image-avif (feature flags),
 # panel-cargo-features (feature unification).
 image = { version = "0.25.9", default-features = false, features = [
     "bmp", "gif", "ico", "jpeg", "png", "webp", "rayon",
