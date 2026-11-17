@@ -53,6 +53,26 @@ export function manifestChecks(packageData = pkg, rust = toolchain, mise = readF
   ]
 }
 
+// The app is a Windows program: its Cargo manifest declares the `windows` and `webview2-com` crates only for
+// cfg(windows) and the sources call them unconditionally, so a Linux or macOS build stops at "cannot find crate
+// `windows`" (43 errors, the same on the unmodified main). Not a missing tool or header. A test keeps this note
+// honest: when the manifest stops being Windows-only the test fails and the skip has to go.
+export function appIsWindowsOnly(manifest = readFileSync(join(root, 'src-tauri/Cargo.toml'), 'utf8')) {
+  let table = ''
+  const where = new Map()
+  for (const line of manifest.split('\n')) {
+    const header = line.match(/^\[(.+)\]\s*$/)
+    if (header) table = header[1]
+    const crate = line.match(/^(windows|webview2-com)\s*=/)
+    if (crate) where.set(crate[1], table)
+  }
+  return where.size > 0 && [...where.values()].every(t => t === "target.'cfg(windows)'.dependencies")
+}
+function appPlatformNote() {
+  if (!appIsWindowsOnly()) throw new Error('src-tauri/Cargo.toml no longer limits the Windows crates to cfg(windows): remove the app skip in scripts/dev-env.mjs and test the app here')
+  return 'the app depends on Windows-only crates (windows, webview2-com); build and test it on Windows (the Build workflow does)'
+}
+
 export function doctor() {
   const checks = [
     ...manifestChecks(),
@@ -125,7 +145,11 @@ function main(action) {
   settings()
   if (action === 'build') {
     npm('run', 'build:renderer')
-    if (windows) run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build-native-plugins.ps1', '-Configuration', 'Debug'])
+    if (!windows) {
+      console.log(`SKIP Tauri app build: ${appPlatformNote()}`)
+      return
+    }
+    run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build-native-plugins.ps1', '-Configuration', 'Debug'])
     run('cargo', ['build', '--locked', '--manifest-path', 'src-tauri/Cargo.toml'])
     return
   }
@@ -138,7 +162,8 @@ function main(action) {
       nativeTests.push('-p', 'alkaidlab-native-tool-plugin-api')
     }
     run('cargo', nativeTests)
-    run('cargo', ['test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml'])
+    if (windows) run('cargo', ['test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml'])
+    else console.log(`SKIP Tauri app tests: ${appPlatformNote()}`)
     return
   }
   throw new Error(`Unknown action: ${action}`)

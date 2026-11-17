@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { linuxChecks, manifestChecks } from './dev-env.mjs'
+import { appIsWindowsOnly, linuxChecks, manifestChecks } from './dev-env.mjs'
 
 const pins = readFileSync(new URL('../.devcontainer/apt-packages.lock', import.meta.url), 'utf8')
 const version = name => pins.match(new RegExp(`^${name}=(.+)$`, 'm'))[1]
@@ -35,3 +35,10 @@ for (const [name, mise, manager] of [
     assert.equal(checks.filter(c => c.actual !== c.expected).length, 1)
   })
 }
+
+test('the app stays Windows-only while its Windows crates are cfg(windows) dependencies', () => {
+  assert.equal(appIsWindowsOnly(), true)
+  assert.equal(appIsWindowsOnly("[dependencies]\nwindows = \"0.62\"\n"), false)
+  assert.equal(appIsWindowsOnly("[dependencies]\nserde = \"1\"\n"), false)
+  assert.equal(appIsWindowsOnly("[target.'cfg(windows)'.dependencies]\nwindows = \"0.62\"\nwebview2-com = \"0.38\"\n"), true)
+})
