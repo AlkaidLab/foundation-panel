@@ -107,6 +107,11 @@ jobs:
           # Built-in native tool plugin
           sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' native-plugins/stylus/Cargo.toml
 
+          # The injected version is the workspace member's own entry in each Cargo.lock. Refresh only that entry
+          # (dependencies stay locked) so the --locked builds below accept it.
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          cargo update --workspace --manifest-path native-plugins/Cargo.toml
+
           echo "Version injected into GUI and native plugin manifests"
 
       - name: Build frontend
