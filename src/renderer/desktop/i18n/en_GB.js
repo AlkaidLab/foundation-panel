@@ -1826,7 +1826,7 @@ export const en_GB = {
     },
     "refused": {
       "3": "A value is outside its allowed range, so the host did not save it.",
-      "5": "These settings are not available in this Sunshine version and were not saved.",
+      "5": "These settings are unavailable now (the host has no such feature, or they need client support or a tuning channel) and were not saved. Each one says why.",
       "8": "Sunshine cannot write its configuration file. Check disk space and permissions.",
       "9": "The request was malformed, so the host did not save it.",
       "other": "The host refused this save."
@@ -1858,9 +1858,9 @@ export const en_GB = {
         "applied": "{name} preset applied; save to keep it."
       },
       "pending": {
-        "title": "Not implemented by the host yet",
-        "hint": "These options are not connected in this version.",
-        "reason": "Not available in this version",
+        "title": "Unavailable settings",
+        "hint": "These options are unavailable now; each one says why.",
+        "reason": "Unavailable",
         "count": "{count} options"
       },
       "advanced": "Advanced",
@@ -1904,7 +1904,7 @@ export const en_GB = {
       "discard": "Discard",
       "dirty_count": "{count} unsaved change(s)",
       "save_ok": "Saved {count} option(s).",
-      "save_partial": "Saved {applied}; {unavailable} not available yet and left unchanged.",
+      "save_partial": "Saved {applied}; {unavailable} unavailable and left unchanged.",
       "nothing_dirty": "No changes to save.",
       "reset_key": "Reset to default",
       "cancel": "Cancel",
@@ -1960,7 +1960,7 @@ export const en_GB = {
         "white": "White"
       },
       "title": "DualSense tuning",
-      "wired": "{wired} adjustable · {pending} not connected in this build yet"
+      "wired": "{wired} adjustable · {pending} unavailable"
     }
   },
   "controllersHub": {

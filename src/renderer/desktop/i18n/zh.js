@@ -1562,7 +1562,7 @@ export const zh = {
     },
     "refused": {
       "3": "有数值超出了允许的范围，主机没有保存。",
-      "5": "这些设置在当前 Sunshine 版本里暂未开放，没有保存。",
+      "5": "这些设置当前不可用（主机没有对应功能、需要客户端支持，或需要调参通道），没有保存。原因见每一项。",
       "8": "Sunshine 无法写入配置文件，请检查磁盘空间与文件权限。",
       "9": "请求格式不正确，主机没有保存。",
       "other": "主机拒绝了这次保存。"
@@ -1654,9 +1654,9 @@ export const zh = {
       "only_modified": "只看已修改",
       "pending": {
         "count": "{count} 项",
-        "hint": "当前版本还没有接入这些选项。",
-        "reason": "当前版本暂未开放",
-        "title": "主机尚未实现"
+        "hint": "这些选项当前不可用，每一项写着原因。",
+        "reason": "当前不可用",
+        "title": "当前不可用的设置"
       },
       "presets": {
         "applied": "已应用“{name}”预设，保存后生效。",
@@ -1681,10 +1681,10 @@ export const zh = {
       "retry": "重试",
       "save": "保存",
       "save_ok": "已保存 {count} 项。",
-      "save_partial": "已保存 {applied} 项；另有 {unavailable} 项暂未开放，没有保存。",
+      "save_partial": "已保存 {applied} 项；另有 {unavailable} 项当前不可用，没有保存。",
       "saving": "保存中…",
       "search": "搜索设置",
-      "show_pending": "显示暂未开放的项",
+      "show_pending": "显示不可用的设置",
       "trigger_preview": {
         "feedback": "反馈",
         "mode": "预览类型",
@@ -1696,7 +1696,7 @@ export const zh = {
         "right": "右扳机"
       },
       "title": "DualSense 手柄调校",
-      "wired": "{wired} 项可调 · {pending} 项本版本尚未接入"
+      "wired": "{wired} 项可调 · {pending} 项当前不可用"
     }
   },
 
