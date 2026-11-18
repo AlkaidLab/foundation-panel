@@ -6,9 +6,11 @@ import { pickStreamMonitor, centredOn } from './streamMonitor.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
 import { isCurrentVersionUnknown, isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
+import { clipboardSyncState, clipboardSyncWorks } from './clipboardStatusView.js'
 
 // Module-scoped reactive flag so all sidebar instances share state.
 const clipboardSyncEnabled = ref(false)
+const clipboardSyncStateWord = ref('unknown')
 let clipboardSyncInitialised = false
 let clipboardSyncPollTimer = null
 // The gamepad test tool downloads or writes files on disk: while that runs nothing else may interrupt it (a restart would corrupt the write). The flag covers
@@ -451,7 +453,9 @@ export function useTools() {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       const status = await invoke('clipboard_sync_status')
-      clipboardSyncEnabled.value = status?.transport_state === 'connected' && status?.service_allowed !== false
+      // working = the agent is connected, the host hears it and the host's own setting says on; a setting nobody could read is not "on"
+      clipboardSyncEnabled.value = clipboardSyncWorks(status)
+      clipboardSyncStateWord.value = clipboardSyncState(status)
       return status
     } catch (err) {
       console.warn('[clipboard] status query failed:', err)
@@ -470,6 +474,10 @@ export function useTools() {
       ElMessage.warning(msg.agentInactive)
     } else if (status.service_allowed === false) {
       ElMessage.warning(msg.serviceDisabled)
+    } else if (status.transport_state === 'degraded') {
+      ElMessage.warning(msg.degraded)
+    } else if (status.transport_state === 'connected' && status.service_allowed !== true) {
+      ElMessage.warning(msg.capabilityUnknown)
     } else if (status.transport_state === 'connected') {
       ElMessage.success(msg.active)
     } else if (status.transport_state === 'connecting') {
@@ -509,6 +517,7 @@ export function useTools() {
     showClipboardSyncStatus,
     initClipboardSyncStatus,
     clipboardSyncEnabled,
+    clipboardSyncStateWord,
     controllerBusy,
     controllerBusyText,
   }

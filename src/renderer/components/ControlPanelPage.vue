@@ -36,7 +36,7 @@
         <MGroup>
           <MItem icon="content_paste" :title="t.sidebar.clipboardSync">
             <template #trail>
-              <MChip :tone="clipboardSyncEnabled ? 'ok' : 'neutral'" :icon="clipboardSyncEnabled ? 'check_circle' : ''">{{ clipboardSyncEnabled ? t.sidebar.connected : t.sidebar.notConnected }}</MChip>
+              <MChip :tone="clipboardSyncEnabled ? 'ok' : clipboardSyncState === 'degraded' ? 'warn' : 'neutral'" :icon="clipboardSyncEnabled ? 'check_circle' : clipboardSyncState === 'degraded' ? 'warning' : ''">{{ clipboardSyncEnabled ? t.sidebar.connected : clipboardSyncState === 'degraded' ? t.sidebar.degraded : t.sidebar.notConnected }}</MChip>
               <MButton variant="outlined" size="sm" @click="actions.showClipboardSyncStatus">{{ t.sidebar.viewStatus }}</MButton>
             </template>
           </MItem>
@@ -112,6 +112,8 @@ const props = defineProps({
   includePrerelease: Boolean,
   currentVersion: { type: String, default: '' },
   clipboardSyncEnabled: Boolean,
+  /** the word of the sync state (clipboardStatusView.js): connected | degraded | ... */
+  clipboardSyncState: { type: String, default: 'unknown' },
   isAdmin: Boolean,
   actions: { type: Object, required: true },
 })

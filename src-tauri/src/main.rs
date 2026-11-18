@@ -7,6 +7,7 @@ mod build_identity;
 mod component_inventory;
 mod client_fingerprint_rules;
 mod clipboard;
+mod clipboard_health;
 mod commands;
 mod crash;
 mod controller_hub;

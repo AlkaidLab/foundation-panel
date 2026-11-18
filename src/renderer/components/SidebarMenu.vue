@@ -73,6 +73,7 @@
           :include-prerelease="includePrerelease"
           :current-version="currentVersion"
           :clipboard-sync-enabled="clipboardSyncEnabled"
+          :clipboard-sync-state="clipboardSyncStateWord"
           :is-admin="isAdmin"
           :actions="toolsCtx"
           @theme-change="setTheme"
@@ -229,7 +230,7 @@ watch(() => router.currentRoute.value, (route) => useAppearance().setScope(route
 const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized)
 const {
   openUrl, cleanupCovers, restartAsAdmin, checkForUpdates, openGamepadTest, openStylusInputProbe,
-  showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled,
+  showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled, clipboardSyncStateWord,
 } = useTools()
 const { runtime, refresh: refreshRuntime } = useDeviceRuntime()
 // First run: the guide opens by itself when the host has no setup and no paired client
