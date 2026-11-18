@@ -1,12 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { firstImage, micIsReady, padIsReady, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
+import { firstImage, micIsReady, padIsReady, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
 import { buildCatalogue, buildCatalogueDetails, useJourneyHome, useReleaseAssets, useStarCard, useSessionClock, useSystemInfo, reachProblemOf, registeredComponentStatus, createHistory, createHttpVddAdapter, createPairQr, createVddStore, saveSettingKey, vddStatusOf, recentKeys, rememberRecent, isLoopbackHost, createQueuedCalls, createSerialCalls } from 'foundation-ui/vue'
 import QRCode from 'qrcode'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
 import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { usePanelHome, seen, SETTLE_CAP_MS } from '../composables/usePanelHome.js'
 import { useHostReach } from '../composables/useHostReach.js'
+import { useDriverGuard } from '../composables/useDriverGuard.js'
 import { useGamepadType } from '../composables/useGamepadType.js'
 import { SPONSORS } from '../config/sponsors.js'
 import { openExternalUrl, sunshine, vdd as vddApi, virtualMicrophone } from '../tauri-adapter.js'
@@ -117,6 +118,8 @@ onMounted(() => { sampleAll(); sampler = setInterval(sampleAll, SAMPLE_SEC * 100
 onBeforeUnmount(() => clearInterval(sampler))
 // the address of the host API: a request waits for it (hostBase.js) instead of going to the panel's own origin with an empty prefix
 const base = () => hostBase(() => proxyUrl.value, () => sunshine.getProxyUrl())
+// the safe mode, the encoder check and a failure that lay in the graphics driver (the same component as the Web UI home)
+const { guard: driverGuard, dismiss: dismissDriver, retry: retryProbe } = useDriverGuard(base)
 // the shared virtual display control: the same store the settings use, here over the host API through the proxy and the tray commands
 const vddAdapter = createHttpVddAdapter({
   fetchJson: async (path, init) => (await hostFetch(base, path, init)).json(),
@@ -297,6 +300,7 @@ const supportSections = computed(() => [
       <MButton v-if="edit" variant="tonal" icon="check" @click="edit = false">{{ h.done }}</MButton>
       <MIconButton v-else icon="edit" data-coach="home-edit" :label="h.edit" @click="edit = true" />
     </template>
+    <MDriverGuardNotice :guard="driverGuard" :locale="String(locale)" :open="openExternalUrl" @dismiss="dismissDriver" @retry="retryProbe" />
     <MAnnouncementStrip v-if="announcements.top.value" :item="announcements.top.value" :total="announcements.unread.value" :texts="announceTexts" @dismiss="announcements.dismiss" @open-url="openExternalUrl" @open-list="announceOpen = true" />
     <MHomeDash v-model:edit="edit" :cards="cards" :details="allDetails" :ctx="dashCtx" storage-key="panel-home" :texts="dashTexts" :config="state.config" :locale="locale" @action="onAction" />
     <MAnnouncementSheet v-model="announceOpen" :items="announcements.list.value" :title="homeTexts(locale).annTitle" :texts="announceTexts" :close-label="h.done" @dismiss="announcements.dismiss" @open-url="openExternalUrl" />
