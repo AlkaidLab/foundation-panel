@@ -139,7 +139,7 @@ const catalogueInput = computed(() => {
   const p = perfSession.value
   return {
     sampleSec: SAMPLE_SEC, vddStore: state.vdd && state.vdd.installed !== false ? vddStore : null,
-    reach: hostReach.view.report, reachChecking: hostReach.view.status === 'loading', reachStatus: hostReach.view.status, reachCause: hostReach.view.cause, reachHttp: hostReach.view.http,
+    reach: hostReach.view.report, reachChecking: hostReach.view.status === 'loading', reachStatus: hostReach.view.status, reachCause: hostReach.view.cause, reachHttp: hostReach.view.http, reachProgress: hostReach.view.progress,
     sysinfo: nics.info.value,
     mic: props.runtime.mic,
     host: { version: state.version, update: props.updateAvailable ? h.value.update : '' },
