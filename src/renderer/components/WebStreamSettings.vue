@@ -161,9 +161,15 @@ watch([() => config.web_server.bind_address, httpsEnabled, certKeyPath, certPemP
 
 // ========== 方法 ==========
 
+// A read that was asked later is the newer one: an older answer that arrives after it (a page shown again reads at once) is dropped.
+let statusSeq = 0
+let appliedStatusSeq = 0
 async function refreshStatus() {
+  const seq = ++statusSeq
   try {
     const s = await moonlightWeb.getStatus()
+    if (seq < appliedStatusSeq) return
+    appliedStatusSeq = seq
     Object.assign(status, s)
     keptStatus = { ...status }
     known.value = true

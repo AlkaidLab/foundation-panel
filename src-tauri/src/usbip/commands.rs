@@ -32,6 +32,7 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let _fresh = super::status::fresh();
     let response = run_elevated(ElevatedRequest::Install).await?;
+    super::status::forget_kept();
     let reboot_recommended = response.message == "reboot_recommended";
     let mut status = super::status::usbip_get_status().await?;
     status.reboot_recommended = reboot_recommended;
@@ -47,6 +48,7 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let _fresh = super::status::fresh();
     run_elevated(ElevatedRequest::Cleanup).await?;
+    super::status::forget_kept();
     super::status::usbip_get_status().await
 }
 
@@ -67,6 +69,7 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
         );
     }
     let response = run_elevated(ElevatedRequest::ReplaceLegacy).await?;
+    super::status::forget_kept();
     let reboot_recommended = response.message == "reboot_recommended";
     let mut status = super::status::usbip_get_status().await?;
     status.reboot_recommended = reboot_recommended;

@@ -13,6 +13,10 @@
 use std::time::Duration;
 
 use crate::probe_cache::ProbeCache;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// The store is one file for every answer: a read-modify-write of it is one step at a time.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// How long one process keeps an answer before it checks the fingerprint against a new probe.
 const MEMO_TTL: Duration = Duration::from_secs(5 * 60);
@@ -120,6 +124,10 @@ pub(super) fn file_identity(path: &std::path::Path) -> String {
 pub(super) struct Memo {
     name: &'static str,
     cache: ProbeCache<(String, String)>,
+    /// Moves when the answer is dropped: a probe that started before cannot be kept after.
+    generation: AtomicU64,
+    /// The stored answer is read once, when the panel starts; later the five minutes end in a new probe.
+    restored: AtomicBool,
 }
 
 impl Memo {
@@ -127,16 +135,20 @@ impl Memo {
         Self {
             name,
             cache: ProbeCache::new(name, MEMO_TTL),
+            generation: AtomicU64::new(0),
+            restored: AtomicBool::new(false),
         }
     }
 
     pub(super) fn forget(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
         self.cache.invalidate();
+        let _step = STORE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         forget(self.name);
     }
 
-    /// The answer for `fingerprint`: the kept one, the stored one, or what `probe` returns now (`None` when the
-    /// probe failed; nothing is kept then).
+    /// The answer for `fingerprint`: the kept one, the stored one (the first time only), or what `probe` returns now
+    /// (`None` when the probe failed; nothing is kept then).
     pub(super) async fn get<F, Fut>(&self, fingerprint: &str, probe: F) -> Option<String>
     where
         F: Fn() -> Fut,
@@ -146,12 +158,19 @@ impl Memo {
             let loaded = self
                 .cache
                 .get(|| async {
-                    if let Some(value) = recall(self.name, fingerprint) {
-                        return Ok((fingerprint.to_string(), value));
+                    if !self.restored.swap(true, Ordering::AcqRel) {
+                        if let Some(value) = recall(self.name, fingerprint) {
+                            return Ok((fingerprint.to_string(), value));
+                        }
                     }
+                    let started = self.generation.load(Ordering::Acquire);
                     match probe().await {
                         Some(value) => {
-                            keep(self.name, fingerprint, &value);
+                            let _step = STORE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            // dropped while the probe ran: its answer is used once and not kept
+                            if self.generation.load(Ordering::Acquire) == started {
+                                keep(self.name, fingerprint, &value);
+                            }
                             Ok((fingerprint.to_string(), value))
                         }
                         None => Err(String::new()),

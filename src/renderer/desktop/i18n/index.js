@@ -230,7 +230,8 @@ async function syncLocalePreferences(locale, requestId) {
 
 function requestLocaleChange(value) {
   const normalized = normalizeDesktopLocale(value)
-  if (normalized === currentLocale.value) return
+  // choosing the language that is shown still cancels a switch whose file is on its way
+  if (normalized === currentLocale.value && pending.size === 0) return
 
   const requestId = createLocaleRequestId()
   setLatestLocaleRequest(requestId)

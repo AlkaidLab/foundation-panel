@@ -32,6 +32,8 @@ const compactLocaleFile = /[\\/]desktop[\\/]i18n[\\/](zh_TW|en_GB|en_US|de|fr|es
 const compactDesktopLocales = () => ({
   name: 'compact-desktop-locales',
   enforce: 'pre',
+  // the development server keeps modules by address: the English and Chinese tables it compares against could go stale there, and nothing is gained from a compact form
+  apply: 'build',
   async load(id) {
     const file = id.split('?')[0]
     const match = compactLocaleFile.exec(file)

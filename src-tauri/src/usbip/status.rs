@@ -34,6 +34,11 @@ fn drop_kept_answers() {
     super::signature::forget();
 }
 
+/// Drops the kept answers again after the elevated step, before the status that is returned is read.
+pub(super) fn forget_kept() {
+    drop_kept_answers();
+}
+
 pub(super) fn fresh() -> Fresh {
     drop_kept_answers();
     Fresh

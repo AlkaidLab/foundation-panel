@@ -44,16 +44,20 @@ pub(crate) fn classify_replace_exit_code(exit_code: Option<i32>) -> Result<Insta
     }
 }
 
-/// True when the host's `status` answer says this is an external installation the person may ask to replace.
-/// Anything unexpected is "no": the button only appears on a positive, well-formed answer.
+/// What the host's `status` answer says: `Some(true)` for an external installation the person may ask to replace, `Some(false)`
+/// for a well-formed answer that says otherwise, `None` for output that is not an answer (empty, not JSON).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn parse_host_answer(output: &str) -> Option<bool> {
+    let value =
+        serde_json::from_str::<serde_json::Value>(output.trim().trim_start_matches('\u{feff}')).ok()?;
+    value["ownership"].as_str()?;
+    Some(value["ownership"].as_str() == Some("external") && value["replaceable"].as_bool() == Some(true))
+}
+
+/// True only on a positive, well-formed answer: the button appears on nothing else.
+#[cfg(test)]
 pub(crate) fn parse_host_replaceable(output: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(output.trim().trim_start_matches('\u{feff}'))
-        .map(|value| {
-            value["ownership"].as_str() == Some("external")
-                && value["replaceable"].as_bool() == Some(true)
-        })
-        .unwrap_or(false)
+    parse_host_answer(output).unwrap_or(false)
 }
 
 /// Directory next to the Sunshine installation where the installer is staged.
@@ -167,9 +171,9 @@ async fn probe_host_replaceable(script: &std::path::Path) -> Option<bool> {
         .creation_flags(super::memo::BACKGROUND_PROBE_FLAGS);
     let child = command.spawn().ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => Some(parse_host_replaceable(
-            &String::from_utf8_lossy(&output.stdout),
-        )),
+        Ok(Ok(output)) if output.status.success() => {
+            parse_host_answer(&String::from_utf8_lossy(&output.stdout))
+        }
         _ => None,
     }
 }
@@ -296,6 +300,12 @@ mod tests {
         ] {
             assert!(!parse_host_replaceable(refused), "{refused}");
         }
+        // an answer that is not one (nothing, not JSON, no ownership) is kept by nobody: it is `None`, not a "no"
+        for unreadable in ["", "not json", "{}", r#"{"replaceable":true}"#] {
+            assert_eq!(parse_host_answer(unreadable), None, "{unreadable}");
+        }
+        assert_eq!(parse_host_answer(r#"{"ownership":"managed"}"#), Some(false));
+        assert_eq!(parse_host_answer(external), Some(true));
     }
 
     #[test]
