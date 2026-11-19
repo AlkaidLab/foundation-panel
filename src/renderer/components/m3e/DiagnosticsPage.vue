@@ -53,6 +53,7 @@
 </template>
 
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../../composables/pageVisibility.js'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { MDiagnostics, MDialog, MButton, MChip, MItem, diagnosticsTexts, guideTexts, coachTexts, remoteTexts, MGroup, MSection, useDialogs, useNotify } from 'foundation-ui/vue'
@@ -218,6 +219,6 @@ async function clearLogs() {
 async function exportLogs(format) {
   await exportPanelLogs({ invoke, format, texts: logText.value, alert: useDialogs().alert })
 }
-onMounted(() => { diag.loadFacts(); diag.start(); void refreshClipboard(); clipTimer = window.setInterval(refreshClipboard, 5000) })
-onBeforeUnmount(() => { window.clearInterval(clipTimer) })
+onMounted(() => { diag.loadFacts(); diag.start(); void refreshClipboard(); clipTimer = setVisibleInterval(refreshClipboard, 5000, { resume: true }) })
+onBeforeUnmount(() => { clearVisibleInterval(clipTimer) })
 </script>

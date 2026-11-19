@@ -211,8 +211,9 @@ export function useUsbTransport() {
   })
 
   sharedOperation.onOtherChange(() => refreshStatus({ afterCurrent: true, force: true }))
-  onMounted(() => refreshStatus())
+  // Entering the page reads the devices again: the shared answer may be minutes old, and the native side answers this from cheap probes.
+  onMounted(() => refreshStatus({ force: true }))
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。
-  onActivated(() => refreshStatus())
+  onActivated(() => refreshStatus({ force: true }))
   return { status, statusLoading, statusLoaded, statusProbeFailed, installing, cleaning, replacing, attachedDevices, needsCleanup, canReplaceLegacy, transportBusy, statusClass, statusTitle, friendlyError, refreshStatus, installTransport, cleanupResidual, replaceLegacy }
 }

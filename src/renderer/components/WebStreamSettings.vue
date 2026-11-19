@@ -66,6 +66,7 @@ let keptStatus = null
 </script>
 
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../composables/pageVisibility.js'
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from '../composables/notifyMessage.js'
 import { MPage, MGroup, MSection, MItem, MSwitchItem, MSliderItem, MChoiceItem, MValueItem, MFooter, MStatusPill, MProgress, MButton, MIconButton, MChip, useSubpage } from 'foundation-ui/vue'
@@ -202,12 +203,12 @@ async function loadConfig() {
 }
 
 function startPolling() {
-  pollTimer = setInterval(refreshStatus, 5000)
+  pollTimer = setVisibleInterval(refreshStatus, 5000, { resume: true })
 }
 
 function stopPolling() {
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearVisibleInterval(pollTimer)
     pollTimer = null
   }
 }
