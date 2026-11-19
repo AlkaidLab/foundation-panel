@@ -54,7 +54,7 @@ const messages = {
     installSetup: '安装并配置',
     allowUse: '允许串流使用 ',
     nrPermissionHint:
-      '这是功能许可开关，不代表当前画面已增强。默认行为在应用设置中选择，正在串流时可到“当前串流”即时开关。',
+      '全局默认开关：开启后，“自动”模式的应用串流默认启用 DLSS NR；应用“开启/关闭”优先。串流中的开关仅临时生效。',
     hdrPermissionHint:
       '允许应用使用 SDR 转 HDR 功能；是否启用由应用配置决定，下次连接时生效。',
     appDefaults: '应用默认设置',
@@ -142,7 +142,7 @@ const messages = {
     installSetup: 'Install & set up',
     allowUse: 'Allow streams to use ',
     nrPermissionHint:
-      'Makes the feature available; it does not indicate an active effect. Set app defaults in application settings, or toggle the current stream live.',
+      'Global default: apps set to Auto start with DLSS NR; explicit On/Off takes priority. The in-stream switch is temporary.',
     hdrPermissionHint:
       'Allows apps to use SDR-to-HDR conversion. Per-app settings take effect on the next connection.',
     appDefaults: 'Application defaults',
