@@ -769,7 +769,7 @@ pub async fn component_set_enabled(enabled: bool) -> Result<EnhancementComponent
         .map_err(|_| "HDR-OP-001: another component operation is running".to_string())?;
     let saved = select_backend_config(
         || supported_config(),
-        |current| crate::hdr_enhancement::save_config(current, None),
+        |current| crate::hdr_enhanced::save_config(current, None),
         enabled,
     )
     .await?;
@@ -780,12 +780,12 @@ async fn select_backend_config<Load, LoadFuture, Save, SaveFuture>(
     mut load: Load,
     mut save: Save,
     enabled: bool,
-) -> Result<crate::hdr_enhancement::ConfigState, String>
+) -> Result<crate::hdr_enhanced::ConfigState, String>
 where
     Load: FnMut() -> LoadFuture,
-    LoadFuture: std::future::Future<Output = Result<crate::hdr_enhancement::ConfigState, String>>,
-    Save: FnMut(crate::hdr_enhancement::ConfigState) -> SaveFuture,
-    SaveFuture: std::future::Future<Output = Result<crate::hdr_enhancement::ConfigState, String>>,
+    LoadFuture: std::future::Future<Output = Result<crate::hdr_enhanced::ConfigState, String>>,
+    Save: FnMut(crate::hdr_enhanced::ConfigState) -> SaveFuture,
+    SaveFuture: std::future::Future<Output = Result<crate::hdr_enhanced::ConfigState, String>>,
 {
     // The toggle touches one field; another window may have saved since the
     // read. Reload and re-apply only this component's selection instead of
