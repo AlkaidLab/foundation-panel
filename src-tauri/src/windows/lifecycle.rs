@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager, Runtime, WebviewWindow, WindowEvent};
 #[cfg(target_os = "windows")]
 mod display;
 mod dpi_cover;
+mod occlusion;
 const DISPLAY_DEBOUNCE: Duration = Duration::from_millis(300);
 
 const STARTUP_GRACE: Duration = Duration::from_secs(90);
@@ -52,6 +53,8 @@ struct State {
     recoveries: u8,
     display_revision: u64,
     refresh_after: Option<Instant>,
+    /// Covered by other windows (occlusion.rs): the page is told it is hidden while it is.
+    occlusion: occlusion::Occlusion,
 }
 
 impl State {
@@ -66,6 +69,7 @@ impl State {
             recoveries: 0,
             display_revision: 0,
             refresh_after: None,
+            occlusion: occlusion::Occlusion::default(),
         }
     }
 
@@ -241,6 +245,8 @@ impl Panel {
             WindowEvent::Focused(focused) => {
                 if *focused {
                     crate::proxy_server::reset_fast_fail();
+                    // an activated window is on top of the others
+                    panel.state.lock().unwrap().occlusion.clear();
                 }
                 reconcile(&handle, &panel);
             }
@@ -357,9 +363,11 @@ fn is_active<R: Runtime>(window: &WebviewWindow<R>) -> bool {
     window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false)
 }
 
-fn notify_visibility<R: Runtime>(window: &WebviewWindow<R>, active: bool) {
+/// The page is told it is visible when the window is shown and not minimized and no other windows cover it.
+fn notify_visibility<R: Runtime>(window: &WebviewWindow<R>, panel: &Panel, active: bool) {
+    let visible = active && !panel.state.lock().unwrap().occlusion.occluded;
     let _ = window.eval(format!(
-        "if(window.__setWebviewVisibility)window.__setWebviewVisibility({active})"
+        "if(window.__setWebviewVisibility)window.__setWebviewVisibility({visible})"
     ));
 }
 
@@ -377,7 +385,7 @@ fn reconcile<R: Runtime>(window: &WebviewWindow<R>, panel: &Panel) {
             }
             state.reconcile(active, now)
         };
-        notify_visibility(&handle, active);
+        notify_visibility(&handle, &panel, active);
         match action {
             Some(Action::Resume(revision)) => {
                 log::debug!(
@@ -523,11 +531,50 @@ fn apply_render<R: Runtime>(window: &WebviewWindow<R>, panel: Panel, revision: u
     }
 }
 
+/// One look at every panel: is its window covered by other windows (occlusion.rs)? A change goes to the page.
+fn watch_occlusion(app: &AppHandle) {
+    let panels: Vec<_> = PANELS
+        .lock()
+        .unwrap()
+        .panels
+        .iter()
+        .map(|(label, panel)| (label.clone(), panel.clone()))
+        .collect();
+    for (label, panel) in panels {
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        let handle = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let active = is_active(&handle);
+            // a hidden or minimized window is asleep already: it is not asked
+            let covered = active && occlusion::covered(&handle);
+            let changed = panel.state.lock().unwrap().occlusion.observe(covered);
+            if let Some(occluded) = changed {
+                log::debug!(
+                    "Panel {} generation {} -> {}",
+                    handle.label(),
+                    panel.generation,
+                    if occluded { "covered" } else { "uncovered" }
+                );
+                notify_visibility(&handle, &panel, active);
+            }
+        });
+    }
+}
+
 pub(crate) fn start_monitor(app: AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
+        let mut occlusion = tokio::time::interval(Duration::from_secs(1));
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = occlusion.tick() => {
+                    watch_occlusion(&app);
+                    continue;
+                }
+                _ = interval.tick() => {}
+            }
             let panels: Vec<_> = PANELS
                 .lock()
                 .unwrap()

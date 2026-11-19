@@ -198,7 +198,7 @@ fn check_vigem() -> VigemStatus {
 /// run on the async runtime, which the proxy and every other command share), once for the pages that ask together, and its answer is kept a while. The commands that change
 /// the driver drop it.
 static VIGEM_STATUS: crate::probe_cache::ProbeCache<VigemStatus> =
-    crate::probe_cache::ProbeCache::new("vigem status", std::time::Duration::from_secs(20));
+    crate::probe_cache::ProbeCache::new("vigem status", std::time::Duration::from_secs(300));
 
 /// 获取 ViGEmBus 驱动状态
 #[tauri::command]

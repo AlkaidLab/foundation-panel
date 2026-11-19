@@ -87,7 +87,7 @@ export const dualsenseStatusChannel = createStatusChannel(() => dualsense.getSta
 export const usbipStatusChannel = createStatusChannel(() => usbip.getStatus(), STATUS_TTL_MS)
 
 // 驱动/外设探测会 spawn PowerShell（秒级），缓存收益最大。
-export const vigemStatusChannel = createStatusChannel(() => vigem.getStatus(), 10_000)
+export const vigemStatusChannel = createStatusChannel(() => vigem.getStatus(), STATUS_TTL_MS)
 
 // 麦克风是轻量 HTTP 且状态变化较活：TTL 取短，只用于合并并发读取。
 export const micStatusChannel = createStatusChannel(() => virtualMicrophone.getStatus(), 2_000)
