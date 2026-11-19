@@ -521,7 +521,8 @@ const currentRow = computed(() => {
 const settingsPlace = (e) => (e.params?.tab === 'display' || e.params?.tab === 'audio' || e.params?.tab === 'input' ? '' : railLabel('config'))
 const searchItems = computed(() => [
   ...Object.keys(PAGES)
-    .filter((id) => PAGES[id].list !== false)
+    // 恢复默认设置 is found as an action (resetSettings): the page is not a second result of the same name
+    .filter((id) => PAGES[id].list !== false && id !== ROUTES.RESET)
     .flatMap((id) => {
       const item = pageItems(t.value, PAGES[id].rail, runtimeView.value).find((p) => p.id === id)
       return item ? [{ id, title: item.label, path: railLabel(PAGES[id].rail), icon: item.icon, route: id, keywords: rowKeywords(ROW_OF_ROUTE[id]) }] : []

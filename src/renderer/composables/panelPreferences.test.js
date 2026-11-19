@@ -42,6 +42,7 @@ test('the panel shows the page in the system rail, finds it from the search, the
   const shell = read('../components/SidebarMenu.vue')
   assert.match(shell, /<ResetSettingsPage v-else-if="entry\.id === ROUTES\.RESET"/)
   assert.match(shell, /resetSettings: \(\) => jumpTo\(ROUTES\.RESET\)/)
+  assert.match(shell, /id !== ROUTES\.RESET\)/, 'the page is not a second search result of the same name')
   assert.match(shell, /data\.page === 'reset'\) router\.navigate\(ROUTES\.RESET\)/)
   assert.match(shell, /@open-reset="jumpTo\(ROUTES\.RESET\)"/)
   assert.match(shell, /ROUTES\.DOCTOR, ROUTES\.RESET,/, 'the preferences can be reset while the host is away')
