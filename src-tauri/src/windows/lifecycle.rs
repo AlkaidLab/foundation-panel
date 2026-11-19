@@ -436,11 +436,15 @@ fn apply_render<R: Runtime>(window: &WebviewWindow<R>, panel: Panel, revision: u
                 panel.state.lock().unwrap().resume_failed(revision);
                 log::warn!("WebView resume failed: {error}");
             }
+            // Full performance again; a runtime without the interface keeps its default.
+            set_memory_target(&controller, false);
             return;
         }
         let core = controller
             .CoreWebView2()
             .and_then(|core| core.cast::<ICoreWebView2_3>());
+        // Hidden: let the engine drop caches it can rebuild (restored to Normal when shown).
+        set_memory_target(&controller, true);
         let callback_panel = panel.clone();
         let callback_controller = controller.clone();
         let completed = TrySuspendCompletedHandler::create(Box::new(move |result, suspended| {
@@ -452,6 +456,7 @@ fn apply_render<R: Runtime>(window: &WebviewWindow<R>, panel: Panel, revision: u
                 .suspend_completed(revision);
             if current && !succeeded {
                 let _ = callback_controller.SetIsVisible(true);
+                set_memory_target(&callback_controller, false);
             }
             Ok(())
         }));
@@ -462,6 +467,7 @@ fn apply_render<R: Runtime>(window: &WebviewWindow<R>, panel: Panel, revision: u
         if let Err(error) = result {
             if panel.state.lock().unwrap().suspend_completed(revision) {
                 let _ = controller.SetIsVisible(true);
+                set_memory_target(&controller, false);
             }
             log::warn!("WebView suspension failed: {error}");
         }
@@ -473,6 +479,40 @@ fn apply_render<R: Runtime>(window: &WebviewWindow<R>, panel: Panel, revision: u
             failed.state.lock().unwrap().resume_failed(revision);
         }
         log::warn!("WebView lifecycle dispatch failed: {error}");
+    }
+}
+
+/// Lowers the engine's memory target while the panel is hidden and restores it when shown. Microsoft's WebView2
+/// performance guidance (Learn, "Performance best practices", ms.date 2026-01-12): "Set MemoryUsageTargetLevel =
+/// CoreWebView2MemoryUsageTargetLevel.Low on inactive WebViews to reduce memory usage ... When the WebView2 instance is
+/// again active, restore the target level to Normal". The interface is ICoreWebView2_19; an older runtime does not
+/// implement it, and the failed query is ignored (the panel then behaves exactly as before). It only changes how eagerly
+/// the engine releases its caches: it never reloads the page.
+#[cfg(target_os = "windows")]
+unsafe fn set_memory_target(
+    controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller,
+    low: bool,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        ICoreWebView2_19,
+    };
+    use wv2_windows_core::Interface;
+    unsafe {
+        let Ok(core19) = controller
+            .CoreWebView2()
+            .and_then(|core| core.cast::<ICoreWebView2_19>())
+        else {
+            return;
+        };
+        let level = if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        };
+        if let Err(error) = core19.SetMemoryUsageTargetLevel(level) {
+            log::debug!("WebView memory target not applied: {error}");
+        }
     }
 }
 
