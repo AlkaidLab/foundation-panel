@@ -1,11 +1,12 @@
 //! Answers of the two probes that start PowerShell (the signature of the registered driver and the host helper's
-//! `status`), kept so that a status read does not start a process every time.
+//! `status`), kept so that a status read does not start a process every time (a probe takes about twelve seconds on a
+//! busy machine, and the page waits for it).
 //!
 //! Each answer is stored with a fingerprint of everything it was derived from (the driver file's size and time, the
-//! registered installations, the helper script's size and time). A read with the same fingerprint reuses the answer; a
+//! registered installations, the helper script's size and time). A read with the same fingerprint reuses the answer (a day at most); a
 //! different one probes again at once, so an installation changed outside the panel is still noticed. The answer is
-//! also written to a small file next to the panel's settings (valid for a day), so the first read after the panel
-//! starts does not start PowerShell either. A command that changes the installation calls `forget_all()` through
+//! also written to a small file next to the panel's settings, so the first read after the panel starts does not start
+//! PowerShell either. A command that changes the installation calls `forget_all()` through
 //! `status::fresh()`, before and after it runs. Failed or unreadable probes are never kept.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -18,9 +19,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// The store is one file for every answer: a read-modify-write of it is one step at a time.
 static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// How long one process keeps an answer before it checks the fingerprint against a new probe.
-const MEMO_TTL: Duration = Duration::from_secs(5 * 60);
-/// How old a stored answer may be when the panel starts.
+/// How old an answer may be, kept in the process or stored: a day. What it was derived from is in its fingerprint, so a changed
+/// installation is noticed at once whatever the age; the age only bounds what the fingerprint cannot see. A probe takes seconds
+/// (PowerShell) and the page that asks waits for it, so it is not repeated every few minutes.
+const MEMO_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const STORED_MAX_AGE_SECS: u64 = 24 * 60 * 60;
 const STORE_FILE: &str = "probe-cache.txt";
 
