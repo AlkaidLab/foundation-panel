@@ -291,6 +291,14 @@ mod tests {
     }
 
     #[test]
+    fn restoring_the_defaults_writes_the_defaults_as_they_are() {
+        // 恢复 Panel 默认偏好 saves `TrayPrefs::default()` through `save`, which normalises: the record on disk must be the default, with the layout left to the default (None)
+        let d = TrayPrefs::default();
+        assert_eq!(d.clone().normalized(), d);
+        assert!(d.tiles.is_none() && d.sliders.is_none());
+    }
+
+    #[test]
     fn the_defaults_are_v1_on_the_right_click_the_main_window_on_the_click_and_nothing_on_a_double_click() {
         let d = TrayPrefs::default();
         assert_eq!((d.right.as_str(), d.click.as_str(), d.double.as_str(), d.force_native), ("v1", "panel", "none", false));

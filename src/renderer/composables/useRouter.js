@@ -47,6 +47,7 @@ export const ROUTES = {
   SUNSHINE_SERVICE: 'sunshine-service', // 系统 › Sunshine 服务: the SCM, process and API layers, the startup type, start, stop, restart
   DIAGNOSTICS: 'diagnostics',
   DOCTOR: 'doctor', // 体检: the host's health check
+  RESET: 'reset', // 恢复默认设置: the host's settings back to the defaults (and back), and the preferences of the panel
   NETWORK_OVERVIEW: 'network-overview', // 网络概览: adapters, public IPv4/IPv6, NAT type, CGNAT, UPnP and firewall (GET /api/network/overview)
   // Pages of the Web UI shown in the embedded frame
   WEB_CLIENTS: 'web-clients',
@@ -110,6 +111,7 @@ export const PAGES = {
   [ROUTES.TEST_TOOLS]: { rail: 'system', list: false, push: true },
   [ROUTES.DIAGNOSTICS]: { rail: 'system' },
   [ROUTES.DOCTOR]: { rail: 'system' },
+  [ROUTES.RESET]: { rail: 'system' },
   [ROUTES.NETWORK_OVERVIEW]: { rail: 'system' },
   [ROUTES.AI_ASSISTANT]: { rail: 'assistant', list: false }, // 米塔 AI: the chat takes the whole width, its settings are behind the gear of the chat header
   [ROUTES.WEB_TROUBLESHOOTING]: { rail: 'system' },

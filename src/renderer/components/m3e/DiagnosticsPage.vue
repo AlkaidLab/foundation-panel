@@ -66,7 +66,7 @@ import { saveThroughDialog } from '../../shared/saveDialog.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 
 // 诊断与日志. The same page as the Web UI. What only this window can read (the panel log, the device status) is passed as facts.
-const emit = defineEmits(['back', 'go', 'webui-navigate', 'open-guide', 'open-remote'])
+const emit = defineEmits(['back', 'go', 'webui-navigate', 'open-guide', 'open-remote', 'open-reset'])
 const { t, locale } = useI18n()
 const logText = computed(() => t.value.logConsole)
 const refreshing = ref(false)
@@ -169,6 +169,7 @@ async function downloadLogs() {
 const commands = computed(() => ({
   restart,
   resetDisplay: diag.platform.value === 'windows' ? resetDisplay : undefined,
+  resetSettings: () => emit('open-reset'),
   ai: () => ai.open(),
   diagnose: () => ai.diagnose(diag.text.value),
   downloadLogs,

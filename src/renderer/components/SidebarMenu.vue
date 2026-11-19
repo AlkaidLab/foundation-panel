@@ -58,7 +58,9 @@
           @webui-navigate="openWebUi"
           @open-guide="openWelcome"
           @open-remote="remoteOpen = true"
+          @open-reset="jumpTo(ROUTES.RESET)"
         />
+        <ResetSettingsPage v-else-if="entry.id === ROUTES.RESET" @back="back" />
         <DoctorPage v-else-if="entry.id === ROUTES.DOCTOR" :autostart="entry.params?.autostart || false" @go="goDoctorTarget" @restart="hostConn.restart('service')" @ai="askMita" />
         <MAnnouncementPage v-else-if="entry.id === ROUTES.ANNOUNCEMENTS" :items="announcements.list.value" :locale="locale" :acked-at="ackedAt" :open-id="entry.params?.id || ''" :on-refresh="() => announcements.refresh(true)" @dismiss="announcements.dismiss" @read="announcements.read" @open-url="actions_openExternal" @back="back" />
         <DevHub v-else-if="entry.id === ROUTES.DEV_HUB" :locale="locale" :pages="devHubPages" @open="(p) => openRoute(p.route)" />
@@ -143,7 +145,7 @@ import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
@@ -183,6 +185,7 @@ import LiveSessionPage from './m3e/LiveSessionPage.vue'
 import RtssPage from './m3e/RtssPage.vue'
 import NetworkOverviewPage from './m3e/NetworkOverviewPage.vue'
 import DiagnosticsPage from './m3e/DiagnosticsPage.vue'
+import ResetSettingsPage from './m3e/ResetSettingsPage.vue'
 import DoctorPage from './m3e/DoctorPage.vue'
 import { MITA_PENDING_PROMPT } from '../composables/useAiAssistant.js'
 import { useDeviceRuntime } from '../composables/useDeviceRuntime.js'
@@ -398,7 +401,7 @@ window.addEventListener('panel-force-host-state', forceHostState)
 window.addEventListener('panel-force-proxy-state', forceProxyState)
 onBeforeUnmount(() => { window.removeEventListener('panel-force-host-state', forceHostState); window.removeEventListener('panel-force-proxy-state', forceProxyState) })
 // the pages of the panel itself, which work without the host: 面板设置, 个性化, 帮助与关于, 公告 (from the announcement feed), the diagnostics, 米塔 AI, the guide
-const NEEDS_NO_HOST = new Set([ROUTES.DOCTOR, ROUTES.SUNSHINE_SERVICE, ROUTES.DEVELOPER, ROUTES.PANEL_SETTINGS, ...APPEARANCE_ROUTES, ROUTES.AI_ASSISTANT, ROUTES.HELP, ROUTES.ABOUT, ROUTES.ANNOUNCEMENTS, ROUTES.SETTINGS_HUB, ROUTES.DIAGNOSTICS, ROUTES.WELCOME, ROUTES.DEV_ISSUES, ROUTES.DEV_LOGS, ROUTES.DEV_API, ROUTES.DEV_FLAGS, ROUTES.DEV_BUILD, ROUTES.DEV_TESTS, ROUTES.DEV_HUB])
+const NEEDS_NO_HOST = new Set([ROUTES.DOCTOR, ROUTES.RESET, ROUTES.SUNSHINE_SERVICE, ROUTES.DEVELOPER, ROUTES.PANEL_SETTINGS, ...APPEARANCE_ROUTES, ROUTES.AI_ASSISTANT, ROUTES.HELP, ROUTES.ABOUT, ROUTES.ANNOUNCEMENTS, ROUTES.SETTINGS_HUB, ROUTES.DIAGNOSTICS, ROUTES.WELCOME, ROUTES.DEV_ISSUES, ROUTES.DEV_LOGS, ROUTES.DEV_API, ROUTES.DEV_FLAGS, ROUTES.DEV_BUILD, ROUTES.DEV_TESTS, ROUTES.DEV_HUB])
 // The host cannot be used for one of three causes, and the content area is then ONE status page (MScene status): the host is down, it runs and does not answer, or the panel's own proxy does not answer the window.
 // The rail and the caption bar stay: the pages of the panel itself (NEEDS_NO_HOST) still work and open as always. What needs the host does not look live: the pages give way to the status page and are inert, the
 // frame stays mounted but hidden, so an unsaved edit is there when the connection is back, and 连接设备 (it pairs through the host) is disabled.
@@ -467,7 +470,7 @@ const railLabel = (id) => (id === 'developer' ? devmodeTexts(locale.value).rail 
 const developerMode = useDeveloperMode()
 const devActivity = useDevActivity() // the dot of the 开发者 rail: something new in the host's repository since the last look at Issue 与 PR
 watch(developerMode.enabled, (on) => { if (on) { developerOverlays(); devActivity.start() } else if (!on) { devActivity.stop(); developerOverlays().set({ ...DEFAULT_FLAGS }); if (nav.rail.value === 'developer') leaveDeveloper() } }, { immediate: true })
-const runtimeView = computed(() => ({ ...runtime, developer: developerMode.enabled.value, dev: devmodeTexts(locale.value), developerTitle: developerTexts(locale.value).title, rtssInstalled: rtssInstalled.value === true, lines: settingsList.lines.value, statusTitle: statusTexts(locale.value).title, serviceTitle: serviceTexts(locale.value).title, diagTitle: diagnosticsTexts(locale.value).title, doctorTitle: doctorTexts(locale.value).title }))
+const runtimeView = computed(() => ({ ...runtime, developer: developerMode.enabled.value, dev: devmodeTexts(locale.value), developerTitle: developerTexts(locale.value).title, rtssInstalled: rtssInstalled.value === true, lines: settingsList.lines.value, statusTitle: statusTexts(locale.value).title, serviceTitle: serviceTexts(locale.value).title, diagTitle: diagnosticsTexts(locale.value).title, doctorTitle: doctorTexts(locale.value).title, resetTitle: resetTexts(locale.value).title }))
 const listItems = (id) => pageItems(t.value, id, runtimeView.value)
 // The stream settings are the shared model (categories in groups with a live line, search of every setting, recently used)
 const hostConfig = ref(null)
@@ -632,6 +635,7 @@ const actionHandlers = {
   quitHost: () => hostAction('/api/boom', diagnosticsTexts(locale.value).boom, 'GET'),
   openDesktop: () => openBigScreenWithNotice((m) => useNotify().snack(m), t.value.sidebar.openBigScreenFailed),
   doctor: () => openDoctor(),
+  resetSettings: () => jumpTo(ROUTES.RESET),
   // 反馈: the form of MErrorHost (mounted below, so it is always there); the help page has the same row
   feedback: () => { useErrors().reportFeedback() },
 }
@@ -766,6 +770,7 @@ const onFrameMessage = (event) => {
   // DualSense transport that only the panel reads
   else if (data?.type === 'foundation-open' && data.page === 'controller-test') openGamepadTest()
   else if (data?.type === 'foundation-open' && data.page === 'components') router.navigate(ROUTES.COMPONENTS)
+  else if (data?.type === 'foundation-open' && data.page === 'reset') router.navigate(ROUTES.RESET)
   else if (data?.type === 'foundation-open' && data.page === 'hdr-enhanced') router.navigate(ROUTES.HDR_ENHANCED)
   else if (data?.type === 'foundation-ds5-status-request') pushDs5Status()}
 onMounted(() => { window.addEventListener('message', onFrameMessage); loadHostData(); componentStatus.start(60000); startPopupMenu() })
