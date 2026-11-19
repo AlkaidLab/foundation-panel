@@ -104,7 +104,7 @@ const messages = {
     "hdrBusy": "RTX HDR is using the enhancement slot",
     "unsupported": "This host or capture path does not support live switching",
     "fallback": "Using the original image. Switch off and on to retry.",
-    "componentUnavailable": "DLSS NR is not allowed for streaming yet. Enable it under Enhancement manager → Components; this stream retries automatically. If it does not recover, switch it off and on again.",
+    "componentUnavailable": "DLSS NR is not allowed for streaming yet. Enable it under Image enhancement → Enhancements; this stream retries automatically. If it does not recover, switch it off and on again.",
     "wait": "Waiting for the next frame. First use needs initialization.",
     "retry": "Retry",
     "disconnected": "Cannot read host status. Check that Sunshine is running.",
