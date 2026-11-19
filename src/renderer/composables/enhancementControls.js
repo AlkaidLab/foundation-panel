@@ -61,6 +61,7 @@ const messages = {
     setupHelp: '安装需要什么？',
     usageNotes: '功能说明与注意事项',
     permissionSaved: '功能设置已保存。应用默认配置与当前串流效果分别管理。',
+    permissionSaveFailed: '功能设置未保存，请重试',
     needsInstall: '待安装',
     needsSetup: '需要配置',
     ready: '已就绪',
@@ -150,6 +151,7 @@ const messages = {
     usageNotes: 'Usage notes',
     permissionSaved:
       'Feature setting saved. App defaults and live-stream effects are managed separately.',
+    permissionSaveFailed: 'Feature setting was not saved. Try again.',
     needsInstall: 'Not installed',
     needsSetup: 'Setup required',
     ready: 'Ready',
