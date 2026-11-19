@@ -118,7 +118,7 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
             ElevatedRequest::ReplaceLegacy => {
                 super::install::ensure_no_active_session().await?;
                 // The elevated process asks the host's helper itself: the window's earlier answer is not trusted.
-                if !super::install::host_replaceable().await {
+                if !super::install::host_replaceable_fresh().await {
                     return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());
                 }
                 let result = super::install::run_host_package("replace").await?;

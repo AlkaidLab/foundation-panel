@@ -7,9 +7,21 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "windows")]
+static SIGNATURE: super::memo::Memo<DriverSignature> = super::memo::Memo::new("usbip.signature");
+
+/// Drops the kept signature (the driver is about to change).
+#[cfg(target_os = "windows")]
+pub(super) fn forget() {
+    SIGNATURE.forget();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn forget() {}
+
 /// `signed` and `unsigned` are verdicts; `invalid` means a signature exists but
 /// does not verify; `unknown` means it could not be read.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DriverSignature {
     pub state: String,
     pub signer: String,
@@ -76,7 +88,7 @@ async fn signature_of(path: &std::path::Path) -> DriverSignature {
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+        .creation_flags(super::memo::BACKGROUND_PROBE_FLAGS);
     match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             parse_signature_report(&crate::text_encoding::decode_console_bytes(&output.stdout))
@@ -85,13 +97,21 @@ async fn signature_of(path: &std::path::Path) -> DriverSignature {
     }
 }
 
-/// Reads the signature of the driver the system has registered for the transport.
+/// Reads the signature of the driver the system has registered for the transport. The verdict belongs to the driver
+/// file (size and time) and is kept (memo.rs), so PowerShell starts once per driver, not once per status read.
 #[cfg(target_os = "windows")]
 pub(crate) async fn driver_signature() -> DriverSignature {
-    match super::manager::registered_driver_path() {
-        Ok(path) => signature_of(&path).await,
-        Err(_) => unknown(),
-    }
+    let Ok(path) = super::manager::registered_driver_path() else {
+        return unknown();
+    };
+    let fingerprint = super::memo::file_identity(&path);
+    SIGNATURE
+        .get(&fingerprint, || async {
+            // An unreadable answer is not a verdict: it is not kept.
+            Some(signature_of(&path).await).filter(|signature| signature.state != "unknown")
+        })
+        .await
+        .unwrap_or_else(unknown)
 }
 
 #[cfg(not(target_os = "windows"))]

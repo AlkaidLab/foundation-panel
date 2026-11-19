@@ -11,6 +11,7 @@ mod elevated;
 mod exec;
 mod install;
 mod manager;
+mod memo;
 mod signature;
 mod status;
 
@@ -49,7 +50,7 @@ pub struct UsbipAttachedDevice {
     pub mode: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct UsbipStatus {
     pub supported: bool,
     pub installed: bool,

@@ -24,10 +24,41 @@ pub(super) fn detail_error_code(detail: &str) -> String {
     }
 }
 
-/// Spawns a `usbip.exe port` subprocess on every call to enumerate attached
-/// devices. Intended for on-demand refreshes — do not poll at high frequency.
+/// The status answer is shared for a moment: the USB page, the DualSense status and the component cards ask for it
+/// together, and one probe answers all of them. Anything that changes what it reports (`fresh()`) drops it.
+static STATUS: crate::probe_cache::ProbeCache<UsbipStatus> =
+    crate::probe_cache::ProbeCache::new("usbip status", std::time::Duration::from_secs(3));
+
+/// A command that changes the installation or the attached devices: the shared answers are dropped when it starts
+/// and again when it ends, however it ends, so a read in between cannot keep the old state.
+pub(super) struct Fresh;
+
+fn drop_shared_answers() {
+    STATUS.invalidate();
+    super::install::forget_replaceable();
+    super::signature::forget();
+}
+
+pub(super) fn fresh() -> Fresh {
+    drop_shared_answers();
+    Fresh
+}
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        drop_shared_answers();
+    }
+}
+
+/// Spawns a `usbip.exe port` subprocess to enumerate attached devices when no recent answer exists. The two
+/// PowerShell-backed parts (the driver signature, the host helper's `replaceable`) are kept while their inputs
+/// are unchanged (memo.rs).
 #[tauri::command]
 pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
+    STATUS.get(probe_status).await
+}
+
+async fn probe_status() -> Result<UsbipStatus, String> {
     #[cfg(not(target_os = "windows"))]
     return Ok(UsbipStatus {
         externally_managed: false,

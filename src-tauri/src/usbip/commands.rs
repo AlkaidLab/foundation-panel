@@ -30,6 +30,7 @@ pub async fn usbip_list_remote(
 #[tauri::command]
 pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
     let response = run_elevated(ElevatedRequest::Install).await?;
     let reboot_recommended = response.message == "reboot_recommended";
     let mut status = super::status::usbip_get_status().await?;
@@ -44,6 +45,7 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
     run_elevated(ElevatedRequest::Cleanup).await?;
     super::status::usbip_get_status().await
 }
@@ -53,6 +55,7 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
     let before = super::status::usbip_get_status().await?;
     if !before.replaceable {
         return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());
@@ -82,6 +85,7 @@ pub async fn usbip_attach(
         bus_id: validate_bus_id(&bus_id)?,
     };
     let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
     let response = run_elevated(request).await?;
     response
         .port
@@ -94,6 +98,7 @@ pub async fn usbip_detach(port: u8) -> Result<(), String> {
         return Err("USBIP-INPUT-004: the local USB/IP port is invalid".to_string());
     }
     let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
     run_elevated(ElevatedRequest::Detach { port }).await?;
     Ok(())
 }
