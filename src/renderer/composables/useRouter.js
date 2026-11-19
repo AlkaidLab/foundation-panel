@@ -1,5 +1,5 @@
 import { computed } from 'vue'
-import { createNav } from 'foundation-ui/vue'
+import { createNav, isCompactNav } from 'foundation-ui/vue'
 import { settingsHash, DEFAULT_PLACE, parentPlace } from 'foundation-ui/settings/index.js'
 import { useI18n } from '../desktop/i18n/index.js'
 
@@ -193,7 +193,8 @@ for (const [id, p] of Object.entries(PAGES)) routes[id] = { role: 'detail', rail
 // a phone has no list pages of the rails: 串流 is the stream hub, every other category is in the 设置 hub; Back from a page is that hub, whatever way the page was reached (as in the Web UI)
 export const HUB_OF = { stream: ROUTES.STREAM_HUB, config: ROUTES.SETTINGS_HUB, input: ROUTES.SETTINGS_HUB, audio: ROUTES.SETTINGS_HUB, display: ROUTES.SETTINGS_HUB, system: ROUTES.SETTINGS_HUB, appearance: ROUTES.SETTINGS_HUB, developer: ROUTES.DEV_HUB }
 export const PHONE_MAX = 600
-export const isPhone = () => typeof window !== 'undefined' && window.innerWidth < PHONE_MAX
+// the compact navigation of the shell: a narrow window (under PHONE_MAX) and a short one (a phone on its side, a small window) share the phone's flow: one pane, the hubs
+export const isPhone = () => typeof window !== 'undefined' && isCompactNav(window.innerWidth, window.innerHeight)
 
 let nav = null
 const shared = () => (nav ||= createNav({ routes, home: ROUTES.HOME, compact: isPhone, hubOf: HUB_OF }))
