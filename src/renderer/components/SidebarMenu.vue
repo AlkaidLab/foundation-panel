@@ -531,6 +531,8 @@ const searchItems = computed(() => [
   { id: ROUTES.AI_ASSISTANT, title: t.value.m3e.nav.assistant, path: t.value.m3e.nav.main, icon: 'smart_toy', route: ROUTES.AI_ASSISTANT, keywords: rowKeywords('assistant') },
   // 新手引导 is the page of the first run: found by its name and by what people type for it (it is a row of 帮助与关于 too)
   { id: ROUTES.WELCOME, title: guideTexts(locale.value).guide, path: railLabel('help'), icon: 'rocket_launch', route: ROUTES.WELCOME, keywords: 'guide welcome wizard first run setup 向导 引导 首次 新手' },
+  // the rail of the window itself (音频, 显示与视频 ...): found by its name; the ones that are pages of their own (米塔 AI, 设置, 帮助) are listed above
+  ...rail.value.filter((r) => ['overview', 'stream', 'config', 'input', 'audio', 'display', 'system'].includes(r.id)).map((r) => ({ id: `rail-${r.id}`, title: r.label, path: '', icon: r.icon, route: `rail-${r.id}`, railId: r.id, keywords: '' })),
   ...settingsList.searchItems.value,
 ])
 // ---- the unified search: one entry in the caption bar (an icon and a full-screen view on a narrow window) over everything a person can look for ----
@@ -649,7 +651,8 @@ const searchDocs = computed(() => [
 ])
 const recentSettingDocs = computed(() => settingDocs(settingsList.recentView.value.items.map((r) => r.entry), { prefix: settingsPlace, locale: locale.value }))
 const onUnifiedChoose = (doc) => jumps.jump(() => {
-  if (doc.type === 'setting' || doc.type === 'page') onSearch(doc.entry)
+  if (doc.type === 'page' && doc.entry?.railId) onRail({ id: doc.entry.railId })
+  else if (doc.type === 'setting' || doc.type === 'page') onSearch(doc.entry)
   else if (doc.type === 'client') { emit('webui-navigate', `/pin${filterHash(doc.client?.name || doc.title)}`); router.navigate(ROUTES.WEB_CLIENTS) }
   else if (doc.type === 'app') { emit('webui-navigate', `/apps${filterHash(doc.app?.name || doc.title)}`); router.navigate(ROUTES.WEB_APPS) }
   else if (doc.type === 'tile') { addTileToHome('panel-home', doc.tile); router.navigate(ROUTES.HOME) }
