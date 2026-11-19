@@ -391,6 +391,19 @@ pub fn set_toolbar_shortcut_enabled(
     Ok(toolbar_shortcut_status(&app, enabled))
 }
 
+/// 恢复 Panel 默认偏好: the pet shortcut goes back to its default too (the ordinary save keeps the stored value, so an old page cannot overwrite it). It is saved first and registered after: a
+/// conflict at the registration is not a failure of the reset, the settings page tries it again when it is opened (`load_toolbar_shortcut_status`).
+pub fn reset_toolbar_shortcut(app: &AppHandle) -> Result<(), String> {
+    let _settings_guard = lock_desktop_settings();
+    let mut settings = load_desktop_settings_from_disk();
+    settings.toolbar_shortcut_enabled = DesktopSettings::default().toolbar_shortcut_enabled;
+    save_desktop_settings_to_disk(&settings)?;
+    if let Err(error) = crate::app::sync_toolbar_shortcut(app, settings.toolbar_shortcut_enabled) {
+        log::warn!("Failed to register the toolbar shortcut after the reset: {error}");
+    }
+    Ok(())
+}
+
 pub fn apply_startup_settings(app: &AppHandle, settings: &DesktopSettings) {
     crate::logger::set_log_level(&settings.log_level);
     apply_dev_mode(app, settings.dev_mode);
