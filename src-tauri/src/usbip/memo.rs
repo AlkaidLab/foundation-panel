@@ -141,6 +141,8 @@ impl Memo {
     }
 
     pub(super) fn forget(&self) {
+        // after an explicit drop the stored answer is never read again, whether or not the file could be changed
+        self.restored.store(true, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.cache.invalidate();
         let _step = STORE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -223,6 +225,20 @@ mod tests {
             memo.forget();
             assert_eq!(memo.get("two", probe).await, Some("7".to_string()));
             assert_eq!(runs.load(Ordering::SeqCst), 3);
+            memo.forget();
+        });
+    }
+
+    #[test]
+    fn an_answer_dropped_before_the_first_read_is_not_restored_from_the_store() {
+        run(async {
+            let memo = Memo::new(unique("memo-test-dropped"));
+            keep(memo.name, "fp", "old");
+            memo.forget();
+            // the store still has (or got back) an old answer: after the drop it must not be used
+            keep(memo.name, "fp", "old");
+            let answer = memo.get("fp", || async { Some("new".to_string()) }).await;
+            assert_eq!(answer.as_deref(), Some("new"));
             memo.forget();
         });
     }

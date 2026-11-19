@@ -103,7 +103,8 @@ function updateCurrentLocale(locale, persist = false) {
       // Keep the in-memory locale when storage is unavailable.
     }
   }
-  if (normalized === currentLocale.value) return Promise.resolve()
+  // the language that is shown but whose file never arrived is read again
+  if (normalized === currentLocale.value && hasBundle(normalized)) return Promise.resolve()
   if (hasBundle(normalized)) {
     currentLocale.value = normalized
     return Promise.resolve()
@@ -231,7 +232,7 @@ async function syncLocalePreferences(locale, requestId) {
 function requestLocaleChange(value) {
   const normalized = normalizeDesktopLocale(value)
   // choosing the language that is shown still cancels a switch whose file is on its way
-  if (normalized === currentLocale.value && pending.size === 0) return
+  if (normalized === currentLocale.value && pending.size === 0 && hasBundle(normalized)) return
 
   const requestId = createLocaleRequestId()
   setLatestLocaleRequest(requestId)
