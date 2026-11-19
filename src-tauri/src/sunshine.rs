@@ -69,6 +69,23 @@ fn get_sunshine_path() -> PathBuf {
 #[cfg(target_os = "windows")]
 fn bundled_sunshine_root(gui_executable: &Path) -> Option<PathBuf> {
     let gui_dir = gui_executable.parent()?;
+    // The update helper runs from a copy in `<install>\updates\updater-<id>\`: it serves the install
+    // it sits in, not the one the registry names (another installation may be registered).
+    if gui_dir
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .starts_with("updater-")
+    {
+        let updates_dir = gui_dir.parent()?;
+        if updates_dir
+            .file_name()?
+            .to_string_lossy()
+            .eq_ignore_ascii_case("updates")
+        {
+            return Some(updates_dir.parent()?.to_path_buf());
+        }
+    }
     if !gui_dir
         .file_name()?
         .to_string_lossy()
@@ -162,6 +179,20 @@ mod bundled_path_tests {
         assert_eq!(
             bundled_sunshine_root(executable),
             Some(PathBuf::from(r"C:\Sunshine"))
+        );
+    }
+
+    #[test]
+    fn the_update_helper_copy_serves_the_install_it_sits_in() {
+        let executable = Path::new(r"C:\Sunshine\updates\updater-4242\sunshine-updater.exe");
+
+        assert_eq!(
+            bundled_sunshine_root(executable),
+            Some(PathBuf::from(r"C:\Sunshine"))
+        );
+        assert_eq!(
+            bundled_sunshine_root(Path::new(r"C:\Tools\updater-1\sunshine-updater.exe")),
+            None
         );
     }
 
