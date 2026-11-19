@@ -106,7 +106,7 @@ pub(crate) async fn ensure_pinned_usbip(
 }
 
 #[cfg(target_os = "windows")]
-static REPLACEABLE: super::memo::Memo<bool> = super::memo::Memo::new("usbip.replaceable");
+static REPLACEABLE: super::memo::Memo = super::memo::Memo::new("usbip.replaceable");
 
 /// Drops the kept answer (the installation is about to change).
 pub(super) fn forget_replaceable() {
@@ -132,9 +132,11 @@ pub(super) async fn host_replaceable() -> bool {
         super::memo::file_identity(&script)
     );
     REPLACEABLE
-        .get(&fingerprint, || probe_host_replaceable(&script))
+        .get(&fingerprint, || async {
+            probe_host_replaceable(&script).await.map(|yes| if yes { "1" } else { "0" }.to_string())
+        })
         .await
-        .unwrap_or(false)
+        .is_some_and(|answer| answer == "1")
 }
 
 /// The helper's answer, asked now and never from a kept answer: the elevated copy revalidates a replacement with

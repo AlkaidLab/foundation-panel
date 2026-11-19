@@ -12,16 +12,13 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-
 use crate::probe_cache::ProbeCache;
 
 /// How long one process keeps an answer before it checks the fingerprint against a new probe.
 const MEMO_TTL: Duration = Duration::from_secs(5 * 60);
 /// How old a stored answer may be when the panel starts.
 const STORED_MAX_AGE_SECS: u64 = 24 * 60 * 60;
-const STORE_FILE: &str = "probe-cache.json";
+const STORE_FILE: &str = "probe-cache.txt";
 
 /// Creation flags of a probe that nobody waits for on screen: no window, below normal priority.
 #[cfg(target_os = "windows")]
@@ -38,54 +35,69 @@ fn now_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-fn read_store() -> serde_json::Map<String, serde_json::Value> {
-    let Some(path) = store_path() else {
-        return Default::default();
-    };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+/// The fingerprint is kept as a hash: it only has to be equal or not.
+fn digest(fingerprint: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    fingerprint.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
-fn write_store(store: &serde_json::Map<String, serde_json::Value>) {
-    let Some(path) = store_path() else { return };
-    let Ok(text) = serde_json::to_string(store) else {
-        return;
+/// One line per answer: `name TAB digest TAB seconds TAB value` (a value has no line break or tab).
+fn read_store() -> Vec<[String; 4]> {
+    let Some(path) = store_path() else {
+        return Vec::new();
     };
-    let temporary = path.with_extension("json.tmp");
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            Some([
+                parts.next()?.to_string(),
+                parts.next()?.to_string(),
+                parts.next()?.to_string(),
+                parts.next()?.to_string(),
+            ])
+        })
+        .collect()
+}
+
+fn write_store(rows: &[[String; 4]]) {
+    let Some(path) = store_path() else { return };
+    let text: String = rows.iter().map(|row| row.join("\t") + "\n").collect();
+    let temporary = path.with_extension("txt.tmp");
     // Best effort: a store that cannot be written only means the next start probes once more.
     if std::fs::write(&temporary, text).is_ok() && std::fs::rename(&temporary, &path).is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
 }
 
-fn recall<T: DeserializeOwned>(name: &str, fingerprint: &str) -> Option<T> {
-    let store = read_store();
-    let entry = store.get(name)?;
-    let age = now_secs().saturating_sub(entry.get("at")?.as_u64()?);
-    if entry.get("fp")?.as_str()? != fingerprint || age > STORED_MAX_AGE_SECS {
-        return None;
-    }
-    serde_json::from_value(entry.get("value")?.clone()).ok()
+fn recall(name: &str, fingerprint: &str) -> Option<String> {
+    let wanted = digest(fingerprint);
+    read_store().into_iter().find_map(|[row_name, row_digest, at, value]| {
+        let age = now_secs().saturating_sub(at.parse().ok()?);
+        (row_name == name && row_digest == wanted && age <= STORED_MAX_AGE_SECS).then_some(value)
+    })
 }
 
-fn keep<T: Serialize>(name: &str, fingerprint: &str, value: &T) {
-    let Ok(value) = serde_json::to_value(value) else {
-        return;
-    };
-    let mut store = read_store();
-    store.insert(
+fn keep(name: &str, fingerprint: &str, value: &str) {
+    let mut rows = read_store();
+    rows.retain(|row| row[0] != name);
+    rows.push([
         name.to_string(),
-        serde_json::json!({ "fp": fingerprint, "at": now_secs(), "value": value }),
-    );
-    write_store(&store);
+        digest(fingerprint),
+        now_secs().to_string(),
+        value.replace(['\t', '\r', '\n'], " "),
+    ]);
+    write_store(&rows);
 }
 
 fn forget(name: &str) {
-    let mut store = read_store();
-    if store.remove(name).is_some() {
-        write_store(&store);
+    let mut rows = read_store();
+    let before = rows.len();
+    rows.retain(|row| row[0] != name);
+    if rows.len() != before {
+        write_store(&rows);
     }
 }
 
@@ -104,12 +116,13 @@ pub(super) fn file_identity(path: &std::path::Path) -> String {
     }
 }
 
-pub(super) struct Memo<T> {
+/// A kept answer as text (the callers write and read their own short forms).
+pub(super) struct Memo {
     name: &'static str,
-    cache: ProbeCache<(String, T)>,
+    cache: ProbeCache<(String, String)>,
 }
 
-impl<T> Memo<T> {
+impl Memo {
     pub(super) const fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -121,21 +134,19 @@ impl<T> Memo<T> {
         self.cache.invalidate();
         forget(self.name);
     }
-}
 
-impl<T: Clone + Serialize + DeserializeOwned> Memo<T> {
     /// The answer for `fingerprint`: the kept one, the stored one, or what `probe` returns now (`None` when the
     /// probe failed; nothing is kept then).
-    pub(super) async fn get<F, Fut>(&self, fingerprint: &str, probe: F) -> Option<T>
+    pub(super) async fn get<F, Fut>(&self, fingerprint: &str, probe: F) -> Option<String>
     where
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Option<T>>,
+        Fut: std::future::Future<Output = Option<String>>,
     {
         for _ in 0..2 {
             let loaded = self
                 .cache
                 .get(|| async {
-                    if let Some(value) = recall::<T>(self.name, fingerprint) {
+                    if let Some(value) = recall(self.name, fingerprint) {
                         return Ok((fingerprint.to_string(), value));
                     }
                     match probe().await {
@@ -179,19 +190,19 @@ mod tests {
     #[test]
     fn the_same_fingerprint_probes_once_and_a_new_one_probes_again() {
         run(async {
-            let memo: Memo<u32> = Memo::new(unique("memo-test-same"));
+            let memo: Memo = Memo::new(unique("memo-test-same"));
             let runs = AtomicUsize::new(0);
             let probe = || async {
                 runs.fetch_add(1, Ordering::SeqCst);
-                Some(7u32)
+                Some("7".to_string())
             };
-            assert_eq!(memo.get("one", probe).await, Some(7));
-            assert_eq!(memo.get("one", probe).await, Some(7));
+            assert_eq!(memo.get("one", probe).await, Some("7".to_string()));
+            assert_eq!(memo.get("one", probe).await, Some("7".to_string()));
             assert_eq!(runs.load(Ordering::SeqCst), 1);
-            assert_eq!(memo.get("two", probe).await, Some(7));
+            assert_eq!(memo.get("two", probe).await, Some("7".to_string()));
             assert_eq!(runs.load(Ordering::SeqCst), 2);
             memo.forget();
-            assert_eq!(memo.get("two", probe).await, Some(7));
+            assert_eq!(memo.get("two", probe).await, Some("7".to_string()));
             assert_eq!(runs.load(Ordering::SeqCst), 3);
             memo.forget();
         });
@@ -200,9 +211,9 @@ mod tests {
     #[test]
     fn a_failed_probe_is_not_kept() {
         run(async {
-            let memo: Memo<u32> = Memo::new(unique("memo-test-failure"));
+            let memo: Memo = Memo::new(unique("memo-test-failure"));
             assert_eq!(memo.get("f", || async { None }).await, None);
-            assert_eq!(memo.get("f", || async { Some(1u32) }).await, Some(1));
+            assert_eq!(memo.get("f", || async { Some("1".to_string()) }).await, Some("1".to_string()));
             memo.forget();
         });
     }

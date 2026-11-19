@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
-static SIGNATURE: super::memo::Memo<DriverSignature> = super::memo::Memo::new("usbip.signature");
+static SIGNATURE: super::memo::Memo = super::memo::Memo::new("usbip.signature");
 
 /// Drops the kept signature (the driver is about to change).
 #[cfg(target_os = "windows")]
@@ -21,7 +21,7 @@ pub(super) fn forget() {}
 
 /// `signed` and `unsigned` are verdicts; `invalid` means a signature exists but
 /// does not verify; `unknown` means it could not be read.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DriverSignature {
     pub state: String,
     pub signer: String,
@@ -108,9 +108,14 @@ pub(crate) async fn driver_signature() -> DriverSignature {
     SIGNATURE
         .get(&fingerprint, || async {
             // An unreadable answer is not a verdict: it is not kept.
-            Some(signature_of(&path).await).filter(|signature| signature.state != "unknown")
+            let signature = signature_of(&path).await;
+            (signature.state != "unknown").then(|| format!("{}\u{1}{}", signature.state, signature.signer))
         })
         .await
+        .and_then(|text| {
+            let (state, signer) = text.split_once('\u{1}')?;
+            Some(DriverSignature { state: state.to_string(), signer: signer.to_string() })
+        })
         .unwrap_or_else(unknown)
 }
 
