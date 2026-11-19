@@ -77,6 +77,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     // 更新偏好属于应用级状态，必须在 `--hidden` 的纯托盘代理模式下也立即注册。
     // 自动联网检查仍在后面按窗口启动模式决定，避免把状态初始化和网络行为耦合。
     update::init_update_preferences(&app_handle)?;
+    crate::install_integrity::start(app_handle.clone());
     crate::clipboard::auto_start();
     #[cfg(target_os = "windows")]
     crate::text_context::start(desktop_settings.text_context_enabled);
