@@ -50,7 +50,7 @@ pub struct UsbipAttachedDevice {
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct UsbipStatus {
     pub supported: bool,
     pub installed: bool,

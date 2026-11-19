@@ -85,7 +85,6 @@ pub async fn usbip_attach(
         bus_id: validate_bus_id(&bus_id)?,
     };
     let _guard = OPERATION_LOCK.lock().await;
-    let _fresh = super::status::fresh();
     let response = run_elevated(request).await?;
     response
         .port
@@ -98,7 +97,6 @@ pub async fn usbip_detach(port: u8) -> Result<(), String> {
         return Err("USBIP-INPUT-004: the local USB/IP port is invalid".to_string());
     }
     let _guard = OPERATION_LOCK.lock().await;
-    let _fresh = super::status::fresh();
     run_elevated(ElevatedRequest::Detach { port }).await?;
     Ok(())
 }
