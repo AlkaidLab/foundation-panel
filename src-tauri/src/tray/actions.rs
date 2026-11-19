@@ -16,6 +16,14 @@ fn site_url(locale: &str) -> &'static str {
     }
 }
 
+fn sponsor_site_url(locale: &str) -> &'static str {
+    if locale.to_ascii_lowercase().starts_with("zh") {
+        "https://www.alkaidlab.cn/#sponsors"
+    } else {
+        "https://www.alkaidlab.com/en/#sponsors"
+    }
+}
+
 pub fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, menu_id: &str) {
     let s = get_tray_strings();
     match menu_id {
@@ -110,7 +118,7 @@ pub fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, menu_id:
         "sponsor_qiin" => utils::open_url_in_browser("https://www.ifdian.net/a/qiin2333"),
         "sponsor_yundi339" => utils::open_url_in_browser("https://www.ifdian.net/a/Yundi339"),
         "sponsor_skyhua" => utils::open_url_in_browser("https://ifdian.net/a/skyhua"),
-        "sponsor_wechat" => utils::open_url_in_browser(&format!("{}#sponsors", site_url(&get_current_locale()))),
+        "sponsor_wechat" => utils::open_url_in_browser(sponsor_site_url(&get_current_locale())),
         "sponsor_github" => utils::open_url_in_browser("https://github.com/sponsors/qiin2333"),
         "restart" => restart_sunshine(app),
         // the native menu's stepped stand-ins for the menus' bitrate and scale sliders (menu.rs)
@@ -746,9 +754,9 @@ mod tests {
 
     #[test]
     fn sponsor_site_follows_the_current_language() {
-        assert_eq!(super::site_url("zh-CN"), "https://www.alkaidlab.cn/");
-        assert_eq!(super::site_url("zh-TW"), "https://www.alkaidlab.cn/");
-        assert_eq!(super::site_url("en"), "https://www.alkaidlab.com/");
+        assert_eq!(super::sponsor_site_url("zh-CN"), "https://www.alkaidlab.cn/#sponsors");
+        assert_eq!(super::sponsor_site_url("zh-TW"), "https://www.alkaidlab.cn/#sponsors");
+        assert_eq!(super::sponsor_site_url("en"), "https://www.alkaidlab.com/en/#sponsors");
     }
 
     /// The body of a function of this file (from its signature to the next top-level item).
