@@ -20,6 +20,7 @@ test('the stages and the extras of a perf session are foundation-ui\'s, the same
   assert.ok(!/export function pipelineAverages/.test(live), 'not a second copy')
 })
 
-test('the smart plan reads the startup problems of the host log, as the Web UI does', () => {
-  assert.match(home, /problems: startupProblems\(\(state\.errorLog\?\.rows \|\| \[\]\)\.filter\(\(r\) => r\.level === 'Fatal'\)\.map\(\(r\) => r\.text\), String\(locale\.value\)\)\.length/)
+test('the smart plan reads the startup problems of the whole host log, as the Web UI does (the list shown is cut to the latest 30)', () => {
+  assert.match(home, /problems: startupProblems\(\(parseErrorLog\(state\.logText, Infinity\)\?\.rows \|\| \[\]\)\.filter\(\(r\) => r\.level === 'Fatal'\)\.map\(\(r\) => r\.text\), String\(locale\.value\)\)\.length/)
+  assert.match(home, /startupProblems, parseErrorLog,/)
 })

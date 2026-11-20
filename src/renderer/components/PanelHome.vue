@@ -1,7 +1,7 @@
 <script setup>
 import { setVisibleInterval, clearVisibleInterval } from '../composables/pageVisibility.js'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { firstImage, micIsReady, padIsReady, startupProblems, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
+import { firstImage, micIsReady, padIsReady, startupProblems, parseErrorLog, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
 import { buildCatalogue, buildCatalogueDetails, useJourneyHome, useReleaseAssets, useStarCard, useSessionClock, useSystemInfo, reachProblemOf, registeredComponentStatus, createHistory, createHttpVddAdapter, createPairQr, createVddStore, saveSettingKey, vddStatusOf, recentKeys, rememberRecent, isLoopbackHost, createQueuedCalls, createSerialCalls } from 'foundation-ui/vue'
 import QRCode from 'qrcode'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
@@ -170,7 +170,7 @@ const cards = computed(() => buildCards(model.value, { texts: T.value, catalogue
 const compRows = () => registeredComponentStatus()?.rows?.value || []
 const smartSignals = computed(() => ({
   pairedCount: state.clients ? state.clients.length : null, streaming: !!session.value, lastStreamAt: (void historyTick.value, history.last()?.end || 0), // ms since epoch of the end of the last finished session this interface saw (0: none): the smart overview's after-stream scenario runs 30 minutes from it
-  problems: startupProblems((state.errorLog?.rows || []).filter((r) => r.level === 'Fatal').map((r) => r.text), String(locale.value)).length, problemComponents: compRows().filter((r) => r.state === 'error' || r.state === 'warn').map((r) => r.id),
+  problems: startupProblems((parseErrorLog(state.logText, Infinity)?.rows || []).filter((r) => r.level === 'Fatal').map((r) => r.text), String(locale.value)).length, problemComponents: compRows().filter((r) => r.state === 'error' || r.state === 'warn').map((r) => r.id),
   recentErrors: (state.errorLog?.rows || state.errorLog || []).length || 0, isNew: isNew.value,
   wifiHost: nics.defaultNic.value?.type === 'wifi', linkSlowMbps: nics.defaultNic.value?.link_speed_mbps && nics.defaultNic.value.link_speed_mbps < 1000 ? nics.defaultNic.value.link_speed_mbps : 0,
   reachBad: reachProblem.value, updateAvailable: props.updateAvailable,
