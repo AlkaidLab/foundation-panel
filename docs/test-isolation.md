@@ -14,9 +14,10 @@ the measurement. The local UI proxy accepts read-only browser requests in
 this mode. Keep the profile directory private to the test runner. Crash
 reports use the private data directory even when `SUNSHINE_CRASH_DIR` is set.
 
-Host-backed pages look for the host configuration in the profile's
-`host/config` directory. For tests that need authenticated host responses,
-use a dedicated host fixture and its own test credentials.
+Host-backed pages are outside the scope of isolated UI measurements.
+Host configuration and authentication are resolved inside the test profile.
+Leave `host/config/local-auth.token` absent in the measurement kit so the run
+uses no installed host credentials.
 
 Normal startup continues to use the installed configuration and integrations.
 The switch is a measurement configuration for a controlled desktop session.
