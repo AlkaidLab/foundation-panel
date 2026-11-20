@@ -302,6 +302,29 @@ mod tests {
         assert!(!device::transport_not_ready(&interfaces_after, &after));
     }
 
+    /// Writes the diagnostics file for real and checks that every section is there (read only; shows the file in Explorer).
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "reads the local USB/IP state and writes the diagnostics file"]
+    async fn exports_the_diagnostics_file_with_every_section() {
+        let path = diagnostics::export().await.expect("the export must work");
+        let text = std::fs::read_to_string(&path).unwrap();
+        println!("{path} ({} bytes)", text.len());
+        println!("{text}");
+        for section in [
+            "== Windows",
+            "== Panel status",
+            "== Last cleanup",
+            "== Host-controller devices",
+            "== Driver services",
+            "== Registered installations",
+            "== Driver packages",
+            "== Device installation log",
+        ] {
+            assert!(text.contains(section), "missing {section}");
+        }
+    }
+
     /// What the panel reports for the machine as it is (read only).
     #[cfg(target_os = "windows")]
     #[tokio::test]
