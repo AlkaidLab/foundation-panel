@@ -1,7 +1,7 @@
 <script setup>
 import { setVisibleInterval, clearVisibleInterval } from '../composables/pageVisibility.js'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { firstImage, micIsReady, padIsReady, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
+import { firstImage, micIsReady, padIsReady, startupProblems, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
 import { buildCatalogue, buildCatalogueDetails, useJourneyHome, useReleaseAssets, useStarCard, useSessionClock, useSystemInfo, reachProblemOf, registeredComponentStatus, createHistory, createHttpVddAdapter, createPairQr, createVddStore, saveSettingKey, vddStatusOf, recentKeys, rememberRecent, isLoopbackHost, createQueuedCalls, createSerialCalls } from 'foundation-ui/vue'
 import QRCode from 'qrcode'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
@@ -170,7 +170,7 @@ const cards = computed(() => buildCards(model.value, { texts: T.value, catalogue
 const compRows = () => registeredComponentStatus()?.rows?.value || []
 const smartSignals = computed(() => ({
   pairedCount: state.clients ? state.clients.length : null, streaming: !!session.value, lastStreamAt: (void historyTick.value, history.last()?.end || 0), // ms since epoch of the end of the last finished session this interface saw (0: none): the smart overview's after-stream scenario runs 30 minutes from it
-  problems: 0, problemComponents: compRows().filter((r) => r.state === 'error' || r.state === 'warn').map((r) => r.id),
+  problems: startupProblems((state.errorLog?.rows || []).filter((r) => r.level === 'Fatal').map((r) => r.text), String(locale.value)).length, problemComponents: compRows().filter((r) => r.state === 'error' || r.state === 'warn').map((r) => r.id),
   recentErrors: (state.errorLog?.rows || state.errorLog || []).length || 0, isNew: isNew.value,
   wifiHost: nics.defaultNic.value?.type === 'wifi', linkSlowMbps: nics.defaultNic.value?.link_speed_mbps && nics.defaultNic.value.link_speed_mbps < 1000 ? nics.defaultNic.value.link_speed_mbps : 0,
   reachBad: reachProblem.value, updateAvailable: props.updateAvailable,
@@ -229,6 +229,7 @@ function onAction(a) {
     case 'link': openExternalUrl(a.value); break
     case 'setting': saveSetting(a.value); break
     case 'runtime-bitrate': runtimeBitrate(a.value); break
+    case 'runtime-host-audio': setHostAudio(a.value); break
     case 'ds5-tune': ds5Tune(a.value); break
     case 'sponsor': { const target = SPONSORS.find((x) => x.id === a.value); if (a.value === 'star') openExternalUrl('https://github.com/AlkaidLab/foundation-sunshine'); else if (target) openExternalUrl(sponsorUrl(target, locale.value)); else sponsorOpen.value = true; break }
     default: break
@@ -269,6 +270,14 @@ async function loadDs5() { try { ds5Keys.value = (await hostApi.getJson('/api/du
 watch(() => !!rawSession.value, (live) => { if (live) loadDs5() }, { immediate: true })
 const runtimeBitrate = createQueuedCalls(async ({ client, kbps }) => {
   try { const r = await hostFetch(base, `/api/runtime/bitrate?bitrate=${kbps}&clientname=${encodeURIComponent(client)}`); const d = await r.json().catch(() => ({})); say(r.ok && d.success !== false ? T.value.lbSent.replace('{client}', client) : T.value.lbFailed) } catch { say(T.value.lbFailed) }
+}, (a) => a.client)
+// the host audio of the running client is a tile (live-audio, foundation-ui): its switch sends the command of the stream, one command per client at a time in the order chosen (while one runs
+// only the newest choice waits, so the last choice wins); a refusal puts the switch back
+const setHostAudio = createQueuedCalls(async ({ client, enabled, failed }) => {
+  try {
+    const d = await hostApi.postJson('/api/runtime/audio', { clientname: client, enabled })
+    if (!d?.success) throw new Error(d?.status_message || 'host audio')
+  } catch (e) { failed?.(); say(e?.message || t.value.stream.msg.connectionError) }
 }, (a) => a.client)
 const ds5Tune = createQueuedCalls(async ({ key, value }) => {
   try { const d = await hostApi.postJson('/api/dualsense/tuning', { schema: 'ALK-DS5T/1', values: { [key]: value } }); if (d?.keys) ds5Keys.value = d.keys; else if (d?.status === false) say(T.value.dsFailed) } catch { say(T.value.dsFailed) }
