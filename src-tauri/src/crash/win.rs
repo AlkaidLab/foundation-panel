@@ -442,6 +442,18 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
             }
         }
         let name = webview_kind(kind.0);
+        // The panel is quitting or restarting itself (a tray quit, the update handoff, an elevated or webview
+        // restart): the WebView2 processes end with it. The recovery this handler exists for (reload the page,
+        // start the panel again, tell the person) would fight the shutdown, and the report would call a normal
+        // exit a failure of the machine; the guidance behind ProcessFailed covers a running app, and an app on
+        // its way out has nothing to recover (panel-ms-webview2-process-events-20261121).
+        if crate::exit_state::is_exiting() {
+            log::info!(
+                "WebView2 {name} (exit code {exit_code:#x}) while the panel is exiting ({}): not a failure, not reported",
+                crate::exit_state::reason().unwrap_or("unknown")
+            );
+            return Ok(());
+        }
         // The reason (a crash, an out-of-memory exit, a launch that failed) is what tells a driver fault from a full machine; it goes to the log.
         log::warn!("WebView2 process failed: {name}, reason {}, exit code {exit_code:#x}", webview_reason(reason));
         let mut label = meta::Buf::<48>::new();
