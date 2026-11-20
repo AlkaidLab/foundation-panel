@@ -23,6 +23,7 @@ export function useUsbTransport() {
     residual_kind: '',
     cleanup_pending_restart: false,
     cleanup_resume: false,
+    cleanup_resume_op: '',
     last_cleanup_error: '',
     attached_devices: [],
     detail: '',
@@ -106,11 +107,14 @@ export function useUsbTransport() {
       statusLoaded.value = true
       statusLoading.value = false
     }
-    // Windows restarted since a cleanup waited for it and the leftover is still there: continue it (one prompt for administrator rights).
-    if (status.cleanup_resume && !resumeStarted && !statusProbeFailed.value && !status.externally_managed) {
+    // Windows restarted since a cleanup waited for it and the leftover is still there: continue the same operation (one prompt for
+    // administrator rights). The one chance is spent only when the operation can start now; while another one holds the transport
+    // the next refresh asks again.
+    const resumeStale = status.cleanup_resume_op === 'stale'
+    if (status.cleanup_resume && !resumeStarted && !statusProbeFailed.value && !transportBusy.value && (resumeStale || !status.externally_managed)) {
       resumeStarted = true
       ElMessage.info(t.value.deviceHub.usb.resumeCleanup)
-      queueMicrotask(() => cleanupResidual({ auto: true }))
+      queueMicrotask(() => (resumeStale ? removeStale() : cleanupResidual({ auto: true })))
     }
   }
 

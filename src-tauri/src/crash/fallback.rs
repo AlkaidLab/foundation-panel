@@ -62,19 +62,27 @@ fn now_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// Whether this run leaves GPU acceleration out: the process was told to (`SOFTWARE_ENV`), or the file says so and is still in force.
-pub(crate) fn software_rendering() -> bool {
+/// How this run renders: the person keeps the GPU on (`FORCE_GPU_ENV`), the process was told to leave it out (`SOFTWARE_ENV`), or
+/// the file says so and is still in force; otherwise with the GPU.
+pub(crate) fn render_mode() -> super::recover::RenderMode {
+    use super::recover::RenderMode;
     if std::env::var_os(FORCE_GPU_ENV).is_some_and(|value| value == "1") {
-        return false;
+        return RenderMode::GpuForced;
     }
     if std::env::var_os(SOFTWARE_ENV).is_some_and(|value| value == "1") {
-        return true;
+        return RenderMode::Software;
     }
     let runtime = runtime_version();
-    path()
+    let in_force = path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| Marker::decode(&text))
-        .is_some_and(|marker| marker.in_force(now_secs(), &runtime))
+        .is_some_and(|marker| marker.in_force(now_secs(), &runtime));
+    if in_force { RenderMode::Software } else { RenderMode::Gpu }
+}
+
+/// Whether this run leaves GPU acceleration out.
+pub(crate) fn software_rendering() -> bool {
+    render_mode() == super::recover::RenderMode::Software
 }
 
 /// Keeps the choice for the next runs and tells this process's children (the restart). Best effort: a file that cannot be written still

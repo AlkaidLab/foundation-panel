@@ -455,8 +455,8 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
             Some(state) if state.started.elapsed() < std::time::Duration::from_secs(600) => recover::restarts_so_far(std::env::var(recover::RESTARTS_ENV).ok().as_deref()),
             _ => 0,
         };
-        let software = super::fallback::software_rendering();
-        match recover::decide(name, std::time::Instant::now(), &mut history, restarts, software) {
+        let mode = super::fallback::render_mode();
+        match recover::decide(name, std::time::Instant::now(), &mut history, restarts, mode) {
             Action::Reload => {
                 log::warn!("WebView2 {name} (exit code {exit_code:#x}): reloading the page");
                 // SAFETY: the event runs on the thread of the webview.

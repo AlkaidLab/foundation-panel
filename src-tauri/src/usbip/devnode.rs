@@ -37,9 +37,11 @@ fn locate(instance_id: &str, flags: CM_LOCATE_DEVNODE_FLAGS) -> Result<u32, u32>
     }
 }
 
-/// In the device tree now. A registry key under Enum that the tree does not hold is a ghost.
+/// In the device tree now. A registry key under Enum that the tree does not hold is a ghost: only the answer "no such devnode" says
+/// so. Any other failure (out of resources, a refused call) does not prove the node is absent, so it counts as present: the
+/// removal then runs the documented sequence and reports what Windows answers, instead of skipping the query-and-remove step.
 pub(super) fn in_device_tree(instance_id: &str) -> bool {
-    locate(instance_id, CM_LOCATE_DEVNODE_NORMAL).is_ok()
+    locate(instance_id, CM_LOCATE_DEVNODE_NORMAL) != Err(CR_NO_SUCH_DEVNODE)
 }
 
 /// Neither in the tree nor as a ghost: nothing of the device is left.

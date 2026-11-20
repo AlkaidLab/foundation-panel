@@ -77,6 +77,19 @@ pub(super) async fn run_elevated(_request: ElevatedRequest) -> Result<ElevatedRe
 #[cfg(target_os = "windows")]
 pub(super) const RESTART_PENDING: &str = "restart_pending";
 
+/// The answer of an install or a replacement: the restart-pending answer when removed leftovers wait for the restart (it
+/// outranks the installer's own advice), `reboot_recommended` when only the installer asks, otherwise nothing.
+#[cfg(target_os = "windows")]
+fn restart_answer(leftovers_wait: bool, installer_asks: bool) -> String {
+    if leftovers_wait {
+        RESTART_PENDING.to_string()
+    } else if installer_asks {
+        "reboot_recommended".to_string()
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn finish_message(finish: super::device::Finish) -> String {
     match finish {
@@ -118,16 +131,11 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                 // Controllers an older version left beside the new live one go now, so the person never meets "installed, not ready".
                 let restart_for_leftovers = super::device::sweep_stale_after_install().await
                     == super::device::Finish::RestartNeeded;
-                let reboot_recommended = restart_for_leftovers
-                    || matches!(result, super::install::InstallResult::RebootRecommended);
+                let installer_asks = matches!(result, super::install::InstallResult::RebootRecommended);
                 Ok(ElevatedResponse {
                     success: true,
                     port: None,
-                    message: if reboot_recommended {
-                        "reboot_recommended".to_string()
-                    } else {
-                        String::new()
-                    },
+                    message: restart_answer(restart_for_leftovers, installer_asks),
                 })
             }
             ElevatedRequest::ReplaceLegacy => {
@@ -142,13 +150,10 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                 Ok(ElevatedResponse {
                     success: true,
                     port: None,
-                    message: if restart_for_leftovers
-                        || matches!(result, super::install::InstallResult::RebootRecommended)
-                    {
-                        "reboot_recommended".to_string()
-                    } else {
-                        String::new()
-                    },
+                    message: restart_answer(
+                        restart_for_leftovers,
+                        matches!(result, super::install::InstallResult::RebootRecommended),
+                    ),
                 })
             }
             ElevatedRequest::Cleanup => {

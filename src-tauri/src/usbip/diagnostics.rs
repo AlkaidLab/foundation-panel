@@ -47,42 +47,51 @@ pub(super) fn file_name(timestamp: &str) -> String {
     format!("usbip-diagnostics-{safe}.txt")
 }
 
+/// Runs a system tool and returns what it printed, or why it did not. A tool that does not finish in twenty seconds is stopped
+/// and waited for, so repeated exports cannot pile up processes or threads.
 #[cfg(target_os = "windows")]
-fn run_capture(program: &str, arguments: &[&str]) -> String {
+fn run_capture(program: &str, arguments: &[&str]) -> Result<String, String> {
+    use std::io::Read;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    let Some(root) = std::env::var_os("SystemRoot") else {
-        return "(Windows directory unavailable)".to_string();
-    };
+    let root = std::env::var_os("SystemRoot").ok_or("Windows directory unavailable")?;
     let path = std::path::PathBuf::from(root).join("System32").join(program);
-    let mut command = Command::new(path);
-    command
+    let mut child = Command::new(path)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
-    match command.spawn() {
-        Err(error) => format!("(could not start {program}: {error})"),
-        Ok(child) => {
-            // Bounded: wait on a thread so a hung tool cannot hang the export.
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = sender.send(child.wait_with_output());
-            });
-            match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
-                Ok(Ok(output)) => {
-                    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-                    if text.trim().is_empty() {
-                        text = String::from_utf8_lossy(&output.stderr).into_owned();
-                    }
-                    text
-                }
-                Ok(Err(error)) => format!("({program} failed: {error})"),
-                Err(_) => format!("({program} did not answer in 20 seconds)"),
+        .stderr(Stdio::null())
+        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0)
+        .spawn()
+        .map_err(|error| format!("could not start {program}: {error}"))?;
+    let mut stdout = child.stdout.take().ok_or("no output pipe")?;
+    // The pipe is read on its own thread so a full pipe cannot stall the tool while this side waits for it to exit.
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(error) => return Err(format!("{program} failed: {error}")),
         }
+    };
+    let bytes = reader.join().unwrap_or_default();
+    match status {
+        None => Err(format!("{program} did not finish in 20 seconds and was stopped")),
+        Some(status) if !status.success() => Err(format!("{program} exited with {status}")),
+        Some(_) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
     }
 }
 
@@ -198,7 +207,11 @@ fn services_section(out: &mut String) {
             registry_u32(&hklm, &path, "Type").map_or("?".to_string(), |value| value.to_string()),
             registry_string(&hklm, &path, "ImagePath"),
         );
-        let _ = writeln!(out, "{}", run_capture("sc.exe", &["query", name]).trim());
+        let _ = writeln!(
+            out,
+            "{}",
+            run_capture("sc.exe", &["query", name]).map_or_else(|error| format!("({error})"), |text| text.trim().to_string())
+        );
     }
 }
 
@@ -228,8 +241,16 @@ fn installations_section(out: &mut String) {
         }
     }
     let _ = writeln!(out, "\n== Driver packages (pnputil /enum-drivers, usbip only)");
-    let blocks = usbip_driver_blocks(&run_capture("pnputil.exe", &["/enum-drivers"]));
-    let _ = writeln!(out, "{}", if blocks.is_empty() { "none" } else { &blocks });
+    // A tool that failed is not "no driver packages": the failure is what the file says.
+    match run_capture("pnputil.exe", &["/enum-drivers"]) {
+        Ok(text) => {
+            let blocks = usbip_driver_blocks(&text);
+            let _ = writeln!(out, "{}", if blocks.is_empty() { "none" } else { &blocks });
+        }
+        Err(error) => {
+            let _ = writeln!(out, "unavailable ({error})");
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

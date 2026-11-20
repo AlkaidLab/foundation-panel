@@ -33,9 +33,9 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     let _fresh = super::status::fresh();
     let response = run_elevated(ElevatedRequest::Install).await?;
     super::status::forget_kept();
-    let reboot_recommended = response.message == "reboot_recommended";
+    let reboot_recommended = keep_restart_answer(&response.message);
     let mut status = super::status::usbip_get_status().await?;
-    status.reboot_recommended = reboot_recommended;
+    status.reboot_recommended |= reboot_recommended;
     Ok(status)
 }
 
@@ -48,7 +48,7 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
 pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let _fresh = super::status::fresh();
-    run_cleanup(ElevatedRequest::Cleanup).await
+    run_cleanup(ElevatedRequest::Cleanup, super::nodes::MarkerOp::Cleanup).await
 }
 
 /// Removes the older controllers that stand beside the working one and keeps the live controller: no reinstall needed.
@@ -56,7 +56,7 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
 pub async fn usbip_remove_stale_nodes() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let _fresh = super::status::fresh();
-    run_cleanup(ElevatedRequest::RemoveStale).await
+    run_cleanup(ElevatedRequest::RemoveStale, super::nodes::MarkerOp::RemoveStale).await
 }
 
 /// Writes the USB/IP diagnostics file (device tree, services, driver packages, Windows version, status, last cleanup error)
@@ -66,10 +66,38 @@ pub async fn usbip_export_diagnostics() -> Result<String, String> {
     super::diagnostics::export().await
 }
 
+/// An install or a replacement answers `reboot_recommended` (the installer asks for a restart) and/or the restart-pending answer (the
+/// controllers an older version left are accepted for removal at the restart). Only the second leaves a marker, so a restart that
+/// only the installer asked for does not bring a cleanup back. Returns whether a restart is advised at all.
+fn keep_restart_answer(message: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    if message == super::elevated::RESTART_PENDING {
+        let mut kept = super::journal::read();
+        mark_restart_pending(&mut kept, super::nodes::MarkerOp::RemoveStale);
+        super::journal::write(&kept);
+        return true;
+    }
+    message == "reboot_recommended"
+}
+
+/// Keeps what an operation learned about the restart: Windows accepted a removal that finishes at the next restart, so a marker
+/// says which operation to continue afterwards. `resumed` carries over, so a node that never goes does not loop.
+#[cfg(target_os = "windows")]
+fn mark_restart_pending(kept: &mut super::journal::Journal, op: super::nodes::MarkerOp) {
+    kept.marker = Some(super::nodes::RestartMarker {
+        written: super::journal::now_secs(),
+        resumed: kept.marker.as_ref().map_or(0, |marker| marker.resumed),
+        op,
+    });
+}
+
 /// Runs one cleanup operation in the elevated helper and keeps what it answered: the error (for the diagnostics) and the
 /// restart marker. The helper always runs elevated (a UAC prompt when the panel is not), so a refused removal is a real
 /// refusal and is reported with the code Windows gave, never retried silently.
-async fn run_cleanup(request: ElevatedRequest) -> Result<UsbipStatus, String> {
+async fn run_cleanup(
+    request: ElevatedRequest,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] op: super::nodes::MarkerOp,
+) -> Result<UsbipStatus, String> {
     #[cfg(target_os = "windows")]
     let mut kept = super::journal::read();
     #[cfg(target_os = "windows")]
@@ -86,16 +114,21 @@ async fn run_cleanup(request: ElevatedRequest) -> Result<UsbipStatus, String> {
         match &outcome {
             Ok(response) => {
                 kept.last_error.clear();
+                kept.error_at = 0;
                 if response.message == super::elevated::RESTART_PENDING {
-                    kept.marker = Some(super::nodes::RestartMarker {
-                        written: super::journal::now_secs(),
-                        resumed: kept.marker.as_ref().map_or(0, |marker| marker.resumed),
-                    });
+                    mark_restart_pending(&mut kept, op);
                 } else {
                     kept.marker = None;
                 }
             }
-            Err(error) => kept.last_error = error.clone(),
+            Err(error) => {
+                kept.last_error = error.clone();
+                kept.error_at = super::journal::now_secs();
+                // Some nodes were accepted for the restart while others failed: the marker is kept for the first, the error shows the second.
+                if super::nodes::error_has_pending_restart(error) {
+                    mark_restart_pending(&mut kept, op);
+                }
+            }
         }
         super::journal::write(&kept);
     }
@@ -121,9 +154,9 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     }
     let response = run_elevated(ElevatedRequest::ReplaceLegacy).await?;
     super::status::forget_kept();
-    let reboot_recommended = response.message == "reboot_recommended";
+    let reboot_recommended = keep_restart_answer(&response.message);
     let mut status = super::status::usbip_get_status().await?;
-    status.reboot_recommended = reboot_recommended;
+    status.reboot_recommended |= reboot_recommended;
     Ok(status)
 }
 

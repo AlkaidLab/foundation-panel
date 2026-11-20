@@ -219,11 +219,8 @@ pub(super) async fn cleanup_broken_transport() -> Result<Finish, String> {
 /// left controllers behind. Runs inside the elevated helper.
 #[cfg(target_os = "windows")]
 pub(super) async fn remove_stale_nodes() -> Result<Finish, String> {
-    // No stream check: the controller behind the live interface stays, so nothing a stream uses is touched.
-    // Only a transport with a live controller is repaired this way; with none, nothing says which node to keep.
-    if enumerate_vhci_interfaces()?.is_empty() {
-        return Err("USBIP-CLEAN-002: there is no live USB/IP controller to keep; clean the shared transport instead".to_string());
-    }
+    // No stream check: one live controller stays, so nothing a stream uses is touched. Only a transport with a live controller
+    // is repaired this way; with none, nothing says which node to keep, and the sweep says so.
     sweep_devnodes(true).await
 }
 
@@ -242,26 +239,35 @@ pub(super) async fn sweep_stale_after_install() -> Finish {
 
 /// Removes devnodes until none is left that should go. PnP teardown is asynchronous, so a node that is still listed is
 /// asked again for the whole polling budget; a node Windows accepted but keeps until the restart is set aside.
-/// `keep_live` keeps one live controller and removes the others.
+/// `keep_live` keeps one live controller and removes the others; which one is chosen once, here, and every round leaves it alone.
 #[cfg(target_os = "windows")]
 pub(super) async fn sweep_devnodes(keep_live: bool) -> Result<Finish, String> {
     use super::nodes::{
-        CleanupReason, NodeFailure, NodeRemoval, classify_failures, cleanup_error,
-        describe_failure, removal_targets,
+        CleanupReason, NodeFailure, NodeRemoval, PENDING_DETAIL, classify_failures, cleanup_error,
+        describe_failure, pick_live, removal_targets,
     };
 
+    let kept: Option<String> = if keep_live {
+        match pick_live(&enumerate_vhci_interfaces()?) {
+            Some(id) => Some(id),
+            None => {
+                return Err("USBIP-CLEAN-002: there is no live USB/IP controller to keep; clean the shared transport instead".to_string());
+            }
+        }
+    } else {
+        None
+    };
     let mut pending: Vec<String> = Vec::new();
     let mut failed: Vec<(String, Vec<NodeFailure>)> = Vec::new();
     for _ in 0..CLEANUP_POLL_ATTEMPTS {
         let interfaces = enumerate_vhci_interfaces()?;
         let nodes = enumerate_transport_nodes()?;
-        let mut targets = removal_targets(&interfaces, &nodes, keep_live);
-        targets.retain(|id| !pending.iter().any(|kept| kept.eq_ignore_ascii_case(id)));
+        let mut targets = removal_targets(&interfaces, &nodes, kept.as_deref());
+        targets.retain(|id| !pending.iter().any(|set_aside| set_aside.eq_ignore_ascii_case(id)));
+        failed.clear();
         if targets.is_empty() {
-            failed.clear();
             break;
         }
-        failed.clear();
         for instance_id in targets {
             // Removal can be transiently vetoed while PnP is busy; keep
             // sweeping and let the closing check decide the outcome instead
@@ -276,24 +282,25 @@ pub(super) async fn sweep_devnodes(keep_live: bool) -> Result<Finish, String> {
                 NodeRemoval::Failed(steps) => failed.push((instance_id, steps)),
             }
         }
-        if failed.is_empty() {
-            continue;
+        if !failed.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     let interfaces = enumerate_vhci_interfaces()?;
     let nodes = enumerate_transport_nodes()?;
-    let mut remaining = removal_targets(&interfaces, &nodes, keep_live);
-    remaining.retain(|id| !pending.iter().any(|kept| kept.eq_ignore_ascii_case(id)));
-    if remaining.is_empty() && failed.is_empty() {
+    let mut remaining = removal_targets(&interfaces, &nodes, kept.as_deref());
+    remaining.retain(|id| !pending.iter().any(|set_aside| set_aside.eq_ignore_ascii_case(id)));
+    // A node that failed in the last round and is gone by now is not a failure.
+    failed.retain(|(id, _)| remaining.iter().any(|left| left.eq_ignore_ascii_case(id)));
+    if remaining.is_empty() {
         return Ok(if pending.is_empty() {
             Finish::Done
         } else {
             Finish::RestartNeeded
         });
     }
-    // Something is still there. What Windows answered says what the person does next.
-    failed.retain(|(id, _)| remaining.iter().any(|left| left.eq_ignore_ascii_case(id)));
+    // Something is still there. What Windows answered says what the person does next; the nodes that were accepted for the
+    // restart are named in the same error, so the caller keeps the restart marker for them as well.
     let steps: Vec<NodeFailure> = failed
         .iter()
         .flat_map(|(_, steps)| steps.iter().cloned())
@@ -302,11 +309,7 @@ pub(super) async fn sweep_devnodes(keep_live: bool) -> Result<Finish, String> {
         .iter()
         .flat_map(|(id, steps)| steps.iter().map(|step| describe_failure(id, step)))
         .collect();
-    details.extend(
-        pending
-            .iter()
-            .map(|id| format!("node={id} accepted, finishes at restart")),
-    );
+    details.extend(pending.iter().map(|id| format!("node={id} {PENDING_DETAIL}")));
     details.extend(remaining.iter().map(|id| format!("node={id} still listed")));
     let reason = if steps.is_empty() {
         CleanupReason::Unknown

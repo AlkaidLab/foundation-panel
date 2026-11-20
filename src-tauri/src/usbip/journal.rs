@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
-use super::nodes::RestartMarker;
+use super::nodes::{MarkerOp, RestartMarker};
 
 const FILE: &str = "usbip-cleanup.txt";
 /// The kept error is for the diagnostics, not for a log: it is cut here.
@@ -16,13 +16,15 @@ const MAX_ERROR_CHARS: usize = 1500;
 pub(super) struct Journal {
     pub marker: Option<RestartMarker>,
     pub last_error: String,
+    /// When `last_error` was kept (seconds since the Unix epoch); 0 when there is none.
+    pub error_at: u64,
 }
 
 fn path() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
-/// Line 1: the marker (`written TAB resumed`) or empty. Line 2 on: the last error, one line.
+/// Line 1: the marker (`written TAB resumed TAB op`) or empty. Line 2: the last error, one line. Line 3: when it was kept.
 pub(super) fn encode(journal: &Journal) -> String {
     let marker = journal
         .marker
@@ -35,14 +37,15 @@ pub(super) fn encode(journal: &Journal) -> String {
         .map(|character| if character.is_control() { ' ' } else { character })
         .take(MAX_ERROR_CHARS)
         .collect();
-    format!("{marker}\n{error}\n")
+    format!("{marker}\n{error}\n{}\n", journal.error_at)
 }
 
 pub(super) fn decode(text: &str) -> Journal {
     let mut lines = text.lines();
     let marker = lines.next().and_then(RestartMarker::decode);
     let last_error = lines.next().unwrap_or_default().trim().to_string();
-    Journal { marker, last_error }
+    let error_at = lines.next().and_then(|line| line.trim().parse().ok()).unwrap_or(0);
+    Journal { marker, last_error, error_at }
 }
 
 pub(super) fn read() -> Journal {
@@ -93,13 +96,16 @@ mod tests {
             marker: Some(RestartMarker {
                 written: 42,
                 resumed: 1,
+                op: MarkerOp::RemoveStale,
             }),
             last_error: "USBIP-CLEAN-008: in use [node=ROOT\\USB\\0000 cr=23]".to_string(),
+            error_at: 99,
         };
         assert_eq!(decode(&encode(&journal)), journal);
         let noisy = Journal {
             marker: None,
             last_error: "first\nsecond\tthird".to_string(),
+            error_at: 0,
         };
         assert_eq!(decode(&encode(&noisy)).last_error, "first second third");
         assert_eq!(decode(""), Journal::default());
@@ -107,6 +113,7 @@ mod tests {
         let long = Journal {
             marker: None,
             last_error: "x".repeat(5000),
+            error_at: 0,
         };
         assert_eq!(decode(&encode(&long)).last_error.len(), MAX_ERROR_CHARS);
     }

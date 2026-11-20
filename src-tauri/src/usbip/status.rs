@@ -68,6 +68,7 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
         residual_kind: String::new(),
         cleanup_pending_restart: false,
         cleanup_resume: false,
+        cleanup_resume_op: String::new(),
         last_cleanup_error: String::new(),
         error_code: String::new(),
         attached_devices: Vec::new(),
@@ -103,11 +104,21 @@ fn settle(mut status: UsbipStatus, kind: super::device::Residual) -> UsbipStatus
             journal::write(&kept);
         } else {
             status.cleanup_resume = marker.may_resume();
+            if status.cleanup_resume {
+                status.cleanup_resume_op = marker.op.label().to_string();
+            }
         }
     }
-    if !status.vhci_residual && kept.marker.is_none() && !kept.last_error.is_empty() {
-        // The leftover is gone: an old error would only mislead.
+    // The last error stays until a later cleanup replaces it or a quarter of an hour has passed with nothing left over: a
+    // refused or cancelled attempt must still be exportable right after the status refresh that follows it.
+    const KEEP_ERROR_SECS: u64 = 15 * 60;
+    if !status.vhci_residual
+        && kept.marker.is_none()
+        && !kept.last_error.is_empty()
+        && journal::now_secs().saturating_sub(kept.error_at) > KEEP_ERROR_SECS
+    {
         kept.last_error.clear();
+        kept.error_at = 0;
         journal::write(&kept);
     }
     status.last_cleanup_error = kept.last_error;
@@ -139,6 +150,7 @@ async fn probe_status() -> Result<(UsbipStatus, super::device::Residual), String
         residual_kind: String::new(),
         cleanup_pending_restart: false,
         cleanup_resume: false,
+        cleanup_resume_op: String::new(),
         last_cleanup_error: String::new(),
         error_code: String::new(),
         attached_devices: Vec::new(),

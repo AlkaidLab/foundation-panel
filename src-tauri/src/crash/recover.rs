@@ -56,21 +56,30 @@ pub(crate) fn restarts_so_far(value: Option<&str>) -> u32 {
     value.and_then(|v| v.trim().parse().ok()).unwrap_or(0)
 }
 
-/// `kind` is the name the crash report uses (`render_exited`, `browser_exited`, ...). `software` is whether GPU acceleration is already off.
-pub(crate) fn decide(kind: &str, now: Instant, history: &mut History, restarts: u32, software: bool) -> Action {
+/// How the window renders in this run: with the GPU (the default), with GPU acceleration already off, or with the GPU kept on by the
+/// person (`SUNSHINE_PANEL_GPU=1`): that choice is never overridden, so the last step after repeated failures is to tell them.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum RenderMode {
+    Gpu,
+    Software,
+    GpuForced,
+}
+
+/// `kind` is the name the crash report uses (`render_exited`, `browser_exited`, ...).
+pub(crate) fn decide(kind: &str, now: Instant, history: &mut History, restarts: u32, mode: RenderMode) -> Action {
     match kind {
         "render_exited" | "frame_render_exited" => {
             prune(&mut history.exits, now);
             history.exits.push_back(now);
             if history.exits.len() >= SOFTWARE_AFTER_EXITS {
-                return if software { Action::GiveUp } else { Action::SoftwareRestart };
+                return if mode == RenderMode::Gpu { Action::SoftwareRestart } else { Action::GiveUp };
             }
             Action::Reload
         }
         "gpu_exited" => {
             prune(&mut history.gpu, now);
             history.gpu.push_back(now);
-            if history.gpu.len() >= SOFTWARE_AFTER_GPU_EXITS && !software {
+            if history.gpu.len() >= SOFTWARE_AFTER_GPU_EXITS && mode == RenderMode::Gpu {
                 Action::SoftwareRestart
             } else {
                 Action::Nothing
@@ -89,12 +98,12 @@ mod tests {
     fn a_dead_renderer_is_reloaded_twice_and_the_third_death_leaves_the_gpu_out() {
         let mut history = History::default();
         let t0 = Instant::now();
-        assert_eq!(decide("render_exited", t0, &mut history, 0, false), Action::Reload);
-        assert_eq!(decide("render_exited", t0 + Duration::from_secs(10), &mut history, 0, false), Action::Reload);
-        assert_eq!(decide("render_exited", t0 + Duration::from_secs(20), &mut history, 0, false), Action::SoftwareRestart);
+        assert_eq!(decide("render_exited", t0, &mut history, 0, RenderMode::Gpu), Action::Reload);
+        assert_eq!(decide("render_exited", t0 + Duration::from_secs(10), &mut history, 0, RenderMode::Gpu), Action::Reload);
+        assert_eq!(decide("render_exited", t0 + Duration::from_secs(20), &mut history, 0, RenderMode::Gpu), Action::SoftwareRestart);
         // a frame renderer counts the same
         let mut frames = History::default();
-        assert_eq!(decide("frame_render_exited", t0, &mut frames, 0, false), Action::Reload);
+        assert_eq!(decide("frame_render_exited", t0, &mut frames, 0, RenderMode::Gpu), Action::Reload);
     }
 
     #[test]
@@ -102,9 +111,23 @@ mod tests {
         let mut history = History::default();
         let t0 = Instant::now();
         for i in 0..2 {
-            assert_eq!(decide("render_exited", t0 + Duration::from_secs(i), &mut history, 0, true), Action::Reload);
+            assert_eq!(decide("render_exited", t0 + Duration::from_secs(i), &mut history, 0, RenderMode::Software), Action::Reload);
         }
-        assert_eq!(decide("render_exited", t0 + Duration::from_secs(3), &mut history, 0, true), Action::GiveUp);
+        assert_eq!(decide("render_exited", t0 + Duration::from_secs(3), &mut history, 0, RenderMode::Software), Action::GiveUp);
+    }
+
+    /// `SUNSHINE_PANEL_GPU=1` is the person's choice: repeated deaths never restart the panel into software rendering, they tell the person.
+    #[test]
+    fn a_forced_gpu_is_never_switched_off() {
+        let mut history = History::default();
+        let t0 = Instant::now();
+        assert_eq!(decide("render_exited", t0, &mut history, 0, RenderMode::GpuForced), Action::Reload);
+        assert_eq!(decide("render_exited", t0 + Duration::from_secs(1), &mut history, 0, RenderMode::GpuForced), Action::Reload);
+        assert_eq!(decide("render_exited", t0 + Duration::from_secs(2), &mut history, 0, RenderMode::GpuForced), Action::GiveUp);
+        let mut gpu = History::default();
+        for i in 0..5 {
+            assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(i), &mut gpu, 0, RenderMode::GpuForced), Action::Nothing);
+        }
     }
 
     #[test]
@@ -113,7 +136,7 @@ mod tests {
         let t0 = Instant::now();
         for i in 0..6 {
             // one death every ten minutes: every one is a reload, none switches anything off
-            assert_eq!(decide("render_exited", t0 + Duration::from_secs(i * 600), &mut history, 0, false), Action::Reload);
+            assert_eq!(decide("render_exited", t0 + Duration::from_secs(i * 600), &mut history, 0, RenderMode::Gpu), Action::Reload);
         }
     }
 
@@ -121,13 +144,13 @@ mod tests {
     fn a_gpu_process_that_cannot_stay_up_is_left_out_before_the_page_dies() {
         let mut history = History::default();
         let t0 = Instant::now();
-        assert_eq!(decide("gpu_exited", t0, &mut history, 0, false), Action::Nothing);
-        assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(30), &mut history, 0, false), Action::Nothing);
-        assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(60), &mut history, 0, false), Action::SoftwareRestart);
+        assert_eq!(decide("gpu_exited", t0, &mut history, 0, RenderMode::Gpu), Action::Nothing);
+        assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(30), &mut history, 0, RenderMode::Gpu), Action::Nothing);
+        assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(60), &mut history, 0, RenderMode::Gpu), Action::SoftwareRestart);
         // already software: nothing to switch
         let mut software = History::default();
         for i in 0..4 {
-            assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(i), &mut software, 0, true), Action::Nothing);
+            assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(i), &mut software, 0, RenderMode::Software), Action::Nothing);
         }
     }
 
@@ -135,9 +158,9 @@ mod tests {
     fn a_dead_browser_restarts_the_panel_twice_in_a_row() {
         let mut history = History::default();
         let now = Instant::now();
-        assert_eq!(decide("browser_exited", now, &mut history, 0, false), Action::Restart);
-        assert_eq!(decide("browser_exited", now, &mut history, 1, false), Action::Restart);
-        assert_eq!(decide("browser_exited", now, &mut history, 2, false), Action::Nothing);
+        assert_eq!(decide("browser_exited", now, &mut history, 0, RenderMode::Gpu), Action::Restart);
+        assert_eq!(decide("browser_exited", now, &mut history, 1, RenderMode::Gpu), Action::Restart);
+        assert_eq!(decide("browser_exited", now, &mut history, 2, RenderMode::Gpu), Action::Nothing);
     }
 
     #[test]
@@ -145,7 +168,7 @@ mod tests {
         let mut history = History::default();
         let now = Instant::now();
         for kind in ["utility_exited", "sandbox_helper_exited", "render_unresponsive", "ppapi_plugin_exited", "unknown_exited"] {
-            assert_eq!(decide(kind, now, &mut history, 0, false), Action::Nothing, "{kind}");
+            assert_eq!(decide(kind, now, &mut history, 0, RenderMode::Gpu), Action::Nothing, "{kind}");
         }
     }
 

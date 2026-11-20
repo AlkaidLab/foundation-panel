@@ -97,43 +97,45 @@ pub(super) fn residual_kind(interfaces: &[String], nodes: &[TransportNode]) -> R
     }
 }
 
-/// The devnodes to remove.
-///
-/// `keep_live` keeps one controller that is live (the first live interface by instance ID, so a repair is deterministic) and
-/// removes the rest: every other enabled node, present or ghost, and the owner of every other live interface (the new driver
-/// starts an older version's leftover node too, which is how two live interfaces arise). A disabled node is left alone, it is
-/// the previous enumerator. Without it every node and every interface owner goes (the whole transport is being removed).
-pub(super) fn removal_targets(
-    interfaces: &[String],
-    nodes: &[TransportNode],
-    keep_live: bool,
-) -> Vec<String> {
+/// The live controller a repair keeps: the first live interface by instance ID, so a repair is deterministic. It is chosen once,
+/// when the repair starts, and passed to every later round: an interface that goes away for a moment must not make the kept
+/// controller a target.
+pub(super) fn pick_live(interfaces: &[String]) -> Option<String> {
     let mut owners: Vec<String> = interfaces
         .iter()
         .filter_map(|path| instance_id_from_interface_path(path))
         .collect();
     owners.sort_unstable_by_key(|id| id.to_ascii_uppercase());
-    let keep = if keep_live { owners.first().cloned() } else { None };
+    owners.into_iter().next()
+}
+
+/// The devnodes to remove.
+///
+/// With `keep` (a repair of a working transport) that controller stays and the rest go: every other enabled node, present or
+/// ghost, and the owner of every other live interface (the new driver starts an older version's leftover node too, which is how
+/// two live interfaces arise). A disabled node is left alone, it is the previous enumerator. Without it (the whole transport is
+/// being removed) every node and every interface owner goes.
+pub(super) fn removal_targets(
+    interfaces: &[String],
+    nodes: &[TransportNode],
+    keep: Option<&str>,
+) -> Vec<String> {
+    let kept = |id: &str| keep.is_some_and(|kept| kept.eq_ignore_ascii_case(id));
     let mut targets: Vec<String> = Vec::new();
     for node in nodes {
         if keep.is_some() && node.disabled {
             continue;
         }
-        if keep_live && node.disabled && !node.present {
-            continue;
-        }
-        if keep
-            .as_ref()
-            .is_some_and(|id| node.instance_id.eq_ignore_ascii_case(id))
-        {
+        if kept(&node.instance_id) {
             continue;
         }
         targets.push(node.instance_id.clone());
     }
     targets.extend(
-        owners
-            .into_iter()
-            .filter(|id| !keep.as_ref().is_some_and(|kept| kept.eq_ignore_ascii_case(id))),
+        interfaces
+            .iter()
+            .filter_map(|path| instance_id_from_interface_path(path))
+            .filter(|id| !kept(id)),
     );
     targets.sort_unstable_by_key(|id| id.to_ascii_uppercase());
     targets.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
@@ -270,6 +272,37 @@ pub(super) struct RestartMarker {
     pub written: u64,
     /// How many times the panel has already continued the cleanup after a restart.
     pub resumed: u32,
+    /// Which operation waits for the restart: the whole cleanup, or the lighter repair that keeps the live controller. The
+    /// continuation runs the same one, so a repair never turns into an uninstall.
+    pub op: MarkerOp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MarkerOp {
+    Cleanup,
+    RemoveStale,
+}
+
+impl MarkerOp {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cleanup => "cleanup",
+            Self::RemoveStale => "stale",
+        }
+    }
+
+    /// The value the frontend reads (`cleanup_resume_op`).
+    pub(super) fn label(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+/// What the helper's error says when some nodes were accepted for removal at the restart and others failed: the marker is kept
+/// for the first, the error for the second.
+pub(super) const PENDING_DETAIL: &str = "accepted, finishes at restart";
+
+pub(super) fn error_has_pending_restart(error: &str) -> bool {
+    error.contains(PENDING_DETAIL)
 }
 
 /// A cleanup that waited for a restart is continued once Windows has restarted since the marker was written and the
@@ -278,15 +311,19 @@ pub(super) const MAX_RESUMES: u32 = 1;
 
 impl RestartMarker {
     pub(super) fn encode(&self) -> String {
-        format!("{}\t{}\n", self.written, self.resumed)
+        format!("{}\t{}\t{}\n", self.written, self.resumed, self.op.as_str())
     }
 
     pub(super) fn decode(text: &str) -> Option<Self> {
         let mut parts = text.trim().split('\t');
-        Some(Self {
-            written: parts.next()?.parse().ok()?,
-            resumed: parts.next()?.parse().ok()?,
-        })
+        let written = parts.next()?.parse().ok()?;
+        let resumed = parts.next()?.parse().ok()?;
+        // a marker from before the operation was recorded is the whole cleanup, as it was then
+        let op = match parts.next() {
+            Some("stale") => MarkerOp::RemoveStale,
+            _ => MarkerOp::Cleanup,
+        };
+        Some(Self { written, resumed, op })
     }
 
     /// `boot` is when this Windows session started (seconds since the Unix epoch).
@@ -457,8 +494,9 @@ mod tests {
             node(r"ROOT\USB\0002", false, true),
             node(r"ROOT\ALKAIDUSB\0000", true, true),
         ];
+        assert_eq!(pick_live(&interfaces).as_deref(), Some(r"ROOT\USB\0001"));
         assert_eq!(
-            removal_targets(&interfaces, &nodes, true),
+            removal_targets(&interfaces, &nodes, Some(r"ROOT\USB\0001")),
             vec![r"ROOT\USB\0000".to_string(), r"ROOT\USB\0002".to_string()]
         );
     }
@@ -472,7 +510,7 @@ mod tests {
             node(r"ROOT\ALKAIDUSB\0000", true, true),
         ];
         assert_eq!(
-            removal_targets(&interfaces, &nodes, false),
+            removal_targets(&interfaces, &nodes, None),
             vec![
                 r"ROOT\ALKAIDUSB\0000".to_string(),
                 r"ROOT\USB\0000".to_string(),
@@ -481,18 +519,23 @@ mod tests {
         );
         // an interface whose node the registry scan did not list is still a target
         assert_eq!(
-            removal_targets(&interfaces, &[], false),
+            removal_targets(&interfaces, &[], None),
             vec![r"ROOT\USB\0001".to_string()]
         );
     }
 
+    /// The kept controller is chosen once: a later round that no longer sees its interface still leaves it alone.
     #[test]
-    fn without_a_live_interface_nothing_is_kept() {
+    fn the_kept_controller_stays_even_when_its_interface_is_gone_for_a_round() {
         let nodes = [
             node(r"ROOT\USB\0000", false, true),
             node(r"ROOT\USB\0001", false, true),
         ];
-        assert_eq!(removal_targets(&[], &nodes, true).len(), 2);
+        assert_eq!(
+            removal_targets(&[], &nodes, Some(r"ROOT\USB\0000")),
+            vec![r"ROOT\USB\0001".to_string()]
+        );
+        assert_eq!(pick_live(&[]), None);
     }
 
     /// 0.9.8.1 installed beside a leftover of 0.9.7.7: the new driver starts both nodes, two live interfaces.
@@ -503,14 +546,16 @@ mod tests {
             node(r"ROOT\USB\0000", false, true),
             node(r"ROOT\USB\0001", false, true),
         ];
+        let kept = pick_live(&interfaces).unwrap();
+        assert_eq!(kept, r"ROOT\USB\0000");
         assert_eq!(
-            removal_targets(&interfaces, &nodes, true),
+            removal_targets(&interfaces, &nodes, Some(&kept)),
             vec![r"ROOT\USB\0001".to_string()]
         );
         assert_eq!(residual_kind(&interfaces, &nodes), Residual::Stale);
         // the node list missing one of them does not matter: the interface names its owner
         assert_eq!(
-            removal_targets(&interfaces, &nodes[..1], true),
+            removal_targets(&interfaces, &nodes[..1], Some(&kept)),
             vec![r"ROOT\USB\0001".to_string()]
         );
     }
@@ -585,6 +630,7 @@ mod tests {
         let marker = RestartMarker {
             written: 1_000,
             resumed: 0,
+            op: MarkerOp::RemoveStale,
         };
         assert_eq!(RestartMarker::decode(&marker.encode()), Some(marker.clone()));
         assert!(!marker.restarted_since(900));
@@ -593,9 +639,18 @@ mod tests {
         assert!(marker.may_resume());
         assert!(!RestartMarker {
             written: 1_000,
-            resumed: MAX_RESUMES
+            resumed: MAX_RESUMES,
+            op: MarkerOp::Cleanup,
         }
         .may_resume());
+        // a marker from before the operation was recorded is the whole cleanup
+        assert_eq!(RestartMarker::decode("5\t0").map(|m| m.op), Some(MarkerOp::Cleanup));
+        assert_eq!(RestartMarker::decode("5\t0\tstale").map(|m| m.op), Some(MarkerOp::RemoveStale));
+        assert!(error_has_pending_restart(&cleanup_error(
+            CleanupReason::InUse,
+            &[format!("node=ROOT\\USB\\0001 {PENDING_DETAIL}")]
+        )));
+        assert!(!error_has_pending_restart("USBIP-CLEAN-008: in use"));
         assert_eq!(RestartMarker::decode(""), None);
         assert_eq!(RestartMarker::decode("x\t1"), None);
         assert_eq!(RestartMarker::decode("5"), None);

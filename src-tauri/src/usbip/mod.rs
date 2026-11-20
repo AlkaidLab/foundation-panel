@@ -71,6 +71,8 @@ pub struct UsbipStatus {
     pub cleanup_pending_restart: bool,
     /// Windows has restarted since a cleanup waited for it and the leftover is still there: continue the cleanup.
     pub cleanup_resume: bool,
+    /// Which operation to continue: "cleanup" (the whole cleanup) or "stale" (the repair that keeps the live controller).
+    pub cleanup_resume_op: String,
     /// The last cleanup's error line as the helper answered it (codes and all), kept for the diagnostics.
     pub last_cleanup_error: String,
     /// 结构化错误码（"USBIP-SETUP-003" 等），取自 detail 的码前缀；
@@ -274,6 +276,10 @@ mod tests {
         let interfaces = device::enumerate_vhci_interfaces().unwrap();
         let before = device::enumerate_transport_nodes().unwrap();
         println!("before: interfaces={interfaces:?} nodes={before:?}");
+        assert!(
+            !before.is_empty() || !interfaces.is_empty(),
+            "the test needs a leftover controller to remove: install and uninstall 0.9.7.7 first"
+        );
         let finish = device::sweep_devnodes(false).await;
         let after = device::enumerate_transport_nodes().unwrap();
         println!("sweep: {finish:?}; after: nodes={after:?}");
@@ -294,6 +300,11 @@ mod tests {
         assert!(!interfaces.is_empty(), "needs a live controller: {interfaces:?}");
         let before = device::enumerate_transport_nodes().unwrap();
         println!("before: interfaces={interfaces:?} nodes={before:?} kind={:?}", device::residual_kind(&interfaces, &before));
+        assert_eq!(
+            device::residual_kind(&interfaces, &before),
+            device::Residual::Stale,
+            "the test needs a live controller with an older one beside it"
+        );
         let finish = device::remove_stale_nodes().await.expect("the repair must not fail");
         let interfaces_after = device::enumerate_vhci_interfaces().unwrap();
         let after = device::enumerate_transport_nodes().unwrap();
