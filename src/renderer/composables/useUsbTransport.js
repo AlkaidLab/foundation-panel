@@ -208,7 +208,7 @@ export function useUsbTransport() {
 
   /** Removes the older controllers beside the working one; the live controller stays and nothing is reinstalled. */
   const removeStale = sharedOperation.wrap(async () => {
-    if (transportBusy.value || status.externally_managed) return
+    if (transportBusy.value || !staleResidual.value) return
     cleaning.value = true
     if (statusRefreshPromise) await statusRefreshPromise
     sharedOperation.markChanged()
