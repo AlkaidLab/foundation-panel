@@ -678,6 +678,8 @@ fn create_main_window_internal<R: Runtime>(
     })?;
 
     panel.attach(&window);
+    // a window that was let go for memory (mem_adaptive.rs) comes back where and as large as it was
+    crate::mem_adaptive::restore_bounds(&window);
 
     // 设置 DWM 圆角，让系统级合成器裁剪窗口圆角
     #[cfg(target_os = "windows")]
@@ -1158,6 +1160,20 @@ fn refresh_webview_surface<R: Runtime>(window: &WebviewWindow<R>) {
             let _ = controller.NotifyParentWindowPositionChanged();
         }
     });
+}
+
+/// Memory release (mem_adaptive.rs): the main window sits hidden in the tray, asleep (not minimized, not loading, not closing).
+pub(crate) fn main_window_sleeping<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
+    if closing::is_closing(MAIN_WINDOW_ID) || !lifecycle::is_background(MAIN_WINDOW_ID) {
+        return None;
+    }
+    let window = app.get_webview_window(MAIN_WINDOW_ID)?;
+    (!window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(true)).then_some(window)
+}
+
+/// Memory release: the main window goes through the same close as the title bar's × (hidden first, destroyed, logged); the next open makes it again.
+pub(crate) fn release_main_window<R: Runtime>(app: &AppHandle<R>) -> bool {
+    closing::close_window(app, MAIN_WINDOW_ID, "memory release")
 }
 
 /// The application is going down: every window is hidden first, so none is destroyed while the person can still see it

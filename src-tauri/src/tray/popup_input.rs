@@ -42,7 +42,7 @@ pub(super) fn use_native_menu() -> bool {
 
 /// The decision behind `use_native_menu`, apart from the state it reads.
 pub(super) fn wants_native(force_native: bool, failures: u32, health: ctx_popup::Health) -> bool {
-    force_native || failures >= FAILURES_BEFORE_NATIVE || matches!(health, ctx_popup::Health::Disabled | ctx_popup::Health::Failed)
+    force_native || failures >= FAILURES_BEFORE_NATIVE || matches!(health, ctx_popup::Health::Disabled | ctx_popup::Health::Failed | ctx_popup::Health::Released)
 }
 
 /// Whether the icon carries the native menu right now (set where the menu is attached or taken away): while it does, Windows shows that menu on a right click by itself.
@@ -125,7 +125,10 @@ pub(super) fn on_icon_event(event: TrayIconEvent) {
             let decision = gate(|g| g.double_click(&prefs));
             run(&app, decision, physical_rect(&rect));
         }
+        // the pointer is on the icon (the events repeat while it moves): a released menu window is made now (mem_adaptive.rs), the click that follows finds it or the native menu
+        TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => crate::mem_adaptive::on_tray_hover(&app),
         TrayIconEvent::Click { button: MouseButton::Right, button_state: tauri::tray::MouseButtonState::Up, rect, .. } => {
+            crate::mem_adaptive::note_click();
             // with the native menu on the icon, the system shows it by itself on this very event
             match right_click_plan(use_native_menu(), NATIVE_ATTACHED.load(Ordering::SeqCst)) {
                 RightClick::Window => perform(&app, prefs.action(Gesture::Right), physical_rect(&rect), true),
@@ -663,7 +666,7 @@ mod tests {
 
     #[test]
     fn the_native_menu_is_for_a_window_that_cannot_show() {
-        use ctx_popup::Health::{Disabled, Failed, Ready, Starting};
+        use ctx_popup::Health::{Disabled, Failed, Ready, Released, Starting};
         // the window is up: the Material menu
         assert!(!wants_native(false, 0, Ready));
         // the window is being made (a tray-only start, a window made again): the menu waits for it, the native menu does not take the icon
@@ -671,6 +674,8 @@ mod tests {
         // it cannot show: switched off, or it could not be made
         assert!(wants_native(false, 0, Failed));
         assert!(wants_native(false, 0, Disabled));
+        // it was let go for memory: the native menu answers a click at once, a hover makes the window (mem_adaptive.rs)
+        assert!(wants_native(false, 0, Released));
         // the person\'s own choice is always kept
         assert!(wants_native(true, 0, Ready) && wants_native(true, 0, Starting));
         // one failed open is not the end of the menu window, two in a row are

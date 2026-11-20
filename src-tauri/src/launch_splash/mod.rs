@@ -134,9 +134,15 @@ impl World {
 fn run<R: Runtime + 'static>(app: AppHandle<R>, rx: mpsc::Receiver<Msg>) {
     let mut plan = Plan::default();
     let mut world = World::default();
-    // the window is made before the first launch asks for it
-    ensure_window(&app);
+    // the window is made before the first launch asks for it, unless the machine is short of memory (mem_adaptive.rs): then the host's announcement makes it, while the display is set up
+    if crate::mem_adaptive::warm_tray_windows() {
+        ensure_window(&app);
+        note_use();
+    }
     loop {
+        if plan.watching().is_some() {
+            note_use();
+        }
         let timeout = if plan.watching().is_some() { TICK } else { IDLE };
         let cmds = match rx.recv_timeout(timeout) {
             Ok(Msg::State(state)) => {
@@ -158,9 +164,35 @@ fn run<R: Runtime + 'static>(app: AppHandle<R>, rx: mpsc::Receiver<Msg>) {
             Err(RecvTimeoutError::Disconnected) => return,
         };
         for cmd in cmds {
+            note_use();
             apply(&app, &mut world, cmd);
         }
     }
+}
+
+/// When the splash was last needed: a launch followed, a command applied, the window made.
+static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn note_use() {
+    *LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+}
+
+/// How long the window has been idle (it exists, is hidden and no launch is followed). None when there is nothing to let go.
+pub fn idle_for<R: Runtime>(app: &AppHandle<R>) -> Option<Duration> {
+    let window = app.get_webview_window(WINDOW_LABEL)?;
+    if window.is_visible().unwrap_or(true) {
+        return None;
+    }
+    let last = (*LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))?;
+    Some(last.elapsed())
+}
+
+/// Lets the window go (memory release, mem_adaptive.rs). The next announcement makes it again, as for a first launch.
+pub fn release<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else { return false };
+    log::info!("launch splash: window released for memory");
+    *LAST.lock().unwrap() = None;
+    window.destroy().is_ok()
 }
 
 /// Starts the clock of a launch the first time its id is seen, and notes when its display became ready.
@@ -238,6 +270,21 @@ fn window_found(plan: &Plan, world: &World) -> bool {
 #[cfg(not(target_os = "windows"))]
 fn window_found(_plan: &Plan, _world: &World) -> bool {
     false
+}
+
+/// Measurement instances only (SUNSHINE_GUI_TEST_OFFSCREEN): announces (active) or ends a launch whose display is not ready, as the host does at the start of a launch: the window is made and readied, nothing is
+/// put on a screen. The log then has "window ready N ms after the announcement (window was there | window had to be made)".
+#[tauri::command]
+pub fn launch_splash_selftest(app: AppHandle, id: String, active: bool) -> Result<(), String> {
+    if !crate::windows::test_offscreen() {
+        return Err("measurement instances only".into());
+    }
+    let state: sunshine::TrayLaunchState = serde_json::from_value(serde_json::json!({
+        "id": id, "active": active, "kind": "launch", "app_name": "Memory test", "stage": "preparing", "display_ready": false
+    }))
+    .map_err(|e| e.to_string())?;
+    send(&app, Msg::State(state));
+    Ok(())
 }
 
 /// The frame the page should draw now, or None when no splash is up. The page calls it once after it has started listening.

@@ -34,6 +34,8 @@ mod host_version;
 mod hwinfo;
 mod install_integrity;
 mod logger;
+mod mem_adaptive;
+mod mem_adaptive_core;
 mod menu_place;
 mod moonlight_web;
 mod native_tools;
@@ -444,6 +446,7 @@ fn main() {
             launch_splash::launch_splash_frame,
             launch_splash::launch_splash_prepared,
             launch_splash::launch_splash_painted,
+            launch_splash::launch_splash_selftest,
             nr_overlay::nr_overlay_capture_shortcut,
             nr_overlay::nr_overlay_settings,
             nr_overlay::nr_overlay_save_settings,

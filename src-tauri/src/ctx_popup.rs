@@ -50,6 +50,10 @@ static LOADED_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// The self test runs: the window stays cloaked and takes no focus (a measurement instance shows nothing on the desk of whoever uses the machine).
 static SELFTEST: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<Open>> = Mutex::new(None);
+/// The window was let go on purpose and not yet made again (see `Health::Released`).
+static RELEASED: AtomicBool = AtomicBool::new(false);
+/// When a menu was last asked for (or the window was made): the idle time of the release.
+static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// A menu opened from the tray icon: where the icon is and which side of the monitor the taskbar is on. The window is placed beside the icon, away from the taskbar, on every `ready`.
 #[derive(Clone, Copy)]
@@ -118,6 +122,9 @@ pub enum Health {
     Ready,
     /// it could not be made, or was lost and could not be made again
     Failed,
+    /// it was let go on purpose (mem_adaptive.rs: the machine is short of memory, or the low-memory preset keeps nothing warm) and is made again by a hover on the icon: the icon carries
+    /// the native menu meanwhile, which answers a click at once
+    Released,
 }
 
 pub fn health() -> Health {
@@ -125,6 +132,8 @@ pub fn health() -> Health {
         Health::Disabled
     } else if LOADED.load(Ordering::SeqCst) {
         Health::Ready
+    } else if RELEASED.load(Ordering::SeqCst) {
+        Health::Released
     } else if FAILED.load(Ordering::SeqCst) {
         Health::Failed
     } else {
@@ -177,7 +186,7 @@ pub async fn wait_loaded(limit: Duration) -> bool {
         woken.as_mut().enable();
         match health() {
             Health::Ready => return true,
-            Health::Disabled | Health::Failed => return false,
+            Health::Disabled | Health::Failed | Health::Released => return false,
             Health::Starting => {}
         }
         let left = limit.saturating_sub(started.elapsed());
@@ -213,6 +222,8 @@ fn ensure_created(app: &AppHandle) -> Result<(), String> {
     }
     let started = Instant::now();
     LOADED.store(false, Ordering::SeqCst);
+    RELEASED.store(false, Ordering::SeqCst);
+    note_use();
     let window = tauri::WebviewWindowBuilder::new(app, POPUP_LABEL, tauri::WebviewUrl::App("ctxmenu/index.html".into()))
         .title("")
         .inner_size(MEASURE_WIDTH_CSS, 400.0)
@@ -250,6 +261,59 @@ pub fn ctx_popup_loaded(app: AppHandle) {
 /// The window can show menus now: it exists and its page has loaded.
 pub fn available() -> bool {
     health() == Health::Ready
+}
+
+fn note_use() {
+    *LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+}
+
+/// The low-memory preset starts without the window: the icon carries the native menu until a hover (or the main window's first view) makes the window.
+pub fn start_released() {
+    RELEASED.store(true, Ordering::SeqCst);
+}
+
+pub fn is_released() -> bool {
+    RELEASED.load(Ordering::SeqCst)
+}
+
+/// A hover on the tray icon: the person is about to click it. A released window is made now, so that it is usually loaded by the time of a click (the native menu answers one that comes sooner).
+pub fn prewarm(app: &AppHandle) {
+    if RELEASED.load(Ordering::SeqCst) && !EXITING.load(Ordering::SeqCst) {
+        info!("[ctxpop] hover on the tray icon: the menu window is made");
+        schedule_create_after(app, Duration::ZERO);
+    }
+}
+
+/// How long the window has been idle: it exists, no menu is on it and it is hidden. None when there is nothing to let go.
+pub fn idle_for(app: &AppHandle) -> Option<Duration> {
+    if RELEASED.load(Ordering::SeqCst) || state().is_some() {
+        return None;
+    }
+    let popup = app.get_webview_window(POPUP_LABEL)?;
+    if popup.is_visible().unwrap_or(true) {
+        return None;
+    }
+    let last = (*LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))?;
+    Some(last.elapsed())
+}
+
+/// Lets the window go (memory release): destroyed, the icon takes the native menu back, and a hover makes the window again. Not while a menu is on it.
+pub fn release(app: &AppHandle) -> bool {
+    if state().is_some() {
+        return false;
+    }
+    RELEASED.store(true, Ordering::SeqCst);
+    LOADED.store(false, Ordering::SeqCst);
+    let Some(popup) = app.get_webview_window(POPUP_LABEL) else { return false };
+    info!("[ctxpop] released for memory: the native menu takes the icon until a hover");
+    if let Err(error) = popup.destroy() {
+        warn!("[ctxpop] the menu window could not be released: {error}");
+        RELEASED.store(false, Ordering::SeqCst);
+        return false;
+    }
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::tray::refresh_menu_mode(&handle));
+    true
 }
 
 /// The app handle of the running application, kept for the tray icon's callbacks (they are generic over the runtime; the menu window is not).
@@ -419,6 +483,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
         return Err("the menu window is off".into());
     }
     let started = Instant::now();
+    note_use();
     let popup = app.get_webview_window(POPUP_LABEL).ok_or("the menu window does not exist")?;
     if !LOADED.load(Ordering::SeqCst) {
         return Err("the menu window has not loaded".into());
@@ -479,6 +544,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
         }
     }
     info!("[ctxpop] tray menu {} shown {} ms after the click (edge {}, token {})", variant.as_str(), started.elapsed().as_millis(), edge.as_str(), token);
+    crate::mem_adaptive::note_menu_shown();
     watch(app, token);
     Ok(true)
 }
@@ -710,7 +776,7 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) -> bool {
                 LOADED.store(false, Ordering::SeqCst);
                 finish(window.app_handle(), None, Reason::Failed);
                 // a lost window is made again (once per loss: a window that cannot be made sets FAILED and the native menu takes the icon); not while the application goes down
-                if !EXITING.load(Ordering::SeqCst) {
+                if !EXITING.load(Ordering::SeqCst) && !RELEASED.load(Ordering::SeqCst) {
                     warn!("[ctxpop] the menu window was destroyed: it is made again");
                     schedule_create_after(window.app_handle(), Duration::from_millis(100));
                 }

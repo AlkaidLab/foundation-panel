@@ -138,14 +138,22 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     }
     // the tray's menus open in the menu window (ctx_popup.rs): the icon's callbacks reach the app through this handle, and the window is made hidden, as for the main window's context menus
     ctx_popup::remember_app(&app_handle);
+    // memory-adaptive prototype (mem_adaptive.rs, off unless asked for): a start that keeps nothing warm lets the icon carry the native menu, and a hover makes the window
+    let keep_warm = crate::mem_adaptive::warm_tray_windows();
+    if !keep_warm {
+        ctx_popup::start_released();
+    }
     tray::create_system_tray(&app_handle)?;
     // The menu window is made at every start. A tray-only start (agent_only) has no main window to wait for, and the window is the only surface of the tray's menu: without it the icon stayed on the
     // native menu until someone happened to open the main window (the log: 20 minutes to 5 hours of "Starting Sunshine user agent without WebView windows" before "menu page ready").
-    if agent_only {
+    if !keep_warm {
+        info!("[memadapt] the tray menu window is not made at the start: the native menu answers until a hover");
+    } else if agent_only {
         ctx_popup::schedule_create_after(&app_handle, std::time::Duration::ZERO);
     } else {
         ctx_popup::schedule_create(&app_handle);
     }
+    crate::mem_adaptive::start(&app_handle);
     crate::power::refresh_ecoqos_state(&app_handle);
     if !crate::test_isolation::active() {
         #[cfg(target_os = "windows")]

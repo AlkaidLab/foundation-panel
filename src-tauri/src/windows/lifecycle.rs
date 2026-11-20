@@ -226,6 +226,11 @@ fn get(label: &str) -> Option<Panel> {
     PANELS.lock().unwrap().panels.get(label).cloned()
 }
 
+/// The page of `label` has been put to sleep (hidden, suspended): it was shown once and is not any more. A window that is still loading, or waiting to be shown for the first time, is not.
+pub(crate) fn is_background(label: &str) -> bool {
+    get(label).is_some_and(|panel| panel.state.lock().unwrap().phase == Phase::Background)
+}
+
 impl Panel {
     pub(super) fn initialization_script(&self) -> String {
         include_str!("lifecycle.js")
