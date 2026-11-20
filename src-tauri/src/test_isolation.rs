@@ -102,6 +102,7 @@ pub(crate) fn allows_command(command: &str) -> bool {
             | "get_current_dpi"
             | "get_dpi_scale_info"
             | "get_gpus"
+            | "get_proxy_health_check"
             | "get_proxy_url_command"
             | "get_rtss_status"
             | "get_sunshine_build_info"
@@ -153,6 +154,7 @@ mod tests {
     #[test]
     fn permits_window_measurements_and_denies_mutations() {
         assert!(allows_command("panel_state_save"));
+        assert!(allows_command("get_proxy_health_check"));
         assert!(allows_command("ctx_popup_ready"));
         assert!(allows_command("launch_splash_selftest"));
         for name in [

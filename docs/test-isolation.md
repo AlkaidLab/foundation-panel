@@ -11,7 +11,12 @@ WebView2 profile under `test-profiles/<name>` next to the executable. It
 bypasses single-instance activation and disables startup reconciliation,
 desktop integration, notification registrations and commands unrelated to
 the measurement. The local UI proxy accepts read-only browser requests in
-this mode. Keep the profile directory private to the test runner.
+this mode. Keep the profile directory private to the test runner. Crash
+reports use the private data directory even when `SUNSHINE_CRASH_DIR` is set.
+
+Host-backed pages look for the host configuration in the profile's
+`host/config` directory. For tests that need authenticated host responses,
+use a dedicated host fixture and its own test credentials.
 
 Normal startup continues to use the installed configuration and integrations.
 The switch is a measurement configuration for a controlled desktop session.
