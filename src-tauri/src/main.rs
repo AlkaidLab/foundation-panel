@@ -128,6 +128,10 @@ fn configure_loopback_proxy_bypass() {
             // 应用自身的导航反馈音不是网页自动播放媒体
             "--autoplay-policy=no-user-gesture-required".to_owned(),
         ]);
+        // A window whose renderer or GPU process kept dying runs without GPU acceleration (crash/recover.rs, crash/fallback.rs).
+        if crate::crash::fallback::software_rendering() {
+            browser_arguments.push(crate::crash::fallback::BROWSER_ARGUMENT.to_owned());
+        }
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
             browser_arguments.join(" "),
@@ -346,6 +350,8 @@ fn main() {
             usbip::usbip_save_forwarding_config,
             usbip::usbip_install_transport,
             usbip::usbip_cleanup_transport,
+            usbip::usbip_remove_stale_nodes,
+            usbip::usbip_export_diagnostics,
             usbip::usbip_replace_legacy_transport,
             usbip::usbip_list_remote,
             usbip::usbip_attach,
