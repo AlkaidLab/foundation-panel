@@ -999,7 +999,9 @@ mod tests {
         let result = select_backend_config(
             || {
                 loads.set(loads.get() + 1);
-                std::future::ready(Ok(uninstall_config(loads.get())))
+                let mut current = uninstall_config(loads.get());
+                *selected_backend_mut(&mut current.settings) = None;
+                std::future::ready(Ok(current))
             },
             |current| {
                 saves.set(saves.get() + 1);
