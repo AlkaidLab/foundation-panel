@@ -366,7 +366,7 @@ pub fn create_tool_window_internal<R: Runtime>(app: &AppHandle<R>, tool_type: &s
     debug!("🔧 创建工具窗口 URL: {}", url);
 
     let mut builder =
-        tauri::WebviewWindowBuilder::new(app, tool_window_id, tauri::WebviewUrl::App(url.into()))
+        crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(app, tool_window_id, tauri::WebviewUrl::App(url.into())))
             .title(&title)
             .decorations(false)
             .transparent(true)
@@ -524,11 +524,11 @@ pub fn create_toolbar_window_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
     // 窗口大小和边距配置
     let toolbar_size = 240.0; // 窗口大小（紧凑布局：80px 图标 + 80px 气泡半径 × 2）
     // 先创建窗口在默认位置
-    let window = match tauri::WebviewWindowBuilder::new(
+    let window = match crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         TOOLBAR_WINDOW_ID,
         tauri::WebviewUrl::App("toolbar/index.html".into()),
-    )
+    ))
     .title("工具栏")
     .inner_size(toolbar_size, toolbar_size)
     .max_inner_size(toolbar_size, toolbar_size)

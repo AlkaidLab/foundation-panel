@@ -135,7 +135,7 @@ fn run<R: Runtime + 'static>(app: AppHandle<R>, rx: mpsc::Receiver<Msg>) {
     let mut plan = Plan::default();
     let mut world = World::default();
     // the window is made before the first launch asks for it, unless the machine is short of memory (mem_adaptive.rs): then the host's announcement makes it, while the display is set up
-    if crate::mem_adaptive::warm_tray_windows() {
+    if crate::mem_adaptive::warm_splash() {
         ensure_window(&app);
         note_use();
     }
@@ -389,34 +389,53 @@ fn ensure_window<R: Runtime + 'static>(app: &AppHandle<R>) -> Option<tauri::Webv
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         return Some(window);
     }
-    match tauri::WebviewWindowBuilder::new(app, WINDOW_LABEL, tauri::WebviewUrl::App("launch-splash/index.html".into()))
-        .title("Launch splash")
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .focused(false)
-        .focusable(false)
-        .visible(false)
-        .inner_size(320.0, 180.0)
-        .disable_drag_drop_handler()
-        .build()
-    {
-        Ok(window) => {
-            let _ = window.set_ignore_cursor_events(true);
-            crate::windows::disable_context_menu(&window);
-            #[cfg(target_os = "windows")]
-            crate::windows::configure_webview_security(&window);
-            Some(window)
-        }
-        Err(error) => {
-            log::warn!("launch splash: its window could not be made: {error}");
-            None
+    // WebView2 can refuse a window for a moment (0x8007139F, webview_env.rs): tried again a few times, with the stage logged; the worker thread waits, the main thread never does
+    let started = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let shared = crate::webview_env::is_shared();
+        let built = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(app, WINDOW_LABEL, tauri::WebviewUrl::App("launch-splash/index.html".into())))
+            .title("Launch splash")
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .focused(false)
+            .focusable(false)
+            .visible(false)
+            .inner_size(320.0, 180.0)
+            .disable_drag_drop_handler()
+            .build();
+        match built {
+            Ok(window) => {
+                crate::webview_env::note_success("launch-splash-window", attempt, shared, started);
+                crate::webview_env::capture(&window);
+                let _ = window.set_ignore_cursor_events(true);
+                crate::windows::disable_context_menu(&window);
+                #[cfg(target_os = "windows")]
+                crate::windows::configure_webview_security(&window);
+                return Some(window);
+            }
+            Err(error) => {
+                if shared {
+                    crate::webview_env::forget();
+                }
+                match crate::webview_env::note_failure("launch-splash-window", attempt, shared, &error.to_string()) {
+                    Some(wait) if attempt < SPLASH_ATTEMPTS => {
+                        attempt += 1;
+                        std::thread::sleep(wait);
+                    }
+                    _ => return None,
+                }
+            }
         }
     }
 }
+
+/// Attempts after the first one to make the splash window when WebView2 refuses it with the invalid-state code (250 + 750 + 2000 ms of waiting at most).
+const SPLASH_ATTEMPTS: usize = 3;
 
 /// x, y, width, height in physical pixels of the display the host names, else the primary one.
 fn display_rect<R: Runtime>(app: &AppHandle<R>, display: &str) -> Option<(i32, i32, u32, u32)> {

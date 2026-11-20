@@ -24,7 +24,7 @@ static GATE: Mutex<Option<ClickGate>> = Mutex::new(None);
 static FAILURES: AtomicU32 = AtomicU32::new(0);
 const FAILURES_BEFORE_NATIVE: u32 = 2;
 /// How long a menu asked for while the window starts waits for its page (a cold WebView2 of a tray-only start).
-const WINDOW_WAIT: Duration = Duration::from_millis(5000);
+const WINDOW_WAIT: Duration = Duration::from_millis(12_000);
 
 /// Every item id of the native menu (menu.rs) except the containers: what the three menus can send back, and all that `tray_popup_act` accepts.
 pub(super) const ITEM_IDS: [&str; 46] = [
@@ -34,15 +34,16 @@ pub(super) const ITEM_IDS: [&str; 46] = [
     "visit_project_moonlight", "visit_site", "visit_bilibili", "star_github", "sponsor_qiin", "sponsor_yundi339", "sponsor_skyhua", "sponsor_wechat", "sponsor_github", "restart", "shutdown",
 ];
 
-/// Whether the icon carries the native menu now: the person asked for it, the menu window failed twice in a row, or the window cannot show (it is switched off or could not be made). A window that is
-/// still starting does not count: a menu asked for meanwhile waits for it (`open_menu`).
+/// Whether the icon carries the native menu now: the person asked for it, the menu window failed twice in a row, or WebView2 would not make the window at all (it is switched off, or every attempt of
+/// `ctx_popup::schedule_create_after` failed: the last resort of a machine whose WebView2 is broken). The tray menu is the Material menu in every memory tier and at every pressure: the window stays
+/// up, and a click while it is still being made waits for it (`open_menu`) instead of taking the native menu.
 pub(super) fn use_native_menu() -> bool {
     wants_native(tray_prefs::current().force_native, FAILURES.load(Ordering::SeqCst), ctx_popup::health())
 }
 
 /// The decision behind `use_native_menu`, apart from the state it reads.
 pub(super) fn wants_native(force_native: bool, failures: u32, health: ctx_popup::Health) -> bool {
-    force_native || failures >= FAILURES_BEFORE_NATIVE || matches!(health, ctx_popup::Health::Disabled | ctx_popup::Health::Failed | ctx_popup::Health::Released)
+    force_native || failures >= FAILURES_BEFORE_NATIVE || matches!(health, ctx_popup::Health::Disabled | ctx_popup::Health::Failed)
 }
 
 /// Whether the icon carries the native menu right now (set where the menu is attached or taken away): while it does, Windows shows that menu on a right click by itself.
@@ -125,7 +126,7 @@ pub(super) fn on_icon_event(event: TrayIconEvent) {
             let decision = gate(|g| g.double_click(&prefs));
             run(&app, decision, physical_rect(&rect));
         }
-        // the pointer is on the icon (the events repeat while it moves): a released menu window is made now (mem_adaptive.rs), the click that follows finds it or the native menu
+        // the pointer is on the icon (the events repeat while it moves): a main window that was let go for memory is made again now, hidden, so that the click that follows finds it
         TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => crate::mem_adaptive::on_tray_hover(&app),
         TrayIconEvent::Click { button: MouseButton::Right, button_state: tauri::tray::MouseButtonState::Up, rect, .. } => {
             crate::mem_adaptive::note_click();
@@ -186,6 +187,10 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
             ctx_popup::mark_failed();
         }
         if ctx_popup::health() != ctx_popup::Health::Ready {
+            // WebView2 would not make the window yet: the click is answered by the native menu, and the window is tried again now
+            if ctx_popup::health() == ctx_popup::Health::Failed {
+                ctx_popup::schedule_create_after(&app, Duration::ZERO);
+            }
             let handle = app.clone();
             let _ = app.run_on_main_thread(move || apply_menu_mode(&handle));
             return;
@@ -666,7 +671,7 @@ mod tests {
 
     #[test]
     fn the_native_menu_is_for_a_window_that_cannot_show() {
-        use ctx_popup::Health::{Disabled, Failed, Ready, Released, Starting};
+        use ctx_popup::Health::{Disabled, Failed, Ready, Starting};
         // the window is up: the Material menu
         assert!(!wants_native(false, 0, Ready));
         // the window is being made (a tray-only start, a window made again): the menu waits for it, the native menu does not take the icon
@@ -674,8 +679,6 @@ mod tests {
         // it cannot show: switched off, or it could not be made
         assert!(wants_native(false, 0, Failed));
         assert!(wants_native(false, 0, Disabled));
-        // it was let go for memory: the native menu answers a click at once, a hover makes the window (mem_adaptive.rs)
-        assert!(wants_native(false, 0, Released));
         // the person\'s own choice is always kept
         assert!(wants_native(true, 0, Ready) && wants_native(true, 0, Starting));
         // one failed open is not the end of the menu window, two in a row are

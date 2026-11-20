@@ -405,6 +405,9 @@ pub fn show_and_activate_window<R: Runtime>(window: &WebviewWindow<R>) {
         return;
     }
     log::info!("[cold] window {} shown", window.label());
+    if window.label() == MAIN_WINDOW_ID {
+        crate::mem_adaptive::note_main_shown();
+    }
     let cloaked = COLD_CLOAK.load(std::sync::atomic::Ordering::SeqCst) && window.label() == MAIN_WINDOW_ID;
     let _ = window.unminimize();
     let _ = window.show();
@@ -635,6 +638,21 @@ fn create_main_window_internal<R: Runtime>(
     app: &AppHandle<R>,
     visible: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let shared = crate::webview_env::is_shared();
+    match create_main_window_once(app, visible) {
+        // a window made from the shared environment failed and the environment was dropped: once more with an environment of its own
+        Err(error) if shared && !crate::webview_env::is_shared() => {
+            warn!("[webview-env] main-window: made again with its own environment after: {error}");
+            create_main_window_once(app, visible)
+        }
+        other => other,
+    }
+}
+
+fn create_main_window_once<R: Runtime>(
+    app: &AppHandle<R>,
+    visible: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     proxy_server::ensure_started(app);
     if app.get_webview_window(MAIN_WINDOW_ID).is_some() {
         debug!("主窗口已存在，跳过创建");
@@ -647,11 +665,14 @@ fn create_main_window_internal<R: Runtime>(
     crate::tray::mark_main_panel_loading();
     let panel = lifecycle::register(MAIN_WINDOW_ID, visible);
     let page_panel = panel.clone();
-    let builder = tauri::WebviewWindowBuilder::new(
+    // all windows of the panel are made from one WebView2 environment (webview_env.rs); a window that is made again after a memory release carries the state its predecessor left
+    // (view_state.rs) and applies it before the person sees it
+    let initialization_script = format!("{}\n{}", panel.initialization_script(), crate::view_state::main_window_script());
+    let builder = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         MAIN_WINDOW_ID,
         tauri::WebviewUrl::App("sunshine-frame.html".into()),
-    )
+    ))
     .title("Sunshine Control Panel")
     .inner_size(1280.0, 800.0)
     .min_inner_size(480.0, 560.0);
@@ -665,7 +686,7 @@ fn create_main_window_internal<R: Runtime>(
     .shadow(false)
     .visible(false)
     .disable_drag_drop_handler()
-    .initialization_script(panel.initialization_script())
+    .initialization_script(initialization_script)
     .on_page_load(move |window, payload| {
         if payload.event() == PageLoadEvent::Finished {
             page_panel.page_loaded(window);
@@ -674,9 +695,15 @@ fn create_main_window_internal<R: Runtime>(
     .build()
     .map_err(|e| {
         lifecycle::unregister(MAIN_WINDOW_ID, &panel);
-        format!("创建{}主窗口失败: {}", visibility_desc, e)
+        let shared = crate::webview_env::is_shared();
+        if shared {
+            // the shared environment may belong to a browser process that is gone: the next attempt makes its own
+            crate::webview_env::forget();
+        }
+        format!("创建{}主窗口失败: {}", visibility_desc, crate::webview_env::describe_failure("main-window", 1, shared, &e.to_string()))
     })?;
 
+    crate::webview_env::capture(&window);
     panel.attach(&window);
     // a window that was let go for memory (mem_adaptive.rs) comes back where and as large as it was
     crate::mem_adaptive::restore_bounds(&window);
@@ -738,11 +765,11 @@ fn create_desktop_window_internal<R: Runtime>(
     let panel = lifecycle::register(DESKTOP_WINDOW_ID, visible);
     let page_panel = panel.clone();
 
-    let window = tauri::WebviewWindowBuilder::new(
+    let window = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         DESKTOP_WINDOW_ID,
         tauri::WebviewUrl::App("desktop/index.html".into()),
-    )
+    ))
     .title("Sunshine Desktop")
     .inner_size(1600.0, 900.0)
     .min_inner_size(1024.0, 600.0)
@@ -835,6 +862,16 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
     if closing::is_closing(MAIN_WINDOW_ID) {
         closing::after_closed(app, MAIN_WINDOW_ID, move |app| activate_main_window(&app, target_url));
         return;
+    }
+    // the clock of the reopen starts here (mem_adaptive.rs times a kept window, one made ahead of the click and one the click had to make)
+    {
+        let existing = app.get_webview_window(MAIN_WINDOW_ID);
+        crate::mem_adaptive::note_open_request(existing.as_ref().is_some_and(|window| !window.is_visible().unwrap_or(true)), existing.is_some());
+        // a window made ahead of the click that is still loading is shown the moment its page is ready, not as a bare surface
+        if target_url.is_none() && existing.is_some() && lifecycle::show_when_loaded(MAIN_WINDOW_ID) {
+            info!("[memadapt] the main window made ahead is still loading: it is shown when its page is ready");
+            return;
+        }
     }
     let created = if app.get_webview_window(MAIN_WINDOW_ID).is_none() {
         info!("主窗口尚未创建，正在从用户会话 agent 按需创建");
@@ -1160,6 +1197,11 @@ fn refresh_webview_surface<R: Runtime>(window: &WebviewWindow<R>) {
             let _ = controller.NotifyParentWindowPositionChanged();
         }
     });
+}
+
+/// The main window is being closed (its destruction is under way).
+pub(crate) fn main_window_closing() -> bool {
+    closing::is_closing(MAIN_WINDOW_ID)
 }
 
 /// Memory release (mem_adaptive.rs): the main window sits hidden in the tray, asleep (not minimized, not loading, not closing).

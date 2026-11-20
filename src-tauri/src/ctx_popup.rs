@@ -50,10 +50,10 @@ static LOADED_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// The self test runs: the window stays cloaked and takes no focus (a measurement instance shows nothing on the desk of whoever uses the machine).
 static SELFTEST: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<Open>> = Mutex::new(None);
-/// The window was let go on purpose and not yet made again (see `Health::Released`).
-static RELEASED: AtomicBool = AtomicBool::new(false);
-/// When a menu was last asked for (or the window was made): the idle time of the release.
-static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
+/// A background loop that keeps making the window after the attempts of the start are used up is running.
+static RECOVERING: AtomicBool = AtomicBool::new(false);
+/// One attempt loop at a time: two (the start and the first view of the main window both ask) would race to make the same window.
+static CREATING: AtomicBool = AtomicBool::new(false);
 
 /// A menu opened from the tray icon: where the icon is and which side of the monitor the taskbar is on. The window is placed beside the icon, away from the taskbar, on every `ready`.
 #[derive(Clone, Copy)]
@@ -120,11 +120,8 @@ pub enum Health {
     /// being made, or its page is loading: a menu asked for now waits for it
     Starting,
     Ready,
-    /// it could not be made, or was lost and could not be made again
+    /// it could not be made, or was lost and could not be made again, after every attempt of `schedule_create_after`
     Failed,
-    /// it was let go on purpose (mem_adaptive.rs: the machine is short of memory, or the low-memory preset keeps nothing warm) and is made again by a hover on the icon: the icon carries
-    /// the native menu meanwhile, which answers a click at once
-    Released,
 }
 
 pub fn health() -> Health {
@@ -132,8 +129,6 @@ pub fn health() -> Health {
         Health::Disabled
     } else if LOADED.load(Ordering::SeqCst) {
         Health::Ready
-    } else if RELEASED.load(Ordering::SeqCst) {
-        Health::Released
     } else if FAILED.load(Ordering::SeqCst) {
         Health::Failed
     } else {
@@ -168,12 +163,78 @@ pub fn schedule_create_after(app: &AppHandle, delay: Duration) {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        if let Err(error) = ensure_created(&app) {
-            warn!("[ctxpop] the menu window could not be created: {error}");
-            FAILED.store(true, Ordering::SeqCst);
-            // the tray's native menu takes the icon until a window can be made
-            crate::tray::refresh_menu_mode(&app);
+        create_with_retry(&app).await;
+    });
+}
+
+/// Makes the window, trying again while WebView2 refuses it with the invalid-state code (webview_env.rs: another browser process on the user data folder runs with other options, or the one of
+/// the panel before this one is still shutting down). Every failure is logged with the stage; when the attempts are used up the tray's native menu takes the icon (`Health::Failed`) and a slow
+/// loop keeps trying, so that the Material menu is back as soon as WebView2 lets the window be made.
+async fn create_with_retry(app: &AppHandle) {
+    if CREATING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    create_attempts(app).await;
+    CREATING.store(false, Ordering::SeqCst);
+}
+
+async fn create_attempts(app: &AppHandle) {
+    let started = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let shared = crate::webview_env::is_shared();
+        match ensure_created(app) {
+            Ok(()) => {
+                crate::webview_env::note_success("tray-menu-window", attempt, shared, started);
+                return;
+            }
+            Err(error) => {
+                if shared {
+                    // an environment that belongs to a browser process that is gone must not be asked again
+                    crate::webview_env::forget();
+                }
+                match crate::webview_env::note_failure("tray-menu-window", attempt, shared, &error) {
+                    Some(wait) if !EXITING.load(Ordering::SeqCst) => {
+                        attempt += 1;
+                        tokio::time::sleep(wait).await;
+                    }
+                    _ => break,
+                }
+            }
         }
+    }
+    warn!("[ctxpop] the menu window could not be created: the native menu takes the icon until it can be");
+    FAILED.store(true, Ordering::SeqCst);
+    crate::tray::refresh_menu_mode(app);
+    recover_slowly(app);
+}
+
+/// After the attempts of the start failed: one more try every 20 s, up to 30 times (10 minutes), until a window is there.
+fn recover_slowly(app: &AppHandle) {
+    if RECOVERING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for round in 1..=30 {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if EXITING.load(Ordering::SeqCst) || app.get_webview_window(POPUP_LABEL).is_some() {
+                break;
+            }
+            match ensure_created(&app) {
+                Ok(()) => {
+                    info!("[webview-env] tray-menu-window: made by the slow retry (round {round})");
+                    break;
+                }
+                Err(error) => {
+                    if crate::webview_env::is_shared() {
+                        crate::webview_env::forget();
+                    }
+                    debug!("[webview-env] tray-menu-window: slow retry {round} failed: {error}");
+                }
+            }
+        }
+        RECOVERING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -186,7 +247,7 @@ pub async fn wait_loaded(limit: Duration) -> bool {
         woken.as_mut().enable();
         match health() {
             Health::Ready => return true,
-            Health::Disabled | Health::Failed | Health::Released => return false,
+            Health::Disabled | Health::Failed => return false,
             Health::Starting => {}
         }
         let left = limit.saturating_sub(started.elapsed());
@@ -222,9 +283,7 @@ fn ensure_created(app: &AppHandle) -> Result<(), String> {
     }
     let started = Instant::now();
     LOADED.store(false, Ordering::SeqCst);
-    RELEASED.store(false, Ordering::SeqCst);
-    note_use();
-    let window = tauri::WebviewWindowBuilder::new(app, POPUP_LABEL, tauri::WebviewUrl::App("ctxmenu/index.html".into()))
+    let window = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(app, POPUP_LABEL, tauri::WebviewUrl::App("ctxmenu/index.html".into())))
         .title("")
         .inner_size(MEASURE_WIDTH_CSS, 400.0)
         .resizable(false)
@@ -240,6 +299,7 @@ fn ensure_created(app: &AppHandle) -> Result<(), String> {
         .disable_drag_drop_handler()
         .build()
         .map_err(|e| e.to_string())?;
+    crate::webview_env::capture(&window);
     crate::windows::disable_context_menu(&window);
     #[cfg(target_os = "windows")]
     crate::windows::configure_webview_security(&window);
@@ -253,8 +313,6 @@ pub fn ctx_popup_loaded(app: AppHandle) {
     FAILED.store(false, Ordering::SeqCst);
     LOADED.store(true, Ordering::SeqCst);
     LOADED_NOTIFY.notify_waiters();
-    // a window that has just loaded has not been idle yet (its making can wait for a native menu that is open, 31 s in a measurement)
-    note_use();
     info!("[ctxpop] menu page ready");
     // the tray's own menu window is usable now: the native menu steps aside (unless the person asked for it), and a window that is loaded again has earned the failures it was blamed for
     crate::tray::menu_window_loaded(&app);
@@ -263,59 +321,6 @@ pub fn ctx_popup_loaded(app: AppHandle) {
 /// The window can show menus now: it exists and its page has loaded.
 pub fn available() -> bool {
     health() == Health::Ready
-}
-
-fn note_use() {
-    *LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
-}
-
-/// The low-memory preset starts without the window: the icon carries the native menu until a hover (or the main window's first view) makes the window.
-pub fn start_released() {
-    RELEASED.store(true, Ordering::SeqCst);
-}
-
-pub fn is_released() -> bool {
-    RELEASED.load(Ordering::SeqCst)
-}
-
-/// A hover on the tray icon: the person is about to click it. A released window is made now, so that it is usually loaded by the time of a click (the native menu answers one that comes sooner).
-pub fn prewarm(app: &AppHandle) {
-    if RELEASED.load(Ordering::SeqCst) && !EXITING.load(Ordering::SeqCst) {
-        info!("[ctxpop] hover on the tray icon: the menu window is made");
-        schedule_create_after(app, Duration::ZERO);
-    }
-}
-
-/// How long the window has been idle: it exists, no menu is on it and it is hidden. None when there is nothing to let go.
-pub fn idle_for(app: &AppHandle) -> Option<Duration> {
-    if RELEASED.load(Ordering::SeqCst) || state().is_some() {
-        return None;
-    }
-    let popup = app.get_webview_window(POPUP_LABEL)?;
-    if popup.is_visible().unwrap_or(true) {
-        return None;
-    }
-    let last = (*LAST_USE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))?;
-    Some(last.elapsed())
-}
-
-/// Lets the window go (memory release): destroyed, the icon takes the native menu back, and a hover makes the window again. Not while a menu is on it.
-pub fn release(app: &AppHandle) -> bool {
-    if state().is_some() {
-        return false;
-    }
-    RELEASED.store(true, Ordering::SeqCst);
-    LOADED.store(false, Ordering::SeqCst);
-    let Some(popup) = app.get_webview_window(POPUP_LABEL) else { return false };
-    info!("[ctxpop] released for memory: the native menu takes the icon until a hover");
-    if let Err(error) = popup.destroy() {
-        warn!("[ctxpop] the menu window could not be released: {error}");
-        RELEASED.store(false, Ordering::SeqCst);
-        return false;
-    }
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || crate::tray::refresh_menu_mode(&handle));
-    true
 }
 
 /// The app handle of the running application, kept for the tray icon's callbacks (they are generic over the runtime; the menu window is not).
@@ -485,7 +490,6 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
         return Err("the menu window is off".into());
     }
     let started = Instant::now();
-    note_use();
     let popup = app.get_webview_window(POPUP_LABEL).ok_or("the menu window does not exist")?;
     if !LOADED.load(Ordering::SeqCst) {
         return Err("the menu window has not loaded".into());
@@ -547,6 +551,8 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     }
     info!("[ctxpop] tray menu {} shown {} ms after the click (edge {}, token {})", variant.as_str(), started.elapsed().as_millis(), edge.as_str(), token);
     crate::mem_adaptive::note_menu_shown();
+    // "open the panel" is one tap away: a main window that was let go is made again now
+    crate::mem_adaptive::on_tray_menu_opened(&app);
     watch(app, token);
     Ok(true)
 }
@@ -778,7 +784,7 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) -> bool {
                 LOADED.store(false, Ordering::SeqCst);
                 finish(window.app_handle(), None, Reason::Failed);
                 // a lost window is made again (once per loss: a window that cannot be made sets FAILED and the native menu takes the icon); not while the application goes down
-                if !EXITING.load(Ordering::SeqCst) && !RELEASED.load(Ordering::SeqCst) {
+                if !EXITING.load(Ordering::SeqCst) {
                     warn!("[ctxpop] the menu window was destroyed: it is made again");
                     schedule_create_after(window.app_handle(), Duration::from_millis(100));
                 }

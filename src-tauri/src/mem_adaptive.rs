@@ -1,48 +1,61 @@
-//! Memory-adaptive release of idle WebViews. PROTOTYPE: off unless the person (or a measurement) turns it on, and nothing here changes what the panel does while it is off.
+//! Memory-adaptive release of the idle main window and the launch splash. On by default on every machine; `SUNSHINE_GUI_MEM_MODE=off|adaptive|low|auto` (or `{"mode": "..."}` in
+//! `<config>/Sunshine GUI/memory-mode.json`) overrides the choice the controller makes.
 //!
-//! The panel keeps three kinds of WebView alive after it has been used: the main window hidden to the tray (about 640 MB committed, 175 MB of it video memory), and, for the tray alone, the menu
-//! window and the launch splash window that exist "so that the first right click and the first launch do not wait for a WebView2" (about 220 MB with the processes they pull in). This module lets them
-//! go when they are idle and the machine would rather have the memory, and brings them back before they are needed:
+//! What the panel keeps alive after it has been used: the main window hidden to the tray (about 640 MB committed, 175 MB of it video memory), the small window of the tray menu and the launch splash
+//! window ("so that the first right click and the first launch do not wait for a WebView2"). This module lets the main window and the splash go when they are idle and the machine would rather have
+//! the memory, and brings the main window back before it is needed. The tray menu window is never let go: the tray menu is always the Material menu, in every tier and at every pressure, and the window
+//! shares the WebView2 environment of the others (webview_env.rs), so keeping it is cheap.
 //!
-//! * **hidden main window** (`windows::main_window_sleeping`): destroyed through the same close as the title bar's x after `Policy::hidden_release`. The next open makes it again (the path of a first
-//!   open) at the size and place it had.
-//! * **tray menu window / splash window**: not made at the start when the policy keeps nothing warm (`Policy::warm_tray_windows`), destroyed when idle (`Policy::tray_idle_release`) while no main window
-//!   shows a page. The icon carries the native menu meanwhile (ctx_popup `Health::Released`), so a right click is answered at once; a HOVER on the icon makes the Material menu window, and the launch
-//!   announcement makes the splash (it is followed by the display setup, which takes longer than the window does).
+//! * **tier** (`Setting::resolve`): the installed memory picks it unless it is set: up to 8.5 GB the low tier (the main window goes after 60 s hidden), above it the adaptive tier (after 300 s, and
+//!   sooner under pressure).
 //! * **pressure** (`mem_adaptive_core::classify`): one sample of the machine every `TICK`: `GlobalMemoryStatusEx` (available physical memory), `GetPerformanceInfo` (commit headroom) and the system's
 //!   `LowMemoryResourceNotification`; elevated and critical pressure shorten the delays.
+//! * **hidden main window** (`windows::main_window_sleeping`): destroyed through the same close as the title bar's x after `Policy::hidden_release`, after the page's state was kept (view_state.rs).
+//! * **coming back without being noticed**: a hover on the tray icon, or the tray menu opening, makes the main window again, hidden, from the snapshot of the one that went (route, scroll, tabs, sections,
+//!   drafts: inject-viewstate.js). A click then shows a window that is already there, the way it shows one that was never let go. If the click came first, the window is shown the moment its page is ready.
+//! * **the guard** (`mem_adaptive_core::Guard`): the time from the request to the shown window is measured for kept windows and for windows that were let go. In a situation (a pressure level) in which
+//!   the released one was measurably slower than the kept one, releasing stops for six hours (kept in `memory-guard.json`), whatever the delay says.
 //!
-//! Switches (all off by default): `SUNSHINE_GUI_MEM_MODE=adaptive|low` or `{"mode": "adaptive"}` in `<config>/Sunshine GUI/memory-mode.json`. For measurements: `SUNSHINE_GUI_MEM_HIDDEN_SECS`,
-//! `SUNSHINE_GUI_MEM_TRAY_IDLE_SECS` (seconds, replace the delays at every pressure) and `SUNSHINE_GUI_MEM_FAKE_PRESSURE_FILE` (a file holding none|elevated|critical, read at every tick).
+//! Measurements: `SUNSHINE_GUI_MEM_HIDDEN_SECS`, `SUNSHINE_GUI_MEM_TRAY_IDLE_SECS` (seconds, replace the delays at every pressure), `SUNSHINE_GUI_MEM_FAKE_PRESSURE_FILE` (a file holding
+//! none|elevated|critical, read at every tick) and `SUNSHINE_GUI_MEM_GUARD=off` (the guard records but does not stop releasing).
 
-use crate::mem_adaptive_core::{self as core, Mode, Pressure};
+use crate::mem_adaptive_core::{self as core, Guard, Mode, Pressure, Setting, Verdict};
 use log::{debug, info, warn};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow};
 
 /// How often the machine and the idle windows are looked at.
 const TICK: Duration = Duration::from_secs(3);
-/// A click older than this was not answered by the Material menu (the native menu took it).
+/// A click older than this was not answered by the Material menu.
 const CLICK_STALE: Duration = Duration::from_secs(10);
+/// A main window made ahead of a click is left alone this long before the next release delay starts.
+const PREWARM_GRACE: Duration = Duration::from_secs(25);
 
-pub fn mode() -> Mode {
-    static MODE: OnceLock<Mode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        let asked = std::env::var("SUNSHINE_GUI_MEM_MODE").ok().map(|text| Mode::parse(&text)).or_else(mode_from_file).unwrap_or(Mode::Off);
-        if asked != Mode::Off {
-            info!("[memadapt] mode {asked:?}");
-        }
-        asked
-    })
+// ---- the tier ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+pub fn setting() -> Setting {
+    static SETTING: OnceLock<Setting> = OnceLock::new();
+    *SETTING.get_or_init(|| std::env::var("SUNSHINE_GUI_MEM_MODE").ok().map(|text| Setting::parse(&text)).or_else(setting_from_file).unwrap_or(Setting::Auto))
 }
 
-fn mode_from_file() -> Option<Mode> {
+fn setting_from_file() -> Option<Setting> {
     let path = dirs::config_dir()?.join("Sunshine GUI").join("memory-mode.json");
     let text = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
-    value.get("mode").and_then(|mode| mode.as_str()).map(Mode::parse)
+    value.get("mode").and_then(|mode| mode.as_str()).map(Setting::parse)
+}
+
+/// The tier of this machine, decided once: the setting, or the preset for the installed memory.
+pub fn mode() -> Mode {
+    static MODE: OnceLock<Mode> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        let total = system::sample().map_or(0, |sample| sample.total_phys);
+        let mode = setting().resolve(total);
+        info!("[memadapt] tier {mode:?} (setting {:?}, {} MB installed)", setting(), total >> 20);
+        mode
+    })
 }
 
 static PRESSURE: AtomicU8 = AtomicU8::new(0);
@@ -59,7 +72,7 @@ fn set_pressure(pressure: Pressure) {
     PRESSURE.store(pressure as u8, Ordering::Relaxed);
 }
 
-/// What the mode does at the pressure of now, with the measurement overrides applied.
+/// What the tier does at the pressure of now, with the measurement overrides applied.
 fn policy() -> core::Policy {
     let mut policy = core::policy(mode(), pressure());
     if mode() != Mode::Off {
@@ -67,31 +80,28 @@ fn policy() -> core::Policy {
             policy.hidden_release = Some(delay);
         }
         if let Some(delay) = core::override_secs(std::env::var("SUNSHINE_GUI_MEM_TRAY_IDLE_SECS").ok().as_deref()) {
-            policy.tray_idle_release = Some(delay);
+            policy.splash_idle_release = Some(delay);
         }
     }
     policy
 }
 
-/// The tray menu window and the splash window are made at the start (today's behaviour) unless the mode keeps nothing warm.
-pub fn warm_tray_windows() -> bool {
-    policy().warm_tray_windows
+/// The splash window is made at the start (a first launch finds it there) unless the tier keeps nothing warm for it.
+pub fn warm_splash() -> bool {
+    policy().warm_splash
 }
 
 // ---- the clock ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/// Starts the poller. Does nothing while the mode is off.
+/// Starts the poller. Does nothing while the tier is off.
 pub fn start(app: &AppHandle) {
     if mode() == Mode::Off {
+        info!("[memadapt] off: nothing is released");
         return;
     }
+    load_guard();
     if let Some(sample) = system::sample() {
-        info!(
-            "[memadapt] {} MB installed, {} MB available: the preset this machine would get is {:?}",
-            sample.total_phys >> 20,
-            sample.avail_phys >> 20,
-            Mode::suggested_for(sample.total_phys)
-        );
+        info!("[memadapt] {} MB installed, {} MB available", sample.total_phys >> 20, sample.avail_phys >> 20);
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -112,14 +122,12 @@ fn tick(app: &AppHandle, held: &mut Held) {
     observe_pressure();
     let policy = policy();
     release_hidden_main(app, held, policy.hidden_release);
-    release_idle_tray(app, policy.tray_idle_release);
+    release_idle_splash(app, policy.splash_idle_release);
 }
 
 fn observe_pressure() {
     let before = pressure();
-    let fake = std::env::var_os("SUNSHINE_GUI_MEM_FAKE_PRESSURE_FILE")
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| core::parse_fake_pressure(&text));
+    let fake = std::env::var_os("SUNSHINE_GUI_MEM_FAKE_PRESSURE_FILE").and_then(|path| std::fs::read_to_string(path).ok()).and_then(|text| core::parse_fake_pressure(&text));
     let sample = system::sample();
     let now = fake.or_else(|| sample.map(|sample| core::classify(&sample, before))).unwrap_or(Pressure::None);
     if now != before {
@@ -144,37 +152,194 @@ fn release_hidden_main(app: &AppHandle, held: &mut Held, delay: Option<Duration>
         held.main_since = None;
         return;
     };
+    // a window made ahead of a click is given time to be clicked
+    if PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some_and(|at| at.elapsed() < PREWARM_GRACE) {
+        held.main_since = None;
+        return;
+    }
     let since = *held.main_since.get_or_insert_with(Instant::now);
     let hidden = core::held_for(Some(since), Instant::now());
     if hidden < delay {
         return;
     }
+    if !release_allowed() {
+        // the guard: the last reopen after a release in this situation was slower than a kept window's
+        debug!("[memadapt] release held back by the guard at {:?} pressure", pressure());
+        return;
+    }
     held.main_since = None;
     keep_bounds(&window);
     info!("[memadapt] the main window has been hidden {} s at {:?} pressure: released", hidden.as_secs(), pressure());
+    crate::view_state::arm_restore();
+    RELEASE_PRESSURE.store(pressure() as u8, Ordering::Relaxed);
+    RELEASED_MAIN.store(true, Ordering::SeqCst);
     if !crate::windows::release_main_window(app) {
         warn!("[memadapt] the main window could not be released");
+        RELEASED_MAIN.store(false, Ordering::SeqCst);
+        crate::view_state::disarm_restore();
     }
 }
 
-fn release_idle_tray(app: &AppHandle, delay: Option<Duration>) {
+fn release_idle_splash(app: &AppHandle, delay: Option<Duration>) {
     let Some(delay) = delay else { return };
-    // a main window that shows a page (or may be restored from the taskbar) uses the menu window for the menus of its page
+    // a main window that shows a page does not need the splash let go (it is a memory release of the idle machine)
     if app.get_webview_window("main").is_some() && crate::windows::main_window_sleeping(app).is_none() {
         return;
-    }
-    if crate::ctx_popup::idle_for(app).is_some_and(|idle| idle >= delay) {
-        crate::ctx_popup::release(app);
     }
     if crate::launch_splash::idle_for(app).is_some_and(|idle| idle >= delay) {
         crate::launch_splash::release(app);
     }
 }
 
-/// The pointer is on the tray icon (called for every event of the icon's hover).
+// ---- coming back ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// The main window was let go and has not been shown again yet.
+static RELEASED_MAIN: AtomicBool = AtomicBool::new(false);
+/// The pressure level the last release happened at (the situation the guard judges it by).
+static RELEASE_PRESSURE: AtomicU8 = AtomicU8::new(0);
+/// When a main window was made ahead of a click (and not shown since).
+static PREWARM_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static PREWARMING: AtomicBool = AtomicBool::new(false);
+
+/// The pointer is on the tray icon (called for every event of the icon's hover): the person is about to click it.
 pub fn on_tray_hover(app: &AppHandle) {
-    if mode() != Mode::Off && crate::ctx_popup::is_released() {
-        crate::ctx_popup::prewarm(app);
+    prewarm_main(app, "hover on the tray icon");
+}
+
+/// A menu of the tray opened: "open the panel" is one tap away.
+pub fn on_tray_menu_opened(app: &AppHandle) {
+    prewarm_main(app, "tray menu opened");
+}
+
+/// Makes the main window again, hidden, if it was let go: a click then finds it there. Several calls in a row make one window.
+fn prewarm_main(app: &AppHandle, why: &str) {
+    if !RELEASED_MAIN.load(Ordering::SeqCst) || app.get_webview_window("main").is_some() || crate::windows::main_window_closing() {
+        return;
+    }
+    if PREWARMING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    info!("[memadapt] {why}: the main window is made ahead of the click");
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = Instant::now();
+        match crate::windows::create_main_window_hidden(&app) {
+            Ok(()) => {
+                *PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+                info!("[memadapt] the main window was made ahead in {} ms", started.elapsed().as_millis());
+            }
+            Err(error) => warn!("[memadapt] the main window could not be made ahead: {error}"),
+        }
+        PREWARMING.store(false, Ordering::SeqCst);
+    });
+}
+
+// ---- the guard ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+static GUARD: Mutex<Option<Guard>> = Mutex::new(None);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reopen {
+    /// the window was hidden and is shown again (never let go)
+    Kept,
+    /// the window was let go and made ahead of the click
+    Prewarmed,
+    /// the window was let go and the click had to make it
+    Cold,
+    /// the first window of the run
+    First,
+}
+
+static OPEN_REQUEST: Mutex<Option<(Instant, Reopen)>> = Mutex::new(None);
+
+fn guard<T>(f: impl FnOnce(&mut Guard) -> T) -> T {
+    let mut slot = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(slot.get_or_insert_with(Guard::default))
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+fn guard_path() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("Sunshine GUI").join("memory-guard.json"))
+}
+
+fn load_guard() {
+    let Some(text) = guard_path().and_then(|path| std::fs::read_to_string(path).ok()) else { return };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) else { return };
+    let Some(list) = value.get("blocked_until").and_then(|list| list.as_array()) else { return };
+    let mut blocks = [0u64; 3];
+    for (slot, item) in blocks.iter_mut().zip(list) {
+        *slot = item.as_u64().unwrap_or(0);
+    }
+    guard(|guard| *guard = Guard::with_blocks(blocks));
+    if blocks.iter().any(|&until| until > now_secs()) {
+        info!("[memadapt] the guard holds releases back in some situations until {blocks:?} (seconds since the epoch)");
+    }
+}
+
+fn save_guard() {
+    let blocks = guard(|guard| guard.blocks());
+    let Some(path) = guard_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(error) = std::fs::write(path, serde_json::json!({ "blocked_until": blocks }).to_string()) {
+        debug!("[memadapt] the guard could not be kept: {error}");
+    }
+}
+
+fn guard_enabled() -> bool {
+    !std::env::var("SUNSHINE_GUI_MEM_GUARD").is_ok_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
+/// Whether the window may be let go at the pressure of now.
+fn release_allowed() -> bool {
+    !guard_enabled() || guard(|guard| guard.allows_release(pressure(), now_secs()))
+}
+
+/// The person asked for the main window (a click, a hotkey, a second start): the clock of the reopen starts. Only a window that is hidden or absent counts.
+pub fn note_open_request(existing_hidden: bool, exists: bool) {
+    let kind = if exists && existing_hidden {
+        if PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some() { Reopen::Prewarmed } else { Reopen::Kept }
+    } else if !exists {
+        if RELEASED_MAIN.load(Ordering::SeqCst) { Reopen::Cold } else { Reopen::First }
+    } else {
+        return;
+    };
+    *OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), kind));
+}
+
+/// The main window is on screen: the reopen is timed and judged.
+pub fn note_main_shown() {
+    let Some((at, kind)) = OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else { return };
+    let ms = at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+    match kind {
+        Reopen::First => {}
+        Reopen::Kept => {
+            guard(|guard| guard.record_kept(ms));
+            info!("[memadapt] reopen kept window: {ms} ms");
+        }
+        Reopen::Prewarmed | Reopen::Cold => {
+            let situation = match RELEASE_PRESSURE.load(Ordering::Relaxed) {
+                2 => Pressure::Critical,
+                1 => Pressure::Elevated,
+                _ => Pressure::None,
+            };
+            let (verdict, limit) = guard(|guard| (guard.record_released(situation, ms, now_secs()), guard.limit_ms()));
+            info!(
+                "[memadapt] reopen after a release ({}): {ms} ms against {limit} ms for a kept window: {verdict:?}{}",
+                if kind == Reopen::Prewarmed { "made ahead" } else { "made by the click" },
+                if verdict == Verdict::Blocked && guard_enabled() { "; releasing stops in this situation for six hours" } else { "" }
+            );
+            if verdict == Verdict::Blocked {
+                save_guard();
+            }
+            RELEASED_MAIN.store(false, Ordering::SeqCst);
+            *PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            crate::view_state::clear_carry();
+        }
     }
 }
 

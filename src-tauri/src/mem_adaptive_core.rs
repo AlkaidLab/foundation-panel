@@ -1,7 +1,7 @@
 //! The decisions of the memory-adaptive release (mem_adaptive.rs), without the system: which mode is asked for, how much memory pressure a sample of the machine means, and what each
 //! mode does about the windows that are idle at that pressure. Pure, so that the thresholds are tested with numbers.
 //!
-//! PROTOTYPE: every mode but `Off` is opt-in; nothing here runs unless the person (or a measurement) asked for it.
+//! Adaptive is the default on every machine (`Setting::Auto` picks the tier from the installed memory); `Off` and a fixed tier are settings the person (or a measurement) chooses.
 //!
 //! Sources of the thresholds:
 //! * Microsoft Learn, Win32 `GlobalMemoryStatusEx` / "Memory Performance Information" (ms.date 2018): `ullAvailPhys` is the physical memory that can be reused at once, `ullTotalPhys` the installed
@@ -40,6 +40,36 @@ impl Mode {
             Mode::Low
         } else {
             Mode::Adaptive
+        }
+    }
+}
+
+/// What the person (or a measurement) asked for: nothing (the controller picks), or a tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Auto,
+    Fixed(Mode),
+}
+
+impl Setting {
+    /// `off`, `adaptive` and `low` are tiers; `auto`, an empty text and anything unknown leave the choice to the controller (the safe default is the adaptive controller, not nothing).
+    pub fn parse(text: &str) -> Setting {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "off" | "0" | "false" | "none" | "never" => Setting::Fixed(Mode::Off),
+            "adaptive" => Setting::Fixed(Mode::Adaptive),
+            "low" | "low-memory" | "lowmemory" => Setting::Fixed(Mode::Low),
+            _ => Setting::Auto,
+        }
+    }
+
+    /// The tier this machine runs: the fixed one, or the preset for the installed memory (adaptive while the memory is not known).
+    pub fn resolve(self, total_phys: u64) -> Mode {
+        match self {
+            Setting::Fixed(mode) => mode,
+            Setting::Auto => match Mode::suggested_for(total_phys) {
+                Mode::Off => Mode::Adaptive,
+                mode => mode,
+            },
         }
     }
 }
@@ -102,15 +132,16 @@ pub fn classify(sample: &Sample, before: Pressure) -> Pressure {
     }
 }
 
-/// What a mode does at a pressure.
+/// What a mode does at a pressure. The tray menu window is not in here: it stays up in every mode and at every pressure (the tray menu is always the Material menu), and it shares the WebView2
+/// environment of the other windows (webview_env.rs), so it costs little; only the main window and the launch splash are let go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     /// the main window, hidden to the tray (not minimized), is destroyed after this long; None keeps it
     pub hidden_release: Option<Duration>,
-    /// the tray menu window and the launch splash window are made at the start (a first right click and a first launch find them there)
-    pub warm_tray_windows: bool,
-    /// the tray menu window and the splash window, idle and with no main window up, are destroyed after this long; None keeps them
-    pub tray_idle_release: Option<Duration>,
+    /// the launch splash window is made at the start (a first launch finds it there); otherwise the host's announcement of a launch makes it
+    pub warm_splash: bool,
+    /// the splash window, idle, is destroyed after this long; None keeps it
+    pub splash_idle_release: Option<Duration>,
 }
 
 const fn secs(s: u64) -> Duration {
@@ -119,13 +150,13 @@ const fn secs(s: u64) -> Duration {
 
 pub fn policy(mode: Mode, pressure: Pressure) -> Policy {
     match (mode, pressure) {
-        (Mode::Off, _) => Policy { hidden_release: None, warm_tray_windows: true, tray_idle_release: None },
-        (Mode::Adaptive, Pressure::None) => Policy { hidden_release: Some(secs(300)), warm_tray_windows: true, tray_idle_release: None },
-        (Mode::Adaptive, Pressure::Elevated) => Policy { hidden_release: Some(secs(30)), warm_tray_windows: false, tray_idle_release: Some(secs(60)) },
-        (Mode::Adaptive, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_tray_windows: false, tray_idle_release: Some(secs(15)) },
-        (Mode::Low, Pressure::None) => Policy { hidden_release: Some(secs(60)), warm_tray_windows: false, tray_idle_release: Some(secs(60)) },
-        (Mode::Low, Pressure::Elevated) => Policy { hidden_release: Some(secs(20)), warm_tray_windows: false, tray_idle_release: Some(secs(30)) },
-        (Mode::Low, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_tray_windows: false, tray_idle_release: Some(secs(10)) },
+        (Mode::Off, _) => Policy { hidden_release: None, warm_splash: true, splash_idle_release: None },
+        (Mode::Adaptive, Pressure::None) => Policy { hidden_release: Some(secs(300)), warm_splash: true, splash_idle_release: None },
+        (Mode::Adaptive, Pressure::Elevated) => Policy { hidden_release: Some(secs(30)), warm_splash: false, splash_idle_release: Some(secs(60)) },
+        (Mode::Adaptive, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_splash: false, splash_idle_release: Some(secs(15)) },
+        (Mode::Low, Pressure::None) => Policy { hidden_release: Some(secs(60)), warm_splash: false, splash_idle_release: Some(secs(60)) },
+        (Mode::Low, Pressure::Elevated) => Policy { hidden_release: Some(secs(20)), warm_splash: false, splash_idle_release: Some(secs(30)) },
+        (Mode::Low, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_splash: false, splash_idle_release: Some(secs(10)) },
     }
 }
 
@@ -150,6 +181,91 @@ pub fn held_for(first_seen: Option<std::time::Instant>, now: std::time::Instant)
     first_seen.map_or(Duration::ZERO, |at| now.saturating_duration_since(at))
 }
 
+
+// ---- the guard ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// A window that comes back after a release must be as quick as one that was never released. The ledger keeps the times the person waited for a kept window (hidden -> shown) and for a released one
+/// (asked -> shown) and says, per pressure level (the "situation" a release happens in), whether releasing is still allowed. A situation in which the released window was measurably slower is blocked
+/// for `BLOCK_SECS`; after that it is tried again (the machine, the prewarm and the runtime may have changed).
+pub const KEPT_FLOOR_MS: u32 = 250;
+const MIN_EXTRA_MS: u32 = 100;
+const CLEARLY_SLOWER: u32 = 3;
+const BLOCK_SECS: u64 = 6 * 3600;
+const KEPT_KEEP: usize = 7;
+const RELEASED_KEEP: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// as quick as a kept window
+    Fine,
+    /// slower, but not yet enough to stop releasing
+    Slower,
+    /// releasing is stopped in this situation until the block ends
+    Blocked,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Guard {
+    kept: Vec<u32>,
+    released: [Vec<u32>; 3],
+    blocked_until: [u64; 3],
+}
+
+impl Guard {
+    /// What a kept window costs, as the median of what was seen, never below the floor (a figure below it is the noise of a timer, not a goal).
+    pub fn baseline_ms(&self) -> u32 {
+        let mut kept = self.kept.clone();
+        kept.sort_unstable();
+        kept.get(kept.len() / 2).copied().unwrap_or(0).max(KEPT_FLOOR_MS)
+    }
+
+    /// The most a released window may take: the baseline and a quarter of it, at least 100 ms more.
+    pub fn limit_ms(&self) -> u32 {
+        let base = self.baseline_ms();
+        base + MIN_EXTRA_MS.max(base / 4)
+    }
+
+    pub fn record_kept(&mut self, ms: u32) {
+        self.kept.push(ms);
+        if self.kept.len() > KEPT_KEEP {
+            self.kept.remove(0);
+        }
+    }
+
+    pub fn record_released(&mut self, pressure: Pressure, ms: u32, now_secs: u64) -> Verdict {
+        let index = pressure as usize;
+        let limit = self.limit_ms();
+        let ledger = &mut self.released[index];
+        ledger.push(ms);
+        if ledger.len() > RELEASED_KEEP {
+            ledger.remove(0);
+        }
+        if ms <= limit {
+            return Verdict::Fine;
+        }
+        let slower = ledger.iter().filter(|&&seen| seen > limit).count();
+        if ms > limit.saturating_mul(CLEARLY_SLOWER) || slower >= 2 {
+            ledger.clear();
+            self.blocked_until[index] = now_secs + BLOCK_SECS;
+            return Verdict::Blocked;
+        }
+        Verdict::Slower
+    }
+
+    pub fn allows_release(&self, pressure: Pressure, now_secs: u64) -> bool {
+        self.blocked_until[pressure as usize] <= now_secs
+    }
+
+    /// The blocks, to be kept between runs: `[none, elevated, critical]` as seconds since the epoch (0 = not blocked).
+    pub fn blocks(&self) -> [u64; 3] {
+        self.blocked_until
+    }
+
+    pub fn with_blocks(blocks: [u64; 3]) -> Guard {
+        Guard { blocked_until: blocks, ..Guard::default() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +281,23 @@ mod tests {
         assert_eq!(Mode::parse("low-memory"), Mode::Low);
         assert_eq!(Mode::parse(""), Mode::Off);
         assert_eq!(Mode::parse("yes"), Mode::Off);
+    }
+
+    #[test]
+    fn nothing_asked_means_the_controller_picks_and_off_is_only_for_those_who_say_so() {
+        assert_eq!(Setting::parse(""), Setting::Auto);
+        assert_eq!(Setting::parse("auto"), Setting::Auto);
+        assert_eq!(Setting::parse("whatever"), Setting::Auto);
+        assert_eq!(Setting::parse("OFF"), Setting::Fixed(Mode::Off));
+        assert_eq!(Setting::parse("adaptive"), Setting::Fixed(Mode::Adaptive));
+        assert_eq!(Setting::parse(" low "), Setting::Fixed(Mode::Low));
+        // auto: small machines get the low tier, the others the adaptive one, an unknown size the adaptive one
+        assert_eq!(Setting::Auto.resolve(4 * GB), Mode::Low);
+        assert_eq!(Setting::Auto.resolve(16 * GB), Mode::Adaptive);
+        assert_eq!(Setting::Auto.resolve(0), Mode::Adaptive);
+        // a fixed tier is kept whatever the memory
+        assert_eq!(Setting::Fixed(Mode::Off).resolve(4 * GB), Mode::Off);
+        assert_eq!(Setting::Fixed(Mode::Low).resolve(64 * GB), Mode::Low);
     }
 
     #[test]
@@ -234,15 +367,15 @@ mod tests {
     fn off_changes_nothing_at_any_pressure() {
         for pressure in [Pressure::None, Pressure::Elevated, Pressure::Critical] {
             let p = policy(Mode::Off, pressure);
-            assert_eq!((p.hidden_release, p.warm_tray_windows, p.tray_idle_release), (None, true, None));
+            assert_eq!((p.hidden_release, p.warm_splash, p.splash_idle_release), (None, true, None));
         }
     }
 
     #[test]
     fn adaptive_keeps_everything_warm_while_memory_is_plentiful() {
         let p = policy(Mode::Adaptive, Pressure::None);
-        assert!(p.warm_tray_windows);
-        assert_eq!(p.tray_idle_release, None);
+        assert!(p.warm_splash);
+        assert_eq!(p.splash_idle_release, None);
         assert_eq!(p.hidden_release, Some(Duration::from_secs(300)));
     }
 
@@ -252,17 +385,72 @@ mod tests {
             let levels = [Pressure::None, Pressure::Elevated, Pressure::Critical].map(|p| policy(mode, p));
             for pair in levels.windows(2) {
                 assert!(pair[1].hidden_release <= pair[0].hidden_release);
-                assert!(pair[1].tray_idle_release <= pair[0].tray_idle_release || pair[0].tray_idle_release.is_none());
-                assert!(!pair[1].warm_tray_windows || pair[0].warm_tray_windows);
+                assert!(pair[1].splash_idle_release <= pair[0].splash_idle_release || pair[0].splash_idle_release.is_none());
+                assert!(!pair[1].warm_splash || pair[0].warm_splash);
             }
         }
     }
 
     #[test]
-    fn low_never_warms_the_tray_windows() {
+    fn low_never_warms_the_splash() {
         for pressure in [Pressure::None, Pressure::Elevated, Pressure::Critical] {
-            assert!(!policy(Mode::Low, pressure).warm_tray_windows);
+            assert!(!policy(Mode::Low, pressure).warm_splash);
         }
+    }
+
+    #[test]
+    fn a_kept_window_sets_the_bar_but_never_below_the_floor() {
+        let mut guard = Guard::default();
+        assert_eq!(guard.baseline_ms(), KEPT_FLOOR_MS);
+        for ms in [20, 40, 30] {
+            guard.record_kept(ms);
+        }
+        assert_eq!(guard.baseline_ms(), KEPT_FLOOR_MS, "a timer's noise is not the goal");
+        let mut slow = Guard::default();
+        for ms in [600, 640, 580] {
+            slow.record_kept(ms);
+        }
+        assert_eq!(slow.baseline_ms(), 600);
+        assert_eq!(slow.limit_ms(), 750, "a quarter more");
+        assert_eq!(Guard::default().limit_ms(), 350, "at least 100 ms more");
+    }
+
+    #[test]
+    fn a_released_window_as_quick_as_a_kept_one_keeps_releasing_allowed() {
+        let mut guard = Guard::default();
+        for ms in [180, 210, 190] {
+            assert_eq!(guard.record_released(Pressure::None, ms, 1_000), Verdict::Fine);
+        }
+        assert!(guard.allows_release(Pressure::None, 1_000));
+    }
+
+    #[test]
+    fn a_clearly_slower_release_stops_releasing_in_that_situation_only() {
+        let mut guard = Guard::default();
+        // a cold reopen of two seconds against a limit of 350 ms
+        assert_eq!(guard.record_released(Pressure::None, 2_100, 1_000), Verdict::Blocked);
+        assert!(!guard.allows_release(Pressure::None, 1_001));
+        assert!(guard.allows_release(Pressure::Elevated, 1_001), "another situation has its own record");
+        assert!(guard.allows_release(Pressure::None, 1_000 + 6 * 3600), "tried again after the block");
+    }
+
+    #[test]
+    fn a_little_slower_twice_in_a_row_also_stops_it_but_once_does_not() {
+        let mut guard = Guard::default();
+        assert_eq!(guard.record_released(Pressure::Elevated, 500, 10), Verdict::Slower);
+        assert!(guard.allows_release(Pressure::Elevated, 11));
+        assert_eq!(guard.record_released(Pressure::Elevated, 120, 20), Verdict::Fine);
+        assert_eq!(guard.record_released(Pressure::Elevated, 520, 30), Verdict::Blocked, "two of the last three were slower");
+        assert!(!guard.allows_release(Pressure::Elevated, 31));
+    }
+
+    #[test]
+    fn the_blocks_survive_a_restart() {
+        let mut guard = Guard::default();
+        guard.record_released(Pressure::Critical, 3_000, 500);
+        let restored = Guard::with_blocks(guard.blocks());
+        assert!(!restored.allows_release(Pressure::Critical, 600));
+        assert!(restored.allows_release(Pressure::None, 600));
     }
 
     #[test]
