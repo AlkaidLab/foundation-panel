@@ -870,8 +870,7 @@ defineExpose({
 .panel-more-version .m-capver { margin-inline-start: 0; }
 .panel-caption__controls { display: flex; justify-self: end; }
 .panel-caption__search { display: flex; align-items: center; justify-content: center; min-width: 0; padding: 0 12px; }
-/* the caption bar of a phone is the Web UI's: the brand gives way (it was max-content and pushed the buttons out of a 360 px window), search and the action buttons touch (the shared icon sizes are m3e's layout.css) */
-@media (max-width: 599.98px) { .panel-caption { grid-template-columns: minmax(0, 1fr) auto auto; } .panel-caption__brand { min-width: 0; overflow: hidden; padding-inline-start: 12px; } .panel-caption__search { padding: 0; } }
+/* the caption bar of a phone (its grid, the brand giving way, the sizes and the gap of the buttons) is foundation-ui's (css/layout.css, `.m-caption[data-phone]`): the Web UI has the same bar. The three window buttons below are the control panel's alone. */
 .panel-caption__btn { display: grid; place-items: center; width: 46px; height: 48px; padding: 0; border: 0; background: transparent; color: var(--md-sys-color-on-surface); font-size: 18px; cursor: default; transition: background-color 120ms linear, color 120ms linear; }
 .panel-caption__btn:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 9%, transparent); }
 .panel-caption__btn:active { background: color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent); }
