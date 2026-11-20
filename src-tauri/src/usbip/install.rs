@@ -44,16 +44,20 @@ pub(crate) fn classify_replace_exit_code(exit_code: Option<i32>) -> Result<Insta
     }
 }
 
-/// True when the host's `status` answer says this is an external installation the person may ask to replace.
-/// Anything unexpected is "no": the button only appears on a positive, well-formed answer.
+/// What the host's `status` answer says: `Some(true)` for an external installation the person may ask to replace, `Some(false)`
+/// for a well-formed answer that says otherwise, `None` for output that is not an answer (empty, not JSON).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn parse_host_answer(output: &str) -> Option<bool> {
+    let value =
+        serde_json::from_str::<serde_json::Value>(output.trim().trim_start_matches('\u{feff}')).ok()?;
+    value["ownership"].as_str()?;
+    Some(value["ownership"].as_str() == Some("external") && value["replaceable"].as_bool() == Some(true))
+}
+
+/// True only on a positive, well-formed answer: the button appears on nothing else.
+#[cfg(test)]
 pub(crate) fn parse_host_replaceable(output: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(output.trim().trim_start_matches('\u{feff}'))
-        .map(|value| {
-            value["ownership"].as_str() == Some("external")
-                && value["replaceable"].as_bool() == Some(true)
-        })
-        .unwrap_or(false)
+    parse_host_answer(output).unwrap_or(false)
 }
 
 /// Directory next to the Sunshine installation where the installer is staged.
@@ -105,39 +109,72 @@ pub(crate) async fn ensure_pinned_usbip(
     run_host_package("install").await
 }
 
+#[cfg(target_os = "windows")]
+static REPLACEABLE: super::memo::Memo = super::memo::Memo::new("usbip.replaceable");
+
+/// Drops the kept answer (the installation is about to change).
+pub(super) fn forget_replaceable() {
+    #[cfg(target_os = "windows")]
+    REPLACEABLE.forget();
+}
+
 /// Whether the host's lifecycle helper reports the installed USB/IP as one the person may replace. The ownership
-/// rules live only in that helper, so the panel asks it instead of keeping a third copy.
+/// rules live only in that helper, so the panel asks it instead of keeping a third copy. Asking starts PowerShell
+/// (seconds), so the answer is kept for as long as the registered installations and the helper itself are unchanged
+/// (memo.rs); the process runs below normal priority.
 #[cfg(target_os = "windows")]
 pub(super) async fn host_replaceable() -> bool {
     let script = crate::sunshine::install_dir()
         .join("scripts")
         .join("usbip-package.ps1");
-    let Some(root) = std::env::var_os("SystemRoot") else {
-        return false;
-    };
     if !script.is_file() {
         return false;
     }
+    let fingerprint = format!(
+        "{}|{}",
+        super::manager::ownership_fingerprint(),
+        super::memo::file_identity(&script)
+    );
+    REPLACEABLE
+        .get(&fingerprint, || async {
+            probe_host_replaceable(&script).await.map(|yes| if yes { "1" } else { "0" }.to_string())
+        })
+        .await
+        .is_some_and(|answer| answer == "1")
+}
+
+/// The helper's answer, asked now and never from a kept answer: the elevated copy revalidates a replacement with
+/// it, and what the unelevated side stored must not be able to widen what the elevated side does.
+#[cfg(target_os = "windows")]
+pub(super) async fn host_replaceable_fresh() -> bool {
+    let script = crate::sunshine::install_dir()
+        .join("scripts")
+        .join("usbip-package.ps1");
+    script.is_file() && probe_host_replaceable(&script).await.unwrap_or(false)
+}
+
+/// `None` when the helper could not be asked (nothing is kept then).
+#[cfg(target_os = "windows")]
+async fn probe_host_replaceable(script: &std::path::Path) -> Option<bool> {
+    let root = std::env::var_os("SystemRoot")?;
     let powershell =
         std::path::PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
     let mut command = tokio::process::Command::new(powershell);
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
+        .arg(script)
         .args(["-Action", "status"])
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
-    let Ok(child) = command.spawn() else {
-        return false;
-    };
+        .creation_flags(super::memo::BACKGROUND_PROBE_FLAGS);
+    let child = command.spawn().ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) if output.status.success() => {
-            parse_host_replaceable(&String::from_utf8_lossy(&output.stdout))
+            parse_host_answer(&String::from_utf8_lossy(&output.stdout))
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -263,6 +300,12 @@ mod tests {
         ] {
             assert!(!parse_host_replaceable(refused), "{refused}");
         }
+        // an answer that is not one (nothing, not JSON, no ownership) is kept by nobody: it is `None`, not a "no"
+        for unreadable in ["", "not json", "{}", r#"{"replaceable":true}"#] {
+            assert_eq!(parse_host_answer(unreadable), None, "{unreadable}");
+        }
+        assert_eq!(parse_host_answer(r#"{"ownership":"managed"}"#), Some(false));
+        assert_eq!(parse_host_answer(external), Some(true));
     }
 
     #[test]

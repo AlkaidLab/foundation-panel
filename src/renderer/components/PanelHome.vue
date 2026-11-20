@@ -1,4 +1,5 @@
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../composables/pageVisibility.js'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { firstImage, micIsReady, padIsReady, MDriverGuardNotice, MPage, MIcon, MIconButton, MDialog, MButton, MHomeDash, MSupportSheet, coverKnown, heroArtReady, MAnnouncementStrip, MAnnouncementSheet, useAnnouncements, useGuideCard, useNotify, buildHomeModel, buildStartSteps, buildCards, guideCardData, downloadCardData, sponsorCardData, GUIDE_TARGET, homeTexts } from 'foundation-ui/vue'
 import { buildCatalogue, buildCatalogueDetails, useJourneyHome, useReleaseAssets, useStarCard, useSessionClock, useSystemInfo, reachProblemOf, registeredComponentStatus, createHistory, createHttpVddAdapter, createPairQr, createVddStore, saveSettingKey, vddStatusOf, recentKeys, rememberRecent, isLoopbackHost, createQueuedCalls, createSerialCalls } from 'foundation-ui/vue'
@@ -114,8 +115,8 @@ const sampleAll = () => {
   historyTick.value += 1
 }
 let sampler = 0
-onMounted(() => { sampleAll(); sampler = setInterval(sampleAll, SAMPLE_SEC * 1000) })
-onBeforeUnmount(() => clearInterval(sampler))
+onMounted(() => { sampleAll(); sampler = setVisibleInterval(sampleAll, SAMPLE_SEC * 1000) })
+onBeforeUnmount(() => clearVisibleInterval(sampler))
 // the address of the host API: a request waits for it (hostBase.js) instead of going to the panel's own origin with an empty prefix
 const base = () => hostBase(() => proxyUrl.value, () => sunshine.getProxyUrl())
 // the safe mode, the encoder check and a failure that lay in the graphics driver (the same component as the Web UI home)

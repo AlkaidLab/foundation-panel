@@ -31,6 +31,7 @@ mod host_facts;
 mod host_facts_math;
 mod host_version;
 mod hwinfo;
+mod install_integrity;
 mod logger;
 mod menu_place;
 mod moonlight_web;
@@ -374,6 +375,8 @@ fn main() {
             update::get_update_source_used,
             update::get_update_source_miss,
             update::download_update,
+            update::repair_installation_command,
+            install_integrity::install_integrity_status,
             update::download_update_status,
             update::check_cached_update,
             update::install_update,

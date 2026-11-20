@@ -11,6 +11,7 @@ mod elevated;
 mod exec;
 mod install;
 mod manager;
+mod memo;
 mod signature;
 mod status;
 

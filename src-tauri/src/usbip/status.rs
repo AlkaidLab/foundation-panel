@@ -24,8 +24,34 @@ pub(super) fn detail_error_code(detail: &str) -> String {
     }
 }
 
-/// Spawns a `usbip.exe port` subprocess on every call to enumerate attached
-/// devices. Intended for on-demand refreshes — do not poll at high frequency.
+/// A command that changes the installation or the attached devices: the kept answers of the two slow probes (the driver
+/// signature, the host helper's `replaceable`; memo.rs) are dropped when it starts and again when it ends, however it
+/// ends, so a read in between cannot keep the old state.
+pub(super) struct Fresh;
+
+fn drop_kept_answers() {
+    super::install::forget_replaceable();
+    super::signature::forget();
+}
+
+/// Drops the kept answers again after the elevated step, before the status that is returned is read.
+pub(super) fn forget_kept() {
+    drop_kept_answers();
+}
+
+pub(super) fn fresh() -> Fresh {
+    drop_kept_answers();
+    Fresh
+}
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        drop_kept_answers();
+    }
+}
+
+/// Spawns a `usbip.exe port` subprocess to enumerate attached devices. The two PowerShell-backed parts (the driver
+/// signature, the host helper's `replaceable`) are kept while their inputs are unchanged (memo.rs).
 #[tauri::command]
 pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
     #[cfg(not(target_os = "windows"))]

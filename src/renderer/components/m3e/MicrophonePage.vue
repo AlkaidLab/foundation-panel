@@ -63,6 +63,7 @@
 </template>
 
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../../composables/pageVisibility.js'
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue'
 import { ElMessage } from '../../composables/notifyMessage.js'
 import { MPage, MSection, MGroup, MItem, MChip, MStatusPill, MFooter, useNotify, MSeg, MNotice, MButton, MIconButton, MSkeleton, MIcon, MProgress, MStatusPills, useDialogs } from 'foundation-ui/vue'
@@ -231,7 +232,7 @@ async function saveBackend(backend) {
 }
 const startPolling = () => {
   if (pollTimer || disposed) return
-  pollTimer = window.setInterval(refresh, 3000)
+  pollTimer = setVisibleInterval(refresh, 3000, { resume: true })
 }
 watch(() => status.input_peak, () => {
   const peak = microphoneInputLevel(status)
@@ -245,7 +246,7 @@ onMounted(() => {
 })
 const stopPolling = () => {
   if (pollTimer) {
-    window.clearInterval(pollTimer)
+    clearVisibleInterval(pollTimer)
     pollTimer = undefined
   }
 }
