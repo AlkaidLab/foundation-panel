@@ -153,7 +153,11 @@ fn release_hidden_main(app: &AppHandle, held: &mut Held, delay: Option<Duration>
         return;
     };
     // a window made ahead of a click is given time to be clicked
-    if prewarm_state().ready_at.is_some_and(|at| at.elapsed() < PREWARM_GRACE) {
+    let warming = {
+        let state = prewarm_state();
+        state.building || state.ready_at.is_some_and(|at| at.elapsed() < PREWARM_GRACE)
+    };
+    if warming {
         held.main_since = None;
         return;
     }
@@ -171,6 +175,7 @@ fn release_hidden_main(app: &AppHandle, held: &mut Held, delay: Option<Duration>
     keep_bounds(&window);
     info!("[memadapt] the main window has been hidden {} s at {:?} pressure: released", hidden.as_secs(), pressure());
     crate::view_state::arm_restore();
+    prewarm_state().ready_at = None;
     RELEASE_PRESSURE.store(pressure() as u8, Ordering::Relaxed);
     RELEASED_MAIN.store(true, Ordering::SeqCst);
     if !crate::windows::release_main_window(app) {
