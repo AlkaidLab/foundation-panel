@@ -265,7 +265,7 @@ pub fn app() -> Option<AppHandle> {
 /// in the tray has the person's colours from the first menu.
 static THEME: Mutex<Value> = Mutex::new(Value::Null);
 fn theme_file() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join("tray-theme.json"))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join("tray-theme.json"))
 }
 fn remember_theme(theme: &Value) {
     if theme.is_null() {

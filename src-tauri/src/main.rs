@@ -60,6 +60,7 @@ mod sunshine;
 mod version_compare;
 mod sunshine_service;
 mod system;
+mod test_isolation;
 mod system_load;
 mod system_load_core;
 mod text_encoding;
@@ -155,48 +156,55 @@ fn configure_loopback_proxy_bypass() {
 }
 
 fn main() {
+    if let Err(error) = test_isolation::configure() {
+        eprintln!("Unable to initialize test isolation: {error}");
+        std::process::exit(2);
+    }
+
     #[cfg(target_os = "windows")]
     configure_loopback_proxy_bypass();
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) =
-        native_components::providers::nvidia_dlssnr::try_handle_elevated_command()
-    {
-        std::process::exit(exit_code);
-    }
-    if let Some(exit_code) =
-        native_components::providers::nvidia_rtx_hdr::try_handle_elevated_command()
-    {
-        std::process::exit(exit_code);
-    }
+    if !test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) =
+            native_components::providers::nvidia_dlssnr::try_handle_elevated_command()
+        {
+            std::process::exit(exit_code);
+        }
+        if let Some(exit_code) =
+            native_components::providers::nvidia_rtx_hdr::try_handle_elevated_command()
+        {
+            std::process::exit(exit_code);
+        }
 
-    // Elevated SunshineService helper: one fixed verb, allowlisted operations.
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = sunshine_service::try_handle_elevated_command() {
-        std::process::exit(exit_code);
-    }
+        // Elevated SunshineService helper: one fixed verb, allowlisted operations.
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = sunshine_service::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
 
-    #[cfg(target_os = "windows")]
-    utils::wait_for_elevated_restart_handoff();
+        #[cfg(target_os = "windows")]
+        utils::wait_for_elevated_restart_handoff();
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = usbip::try_handle_elevated_command() {
-        std::process::exit(exit_code);
-    }
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = usbip::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = vdd::try_handle_elevated_ioctl_command() {
-        std::process::exit(exit_code);
-    }
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = vdd::try_handle_elevated_ioctl_command() {
+            std::process::exit(exit_code);
+        }
 
-    if desktop_settings::try_remove_auto_start_from_args() {
-        return;
-    }
-    if update::try_run_updater_helper_from_args() {
-        return;
-    }
-    if sunshine::try_run_core_compatibility_check_from_args() {
-        return;
+        if desktop_settings::try_remove_auto_start_from_args() {
+            return;
+        }
+        if update::try_run_updater_helper_from_args() {
+            return;
+        }
+        if sunshine::try_run_core_compatibility_check_from_args() {
+            return;
+        }
     }
 
     // Panics, native crashes and WebView2 failures leave a report (crash/mod.rs); the upload waits for the start to be over.
@@ -209,7 +217,7 @@ fn main() {
 
     let builder = tauri::Builder::default();
 
-    let builder = if std::env::var_os("SUNSHINE_GUI_ALLOW_PARALLEL_INSTANCE").is_some() {
+    let builder = if test_isolation::active() || std::env::var_os("SUNSHINE_GUI_ALLOW_PARALLEL_INSTANCE").is_some() {
         builder
     } else {
         builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -217,24 +225,16 @@ fn main() {
         }))
     };
 
-    let application = builder
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_fs::init())
-        .setup(|app| {
-            // 初始化日志系统（需要在 setup 中获取 app handle）
-            logger::init_logger();
-            client_fingerprint_rules::start();
-            stall_watch::start(app.handle().clone());
-            info!("🚀 Sunshine Control Panel 启动中...");
-
-            app::setup_application(app)
-        })
-        .on_window_event(|window, event| {
-            windows::handle_window_event(window, event);
-        })
-        .invoke_handler(tauri::generate_handler![
+    let builder = if test_isolation::active() {
+        builder
+    } else {
+        builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(tauri_plugin_dialog::init())
+            .plugin(tauri_plugin_notification::init())
+            .plugin(tauri_plugin_fs::init())
+    };
+    let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             commands::toggle_dark_mode,
             commands::crash_recovered_ask,
             commands::crash_recovered_answered,
@@ -480,7 +480,27 @@ fn main() {
             tray::main_panel_ready,
             panel_page::take_pending_panel_page,
             start_guide::take_pending_start_guide,
-        ])
+        ];
+    let application = builder
+        .setup(|app| {
+            // 初始化日志系统（需要在 setup 中获取 app handle）
+            logger::init_logger();
+            client_fingerprint_rules::start();
+            stall_watch::start(app.handle().clone());
+            info!("🚀 Sunshine Control Panel 启动中...");
+
+            app::setup_application(app)
+        })
+        .on_window_event(|window, event| {
+            windows::handle_window_event(window, event);
+        })
+        .invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            if test_isolation::active() && !test_isolation::allows_command(invoke.message.command()) {
+                invoke.resolver.reject("Command is disabled in test isolation");
+                return true;
+            }
+            invoke_handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

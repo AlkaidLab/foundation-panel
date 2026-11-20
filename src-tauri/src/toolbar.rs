@@ -14,9 +14,7 @@ static TOOLBAR_EXPANDED: AtomicBool = AtomicBool::new(false);
 
 // 获取工具栏配置文件路径
 fn get_toolbar_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    let app_data_dir = crate::test_isolation::app_data_dir(app)
         .map_err(|e| format!("获取应用数据目录失败: {}", e))?;
 
     // 确保目录存在
@@ -28,9 +26,7 @@ fn get_toolbar_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, St
 }
 
 fn get_tool_window_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    let app_data_dir = crate::test_isolation::app_data_dir(app)
         .map_err(|e| format!("failed to get app data directory: {}", e))?;
 
     if !app_data_dir.exists() {

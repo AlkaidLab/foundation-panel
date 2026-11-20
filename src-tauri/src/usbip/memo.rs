@@ -32,7 +32,7 @@ pub(super) const BACKGROUND_PROBE_FLAGS: u32 = windows::Win32::System::Threading
     | windows::Win32::System::Threading::BELOW_NORMAL_PRIORITY_CLASS.0;
 
 fn store_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join(STORE_FILE))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join(STORE_FILE))
 }
 
 fn now_secs() -> u64 {

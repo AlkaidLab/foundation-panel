@@ -42,7 +42,7 @@ pub(crate) fn simulated_dpi(real_dpi: u32, percent: u32) -> Option<u32> {
 static OVERRIDES: Mutex<Option<Overrides>> = Mutex::new(None);
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
 fn current() -> Overrides {

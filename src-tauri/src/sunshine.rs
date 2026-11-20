@@ -46,6 +46,9 @@ pub fn try_run_core_compatibility_check_from_args() -> bool {
 }
 
 fn get_sunshine_path() -> PathBuf {
+    if let Some(path) = crate::test_isolation::path("host") {
+        return path;
+    }
     // 先检查缓存
     {
         let cache = SUNSHINE_PATH_CACHE.lock().unwrap();

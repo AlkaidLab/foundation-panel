@@ -112,7 +112,7 @@ fn pending_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SUNSHINE_CRASH_DIR").filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }
-    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+    let base = crate::test_isolation::data_local_dir().unwrap_or_else(std::env::temp_dir);
     meta::pending_dir_in(&base)
 }
 

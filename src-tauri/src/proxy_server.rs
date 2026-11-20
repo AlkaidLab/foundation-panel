@@ -1111,6 +1111,11 @@ async fn read_limited_response_bytes(
 /// 代理处理器
 async fn proxy_handler(req: Request) -> Response {
     let method = req.method().clone();
+    if crate::test_isolation::active()
+        && !matches!(method, axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS)
+    {
+        return axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
     let uri = req.uri().clone();
     let path = uri.path().to_string();
     let query = uri.query().unwrap_or("").to_string();

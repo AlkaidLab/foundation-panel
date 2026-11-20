@@ -94,7 +94,7 @@ pub struct ToolbarShortcutStatus {
 }
 
 fn settings_dir() -> Result<PathBuf, String> {
-    dirs::config_dir()
+    crate::test_isolation::config_dir()
         .map(|dir| dir.join("Sunshine GUI"))
         .ok_or_else(|| "Cannot resolve user config directory".to_string())
 }

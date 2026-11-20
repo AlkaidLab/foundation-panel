@@ -43,7 +43,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     // Recover an interrupted user-session transaction even if WebView2 is
     // unavailable. The guard also covers a later setup error.
     #[cfg(target_os = "windows")]
-    let touch_keyboard_guard = crate::touch_keyboard::start();
+    let touch_keyboard_guard = (!crate::test_isolation::active()).then(crate::touch_keyboard::start);
     let agent_only = args.iter().any(|arg| arg == "--hidden");
     let explicit_minimized = args.iter().any(|arg| arg == "--minimized");
     // `--start-guide` is the installer's "open the start guide" button. It shows the main window
@@ -72,18 +72,24 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         drop(touch_keyboard_guard);
         std::process::exit(crate::webview_runtime::WEBVIEW2_MISSING_EXIT_CODE);
     }
-    windows::register_agent_restart();
-    crate::desktop_settings::apply_startup_settings(&app_handle, &desktop_settings);
+    if !crate::test_isolation::active() {
+        windows::register_agent_restart();
+        crate::desktop_settings::apply_startup_settings(&app_handle, &desktop_settings);
+    }
     // 更新偏好属于应用级状态，必须在 `--hidden` 的纯托盘代理模式下也立即注册。
     // 自动联网检查仍在后面按窗口启动模式决定，避免把状态初始化和网络行为耦合。
     update::init_update_preferences(&app_handle)?;
-    crate::install_integrity::start(app_handle.clone());
-    crate::clipboard::auto_start();
-    #[cfg(target_os = "windows")]
-    crate::text_context::start(desktop_settings.text_context_enabled);
+    if !crate::test_isolation::active() {
+        crate::install_integrity::start(app_handle.clone());
+        crate::clipboard::auto_start();
+        #[cfg(target_os = "windows")]
+        crate::text_context::start(desktop_settings.text_context_enabled);
+    }
     let mut tasks = BackgroundTasks(vec![windows::lifecycle::start_monitor(app_handle.clone())]);
     #[cfg(target_os = "windows")]
-    crate::vdd::start_hardware_cursor_migration();
+    if !crate::test_isolation::active() {
+        crate::vdd::start_hardware_cursor_migration();
+    }
     // a measurement instance (SUNSHINE_GUI_TEST_OFFSCREEN) shows its window, off screen, whatever the person's setting: a page of a hidden window sleeps
     let start_minimized = (explicit_minimized || desktop_settings.start_minimized)
         && !windows::test_offscreen()
@@ -141,18 +147,20 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         ctx_popup::schedule_create(&app_handle);
     }
     crate::power::refresh_ecoqos_state(&app_handle);
-    #[cfg(target_os = "windows")]
-    if let Err(e) = crate::shell_context_menu::install_file_transfer_menu() {
-        warn!("⚠️  安装文件传输右键菜单失败: {}", e);
-    }
-    #[cfg(target_os = "windows")]
-    if desktop_settings.file_mapping_menu_enabled {
-        if let Err(e) = crate::shell_context_menu::install_file_mapping_menu() {
-            warn!("install file mapping context menu failed: {}", e);
+    if !crate::test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        if let Err(e) = crate::shell_context_menu::install_file_transfer_menu() {
+            warn!("⚠️  安装文件传输右键菜单失败: {}", e);
         }
+        #[cfg(target_os = "windows")]
+        if desktop_settings.file_mapping_menu_enabled {
+            if let Err(e) = crate::shell_context_menu::install_file_mapping_menu() {
+                warn!("install file mapping context menu failed: {}", e);
+            }
+        }
+        register_global_shortcuts(app, desktop_settings.toolbar_shortcut_enabled)?;
+        crate::nr_overlay::initialize(&app_handle);
     }
-    register_global_shortcuts(app, desktop_settings.toolbar_shortcut_enabled)?;
-    crate::nr_overlay::initialize(&app_handle);
     setup_menu_event_handler(app);
 
     if is_send_to_client {
@@ -195,7 +203,9 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         }));
     }
     #[cfg(target_os = "windows")]
-    app.manage(touch_keyboard_guard);
+    if let Some(guard) = touch_keyboard_guard {
+        app.manage(guard);
+    }
     app.manage(tasks);
 
     Ok(())
@@ -203,18 +213,22 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
 
 pub fn shutdown_application(app: &AppHandle) {
     #[cfg(target_os = "windows")]
-    crate::touch_keyboard::stop();
+    if !crate::test_isolation::active() {
+        crate::touch_keyboard::stop();
+    }
     if let Some(tasks) = app.try_state::<BackgroundTasks>() {
         tasks.abort();
     }
     windows::lifecycle::shutdown();
-    #[cfg(target_os = "windows")]
-    crate::text_context::stop();
-    crate::clipboard::stop();
-    #[cfg(target_os = "windows")]
-    crate::tray::cleanup_prevent_sleep();
-    crate::moonlight_web::cleanup();
-    crate::windows::unregister_agent_restart();
+    if !crate::test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        crate::text_context::stop();
+        crate::clipboard::stop();
+        #[cfg(target_os = "windows")]
+        crate::tray::cleanup_prevent_sleep();
+        crate::moonlight_web::cleanup();
+        crate::windows::unregister_agent_restart();
+    }
 }
 
 #[cfg(test)]

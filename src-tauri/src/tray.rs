@@ -666,11 +666,13 @@ mod power {
 
 /// 创建系统托盘
 pub fn create_system_tray<R: Runtime + 'static>(app: &AppHandle<R>) -> tauri::Result<()> {
-    #[cfg(target_os = "windows")]
-    init_sunshine_user_mode_state(app);
+    if !crate::test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        init_sunshine_user_mode_state(app);
 
-    if let Err(error) = notifications::initialize(app) {
-        warn!("{}", error);
+        if let Err(error) = notifications::initialize(app) {
+            warn!("{}", error);
+        }
     }
 
     initialize_tray_locale();
