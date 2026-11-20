@@ -12,7 +12,7 @@ const layout = fs.readFileSync(new URL('../../../node_modules/foundation-ui/src/
 
 test('a phone has no list pages of the rails: the nav is told which hub stands for which rail, and the window size', () => {
   assert.match(router, /export const HUB_OF = \{ stream: ROUTES\.STREAM_HUB, config: ROUTES\.SETTINGS_HUB, input: ROUTES\.SETTINGS_HUB, audio: ROUTES\.SETTINGS_HUB, display: ROUTES\.SETTINGS_HUB, system: ROUTES\.SETTINGS_HUB, appearance: ROUTES\.SETTINGS_HUB, developer: ROUTES\.DEV_HUB \}/)
-  assert.match(router, /createNav\(\{ routes, home: ROUTES\.HOME, compact: isPhone, hubOf: HUB_OF \}\)/)
+  assert.match(router, /createNav\(\{ routes, home: ROUTES\.HOME, compact: isPhone, hubOf: HUB_OF(, initial: restoredStack\(globalThis\.__PANEL_RESTORE__, routes\))? \}\)/)
   assert.match(router, /export const isPhone = \(\) => typeof window !== 'undefined' && isCompactNav\(window\.innerWidth, window\.innerHeight\)/)
   assert.match(router, /PHONE_MAX = 600/)
 })
