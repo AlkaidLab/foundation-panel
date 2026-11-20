@@ -36,6 +36,6 @@ test('the caption bar of a phone is the Web UI\'s: one design in m3e (data-phone
   assert.match(layout, /\.m-caption \{ --m-cap-btn: 44px; --m-cap-gap: 4px; \}/)
   assert.match(layout, /\.m-caption \.m-statusbell--rest \{ display: none; \}/)
   assert.match(layout, /\.m-caption\.m-caption:is\(\[data-phone\][^{]*\) \.m-brand \{ min-width: 0; overflow: hidden;/)
-  assert.ok(!/@media \(max-width: 599\.98px\)[^\n]*panel-caption/.test(shell), 'no width media query of the panel decides the bar of a phone')
+  assert.ok(!/@media\s*\(max-width:\s*599\.98px\)\s*\{[^{}]*panel-caption/.test(shell), 'no width media query of the panel decides the bar of a phone')
   assert.match(shell, /panel-caption__controls/)
 })
