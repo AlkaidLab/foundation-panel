@@ -475,7 +475,10 @@ fn snapshot_and_post(echo: &Arc<Mutex<EchoState>>) {
     if let Ok(files) = ctx.get_files() {
         if !files.is_empty() && text_bytes.is_none() && png_bytes.is_none() {
             st.current = None;
-            debug!("local file clipboard without transferable payload; sync skipped");
+            // The names never travel as text; the files themselves are offered
+            // for pasting through the file-transfer endpoints (kind 4).
+            info!("local file clipboard: offering {} path(s) as files", files.len());
+            crate::file_transfer::offer_copied_files(files);
             return;
         }
     }
@@ -808,14 +811,16 @@ fn take_burst_text(token: u32) -> Option<Vec<u8>> {
 /// compound-upgrade logic relies on text-before-image processing, which
 /// per-frame spawns onto a thread pool cannot guarantee (and which, prior
 /// to this, could reorder plain v1 multi-frame applies too).
-fn handle_inbound_frame(frame: Frame, echo: &Arc<Mutex<EchoState>>) {
+fn handle_inbound_frame(frame: Frame, sid: Option<u64>, echo: &Arc<Mutex<EchoState>>) {
     match frame.kind {
         Kind::Ref => {
             let echo = echo.clone();
             tauri::async_runtime::spawn(async move {
-                apply_inbound_ref(frame, echo).await;
+                apply_inbound_ref(frame, sid, echo).await;
             });
         }
+        // A client copied files: put them on the host clipboard (file_transfer::inbound).
+        Kind::FileOffer => crate::file_transfer::inbound::apply_client_offer(sid, &frame.payload),
         _ if frame.token == 0 => apply_inbound_inline(frame, echo),
         Kind::Text => {
             retain_burst_text(frame.token, frame.payload.clone());
@@ -824,11 +829,6 @@ fn handle_inbound_frame(frame: Frame, echo: &Arc<Mutex<EchoState>>) {
         Kind::Png => {
             let token = frame.token;
             deliver_burst_png(token, &frame.payload, echo);
-        }
-        Kind::FileOffer => {
-            // Keep the legacy warn-and-drop path (apply_inbound_inline
-            // rejects file offers on the host agent).
-            apply_inbound_inline(frame, echo);
         }
     }
 }
@@ -847,7 +847,7 @@ fn deliver_burst_png(token: u32, png: &[u8], echo: &Arc<Mutex<EchoState>>) {
     }
 }
 
-async fn apply_inbound_ref(frame: Frame, echo: Arc<Mutex<EchoState>>) {
+async fn apply_inbound_ref(frame: Frame, sid: Option<u64>, echo: Arc<Mutex<EchoState>>) {
     let meta: RefMeta = match serde_json::from_slice(&frame.payload) {
         Ok(m) => m,
         Err(e) => {
@@ -877,6 +877,10 @@ async fn apply_inbound_ref(frame: Frame, echo: Arc<Mutex<EchoState>>) {
             return;
         }
     };
+    if kind == Kind::FileOffer {
+        crate::file_transfer::inbound::apply_client_offer(sid, &bytes);
+        return;
+    }
     let token = frame.token;
 
     if token != 0 && matches!(kind, Kind::Text | Kind::Png) {
@@ -1204,8 +1208,8 @@ async fn sse_pump(stop: Arc<Notify>, echo: Arc<Mutex<EchoState>>) {
                         // Parse \n\n-separated SSE events.
                         while let Some(end) = find_event_end(&buf) {
                             let raw = buf.drain(..end + 2).collect::<Vec<u8>>();
-                            if let Some(frame) = parse_sse_event(&raw) {
-                                handle_inbound_frame(frame, &echo);
+                            if let Some((frame, sid)) = parse_sse_event(&raw) {
+                                handle_inbound_frame(frame, sid, &echo);
                             }
                         }
                     }
@@ -1247,12 +1251,17 @@ fn find_event_end(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n")
 }
 
-fn parse_sse_event(raw: &[u8]) -> Option<Frame> {
+/// The frame and the id of the streaming session it came from (the event's
+/// "id:" line), which a client's file offer needs to be pasted.
+fn parse_sse_event(raw: &[u8]) -> Option<(Frame, Option<u64>)> {
     let s = std::str::from_utf8(raw).ok()?;
     let mut data_b64: Option<String> = None;
+    let mut sid: Option<u64> = None;
     for line in s.split('\n') {
         let line = line.trim_end_matches('\r');
-        if let Some(rest) = line.strip_prefix("data: ") {
+        if let Some(rest) = line.strip_prefix("id:") {
+            sid = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("data: ") {
             data_b64 = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("data:") {
             data_b64 = Some(rest.trim_start().to_string());
@@ -1260,7 +1269,7 @@ fn parse_sse_event(raw: &[u8]) -> Option<Frame> {
     }
     let b64 = data_b64?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    decode_frame(&bytes)
+    decode_frame(&bytes).map(|frame| (frame, sid))
 }
 
 // ---------- Heartbeat ----------

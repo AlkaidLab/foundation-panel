@@ -1258,6 +1258,27 @@ pub fn create_https_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
 }
 
+/// For a file chunk the host pastes from a client: Sunshine answers once the
+/// client has sent the chunk, which can take up to its 30 s ticket timeout.
+pub fn create_transfer_https_client() -> Result<reqwest::Client, String> {
+    let token = read_local_auth_token()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "X-Sunshine-Local-Token",
+        reqwest::header::HeaderValue::from_str(&token)
+            .map_err(|error| format!("Invalid local host credential: {error}"))?,
+    );
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_millis(3000))
+        .read_timeout(std::time::Duration::from_secs(45))
+        .timeout(std::time::Duration::from_secs(90))
+        .default_headers(headers)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
+}
+
 pub fn create_sse_https_client() -> Result<reqwest::Client, String> {
     let token = read_local_auth_token()?;
     let mut headers = reqwest::header::HeaderMap::new();

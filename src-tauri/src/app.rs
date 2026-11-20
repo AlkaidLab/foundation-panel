@@ -142,10 +142,6 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     }
     crate::power::refresh_ecoqos_state(&app_handle);
     #[cfg(target_os = "windows")]
-    if let Err(e) = crate::shell_context_menu::install_file_transfer_menu() {
-        warn!("⚠️  安装文件传输右键菜单失败: {}", e);
-    }
-    #[cfg(target_os = "windows")]
     if desktop_settings.file_mapping_menu_enabled {
         if let Err(e) = crate::shell_context_menu::install_file_mapping_menu() {
             warn!("install file mapping context menu failed: {}", e);

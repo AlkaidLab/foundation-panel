@@ -14,6 +14,7 @@ export const defaultDesktopSettings = {
   devMode: false,
   logLevel: 'info',
   textContextEnabled: true,
+  clipboardFilesEnabled: true,
 }
 
 export const desktopSettings = ref({ ...defaultDesktopSettings })
