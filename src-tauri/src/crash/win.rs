@@ -446,17 +446,19 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
         log::warn!("WebView2 process failed: {name}, reason {}, exit code {exit_code:#x}", webview_reason(reason));
         let mut label = meta::Buf::<48>::new();
         let _ = write!(label, "webview2:{name}");
-        if WEBVIEW_REPORTS.fetch_add(1, Ordering::Relaxed) < 3 {
-            let frame = Frame::new(label.as_str(), u64::from(exit_code as u32));
-            super::record("panic", label.as_str(), &[frame]);
-        }
         // a panel that has run for ten minutes has recovered from the last restart
         let restarts = match super::state() {
             Some(state) if state.started.elapsed() < std::time::Duration::from_secs(600) => recover::restarts_so_far(std::env::var(recover::RESTARTS_ENV).ok().as_deref()),
             _ => 0,
         };
         let mode = super::fallback::render_mode();
-        match recover::decide(name, std::time::Instant::now(), &mut history, restarts, mode) {
+        let action = recover::decide(name, std::time::Instant::now(), &mut history, restarts, mode);
+        // the report is written before the action runs: a restart ends this process. A GPU process that exited once and was started again by Chromium is no crash.
+        if recover::worth_reporting(name, &history) && WEBVIEW_REPORTS.fetch_add(1, Ordering::Relaxed) < 3 {
+            let frame = Frame::new(label.as_str(), u64::from(exit_code as u32));
+            super::record("panic", label.as_str(), &[frame]);
+        }
+        match action {
             Action::Reload => {
                 log::warn!("WebView2 {name} (exit code {exit_code:#x}): reloading the page");
                 // SAFETY: the event runs on the thread of the webview.

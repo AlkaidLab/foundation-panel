@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 const SOFTWARE_AFTER_EXITS: usize = 3;
 /// GPU process failures within `WINDOW` after which the GPU is left out.
 const SOFTWARE_AFTER_GPU_EXITS: usize = 3;
+/// GPU process failures within `WINDOW` from which a crash report is worth sending: one is the usual self-healing blip (Chromium
+/// starts the process again and the window never notices), two in five minutes mean the process is not stable.
+const REPORT_AFTER_GPU_EXITS: usize = 2;
 const WINDOW: Duration = Duration::from_secs(5 * 60);
 /// Restarts in a row (the count is carried to the new process in `RESTARTS_ENV`).
 const MAX_RESTARTS: u32 = 2;
@@ -90,6 +93,16 @@ pub(crate) fn decide(kind: &str, now: Instant, history: &mut History, restarts: 
     }
 }
 
+/// Whether a failure that `decide` has just recorded goes into a crash report. Every kind does, except the GPU process exiting once:
+/// Chromium starts it again by itself and nobody sees it, which made it the most reported "crash" of the panel (about a quarter of
+/// all reports, from nearly as many installs). The second exit within `WINDOW` is reported, so a driver that really keeps failing still is.
+pub(crate) fn worth_reporting(kind: &str, history: &History) -> bool {
+    match kind {
+        "gpu_exited" => history.gpu.len() >= REPORT_AFTER_GPU_EXITS,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +164,30 @@ mod tests {
         let mut software = History::default();
         for i in 0..4 {
             assert_eq!(decide("gpu_exited", t0 + Duration::from_secs(i), &mut software, 0, RenderMode::Software), Action::Nothing);
+        }
+    }
+
+    #[test]
+    fn one_gpu_process_exit_is_not_reported_but_a_second_within_five_minutes_is() {
+        let mut history = History::default();
+        let t0 = Instant::now();
+        decide("gpu_exited", t0, &mut history, 0, RenderMode::Gpu);
+        assert!(!worth_reporting("gpu_exited", &history));
+        decide("gpu_exited", t0 + Duration::from_secs(90), &mut history, 0, RenderMode::Gpu);
+        assert!(worth_reporting("gpu_exited", &history));
+        // exits far apart never add up
+        let mut spread = History::default();
+        for i in 0..4 {
+            decide("gpu_exited", t0 + Duration::from_secs(i * 600), &mut spread, 0, RenderMode::Gpu);
+            assert!(!worth_reporting("gpu_exited", &spread));
+        }
+    }
+
+    #[test]
+    fn every_other_failure_is_reported() {
+        let history = History::default();
+        for kind in ["render_exited", "frame_render_exited", "browser_exited", "utility_exited", "render_unresponsive", "unknown_exited"] {
+            assert!(worth_reporting(kind, &history), "{kind}");
         }
     }
 
