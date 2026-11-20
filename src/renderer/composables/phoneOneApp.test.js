@@ -32,9 +32,10 @@ test('the shell converts the stack when the window crosses 600 px wide or 480 px
   assert.match(shell, /const now = isPhone\(\); if \(now !== wasPhone\) \{ wasPhone = now; if \(now\) nav\.narrow\(\); else nav\.widen\(\) \}/)
   assert.match(shell, /onMounted\(\(\) => \{ nav\.widen\(\); nav\.attach\(\) \}\)/)
 })
-test('the caption bar of a phone is the Web UI\'s: icon buttons of one size, no empty slot for the bell, the brand gives way; the sizes are shared in m3e', () => {
-  assert.match(layout, /\.m-caption \.m-icon-btn, \.m-caption \.m-caption-connect \{ width: 44px; height: 44px;/)
+test('the caption bar of a phone is the Web UI\'s: one design in m3e (data-phone from the shell\'s own rule, one size and gap for every button), the window buttons are the panel\'s alone', () => {
+  assert.match(layout, /\.m-caption \{ --m-cap-btn: 44px; --m-cap-gap: 4px; \}/)
   assert.match(layout, /\.m-caption \.m-statusbell--rest \{ display: none; \}/)
-  assert.match(layout, /\.m-caption \.m-caption-connect \{ background: transparent;/)
-  assert.match(shell, /\.panel-caption \{ grid-template-columns: minmax\(0, 1fr\) auto auto; \} \.panel-caption__brand \{ min-width: 0; overflow: hidden;/)
+  assert.match(layout, /\.m-caption\.m-caption:is\(\[data-phone\][^{]*\) \.m-brand \{ min-width: 0; overflow: hidden;/)
+  assert.ok(!/@media\s*\(max-width:\s*599\.98px\)\s*\{[^{}]*panel-caption/.test(shell), 'no width media query of the panel decides the bar of a phone')
+  assert.match(shell, /panel-caption__controls/)
 })
