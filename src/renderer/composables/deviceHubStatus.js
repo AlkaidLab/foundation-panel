@@ -8,6 +8,15 @@ export function usbipTransportNeedsCleanup(status = {}) {
   )
 }
 
+/**
+ * A live controller with others of the same driver beside it (Rust `residual_kind`): removing the extra ones is enough, nothing
+ * is reinstalled. This also holds for an installation the person manages themselves: only the duplicate controller goes and one
+ * stays live, which is what makes their own installation work.
+ */
+export function usbipResidualIsStale(status = {}) {
+  return Boolean(status.vhci_residual) && status.residual_kind === 'stale'
+}
+
 /** The external full usbip-win2 that the host's helper says may be replaced (it decides; the panel keeps no ownership rules). */
 export function usbipCanReplaceLegacy(status = {}) {
   return Boolean(status.externally_managed && status.replaceable)

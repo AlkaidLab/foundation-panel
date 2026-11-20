@@ -398,11 +398,29 @@ fn webview_kind(kind: i32) -> &'static str {
     }
 }
 
+/// `COREWEBVIEW2_PROCESS_FAILED_REASON` by name (Microsoft Learn, WebView2 `ProcessFailed` event args).
+fn webview_reason(reason: i32) -> &'static str {
+    match reason {
+        0 => "unexpected",
+        1 => "unresponsive",
+        2 => "terminated",
+        3 => "crashed",
+        4 => "launch_failed",
+        5 => "out_of_memory",
+        6 => "profile_deleted",
+        _ => "unknown",
+    }
+}
+
+/// The dialog that tells the person the window cannot be shown is shown once per run.
+static WINDOW_FAILED_SHOWN: AtomicBool = AtomicBool::new(false);
+
 /// Watches the WebView2 processes of this webview. Every failure (a few per run) is recorded as kind "panic": the kind and the exit code are the frame. A dead renderer is
-/// reloaded and a dead browser starts the panel again (`recover.rs` decides; `restart` starts it), so the window does not stay blank.
+/// reloaded; one that keeps dying, or a GPU process that cannot stay up, makes the panel start again with GPU acceleration off; a dead browser starts the panel again
+/// (`recover.rs` decides; `restart` starts it), so the window does not stay blank. When nothing helps any more, the person is told in a native dialog.
 pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, restart: impl Fn() + 'static) {
     use super::recover::{self, Action};
-    use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_PROCESS_FAILED_KIND, ICoreWebView2ProcessFailedEventArgs2};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_REASON, ICoreWebView2ProcessFailedEventArgs2};
     use webview2_com::ProcessFailedEventHandler;
     use wv2_windows_core::Interface;
     let webview = core_webview.clone();
@@ -413,11 +431,19 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
         // SAFETY: COM calls on the event's own arguments.
         unsafe { args.ProcessFailedKind(&mut kind)? };
         let mut exit_code = 0i32;
+        let mut reason = 0i32;
         if let Ok(args2) = args.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
             // SAFETY: as above.
             let _ = unsafe { args2.ExitCode(&mut exit_code) };
+            let mut value = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+            // SAFETY: as above.
+            if unsafe { args2.Reason(&mut value) }.is_ok() {
+                reason = value.0;
+            }
         }
         let name = webview_kind(kind.0);
+        // The reason (a crash, an out-of-memory exit, a launch that failed) is what tells a driver fault from a full machine; it goes to the log.
+        log::warn!("WebView2 process failed: {name}, reason {}, exit code {exit_code:#x}", webview_reason(reason));
         let mut label = meta::Buf::<48>::new();
         let _ = write!(label, "webview2:{name}");
         if WEBVIEW_REPORTS.fetch_add(1, Ordering::Relaxed) < 3 {
@@ -429,7 +455,8 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
             Some(state) if state.started.elapsed() < std::time::Duration::from_secs(600) => recover::restarts_so_far(std::env::var(recover::RESTARTS_ENV).ok().as_deref()),
             _ => 0,
         };
-        match recover::decide(name, std::time::Instant::now(), &mut history, restarts) {
+        let mode = super::fallback::render_mode();
+        match recover::decide(name, std::time::Instant::now(), &mut history, restarts, mode) {
             Action::Reload => {
                 log::warn!("WebView2 {name} (exit code {exit_code:#x}): reloading the page");
                 // SAFETY: the event runs on the thread of the webview.
@@ -440,6 +467,18 @@ pub(crate) fn register_webview_failures(core_webview: &webview2_com::Microsoft::
                 // SAFETY: nothing else reads the environment of this process at this point.
                 unsafe { std::env::set_var(recover::RESTARTS_ENV, (restarts + 1).to_string()) };
                 restart();
+            }
+            Action::SoftwareRestart => {
+                log::warn!("WebView2 {name} (exit code {exit_code:#x}): the window keeps failing; starting the panel again with GPU acceleration off");
+                super::fallback::remember(&format!("webview2:{name} reason {} exit code {exit_code:#x}", webview_reason(reason)));
+                restart();
+            }
+            Action::GiveUp => {
+                log::error!("WebView2 {name} (exit code {exit_code:#x}): the window still fails with GPU acceleration off; telling the person");
+                // once: every further failure of the same window would only stack dialogs
+                if !WINDOW_FAILED_SHOWN.swap(true, Ordering::Relaxed) {
+                    crate::webview_runtime::show_window_failed_dialog();
+                }
             }
             Action::Nothing => {}
         }

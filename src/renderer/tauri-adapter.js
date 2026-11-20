@@ -145,6 +145,8 @@ export const usbip = {
   getStatus: () => wrapResult('usbip_get_status'),
   installTransport: () => wrapResult('usbip_install_transport'),
   cleanupTransport: () => wrapResult('usbip_cleanup_transport'),
+  removeStaleNodes: () => wrapResult('usbip_remove_stale_nodes'),
+  exportDiagnostics: () => wrapResult('usbip_export_diagnostics'),
   replaceLegacyTransport: () => wrapResult('usbip_replace_legacy_transport'),
   listRemote: (remote, tcpPort = 3240) => wrapResult('usbip_list_remote', {
     remote,

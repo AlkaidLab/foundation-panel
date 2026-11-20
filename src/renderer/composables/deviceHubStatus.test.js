@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   usbipCanReplaceLegacy,
+  usbipResidualIsStale,
   usbipTransportNeedsCleanup,
   MICROPHONE_BACKENDS,
   canTestMicrophone,
@@ -150,6 +151,20 @@ for (const version_valid of [true, false]) {
     assert.equal(usbipTransportNeedsCleanup({ ...status, externally_managed: false }), true)
   })
 }
+
+test('a working controller with older ones beside it is stale, anything else needs the full cleanup', () => {
+  const base = { installed: true, version_valid: true, vhci_residual: true }
+  assert.equal(usbipResidualIsStale({ ...base, residual_kind: 'stale' }), true)
+  assert.equal(usbipResidualIsStale({ ...base, residual_kind: 'broken' }), false)
+  assert.equal(usbipResidualIsStale({ ...base, residual_kind: '' }), false)
+  assert.equal(usbipResidualIsStale({ ...base, vhci_residual: false, residual_kind: 'stale' }), false)
+  // an installation the person manages is not uninstalled, but its duplicate controller may go (one stays live)
+  assert.equal(usbipResidualIsStale({ ...base, externally_managed: true, residual_kind: 'stale' }), true)
+  assert.equal(usbipTransportNeedsCleanup({ ...base, externally_managed: true, residual_kind: 'stale' }), false)
+  assert.equal(usbipResidualIsStale(), false)
+  // the stale state still counts as needing a cleanup for the summary that only asks "is there a problem"
+  assert.equal(usbipTransportNeedsCleanup({ ...base, residual_kind: 'stale' }), true)
+})
 
 test('the replacement of an external USB/IP is offered only when the host says it may be replaced', () => {
   assert.equal(usbipCanReplaceLegacy({ externally_managed: true, replaceable: true }), true)

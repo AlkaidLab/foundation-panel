@@ -12,6 +12,7 @@
 //! waits on anything the panel needs to start.
 
 mod asked;
+pub(crate) mod fallback;
 mod logpack;
 mod logscrub;
 mod meta;
