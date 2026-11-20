@@ -963,7 +963,10 @@ pub(crate) fn configure_webview_security<R: Runtime>(window: &WebviewWindow<R>) 
             }
             // a WebView2 process that fails (renderer, GPU, browser) is recorded for the crash report
             let app = window_app.clone();
-            crate::crash::register_webview_failures(&core_webview, move || app.restart());
+            crate::crash::register_webview_failures(&core_webview, move || {
+                crate::exit_state::begin("webview restart");
+                app.restart()
+            });
             let Ok(settings) = core_webview.Settings() else {
                 log::warn!("⚠️ 无法获取 ICoreWebView2Settings [{}]", label);
                 return;

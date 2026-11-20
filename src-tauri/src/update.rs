@@ -3108,6 +3108,10 @@ pub async fn install_update(
         let _ = work_dir.keep();
         emit_install_progress(&app_handle, "installer-started", None, false);
 
+        // The panel leaves from here on (the delayed exit below, or the installer closing this process by
+        // name): WebView2 process endings from now on are part of the handoff, not failures to report.
+        crate::exit_state::begin("update handoff");
+
         info!("✅ 安装程序已静默启动，正在安装...");
 
         // 延迟后退出当前GUI进程

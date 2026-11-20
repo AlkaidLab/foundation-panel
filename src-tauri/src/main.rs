@@ -23,6 +23,7 @@ mod dualsense;
 mod elevation;
 mod file_mapping;
 mod file_transfer;
+mod exit_state;
 mod fs_utils;
 mod gui_agent_exit;
 mod game_session;
@@ -510,10 +511,13 @@ fn main() {
         } => api.prevent_exit(),
         // the application goes down: the menu window that is destroyed with the rest is not made again
         tauri::RunEvent::ExitRequested { code: Some(_), .. } => {
+            // every AppHandle::exit path falls through here: the exit is on from this moment
+            exit_state::begin("exit requested");
             ctx_popup::note_exiting();
             windows::hide_all_windows(app_handle);
         }
         tauri::RunEvent::Exit => {
+            exit_state::begin("exit");
             ctx_popup::note_exiting();
             windows::hide_all_windows(app_handle);
             native_tools::shutdown_all();

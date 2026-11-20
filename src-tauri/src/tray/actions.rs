@@ -448,6 +448,7 @@ fn shutdown_sunshine<R: Runtime>(app: &AppHandle<R>) {
             tauri::async_runtime::spawn(async move {
                 match sunshine::post_tray_action("shutdown", None).await {
                     Ok(response) if response.status => {
+                        crate::exit_state::begin("tray quit");
                         shutdown_handle.exit(crate::gui_agent_exit::GUI_AGENT_DELIBERATE_QUIT_EXIT_CODE)
                     }
                     Ok(response) => {
