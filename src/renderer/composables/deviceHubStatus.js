@@ -8,6 +8,11 @@ export function usbipTransportNeedsCleanup(status = {}) {
   )
 }
 
+/** A working controller with older ones beside it (Rust `residual_kind`): removing those is enough, nothing is reinstalled. */
+export function usbipResidualIsStale(status = {}) {
+  return !status.externally_managed && Boolean(status.vhci_residual) && status.residual_kind === 'stale'
+}
+
 /** The external full usbip-win2 that the host's helper says may be replaced (it decides; the panel keeps no ownership rules). */
 export function usbipCanReplaceLegacy(status = {}) {
   return Boolean(status.externally_managed && status.replaceable)

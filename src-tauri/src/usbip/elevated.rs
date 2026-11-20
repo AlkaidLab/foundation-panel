@@ -73,6 +73,18 @@ pub(super) async fn run_elevated(_request: ElevatedRequest) -> Result<ElevatedRe
     Err("USBIP-SETUP-004: USB/IP passthrough is only supported on Windows".to_string())
 }
 
+/// The answer that tells the unelevated side a removal was accepted and finishes at the next restart.
+#[cfg(target_os = "windows")]
+pub(super) const RESTART_PENDING: &str = "restart_pending";
+
+#[cfg(target_os = "windows")]
+fn finish_message(finish: super::device::Finish) -> String {
+    match finish {
+        super::device::Finish::Done => String::new(),
+        super::device::Finish::RestartNeeded => RESTART_PENDING.to_string(),
+    }
+}
+
 /// Runs privileged operations over the invocation's authenticated pipe, revalidating inputs.
 /// Keeps local transport failures distinct from remote exporter errors in the response.
 #[cfg(target_os = "windows")]
@@ -103,8 +115,11 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                 let result = super::install::ensure_pinned_usbip(&root)
                     .await
                     .map_err(|error| format!("USBIP-SETUP-007: transport installation failed: {error}"))?;
-                let reboot_recommended =
-                    matches!(result, super::install::InstallResult::RebootRecommended);
+                // Controllers an older version left beside the new live one go now, so the person never meets "installed, not ready".
+                let restart_for_leftovers = super::device::sweep_stale_after_install().await
+                    == super::device::Finish::RestartNeeded;
+                let reboot_recommended = restart_for_leftovers
+                    || matches!(result, super::install::InstallResult::RebootRecommended);
                 Ok(ElevatedResponse {
                     success: true,
                     port: None,
@@ -122,10 +137,14 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                     return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());
                 }
                 let result = super::install::run_host_package("replace").await?;
+                let restart_for_leftovers = super::device::sweep_stale_after_install().await
+                    == super::device::Finish::RestartNeeded;
                 Ok(ElevatedResponse {
                     success: true,
                     port: None,
-                    message: if matches!(result, super::install::InstallResult::RebootRecommended) {
+                    message: if restart_for_leftovers
+                        || matches!(result, super::install::InstallResult::RebootRecommended)
+                    {
                         "reboot_recommended".to_string()
                     } else {
                         String::new()
@@ -133,11 +152,19 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                 })
             }
             ElevatedRequest::Cleanup => {
-                super::device::cleanup_broken_transport().await?;
+                let finish = super::device::cleanup_broken_transport().await?;
                 Ok(ElevatedResponse {
                     success: true,
                     port: None,
-                    message: String::new(),
+                    message: finish_message(finish),
+                })
+            }
+            ElevatedRequest::RemoveStale => {
+                let finish = super::device::remove_stale_nodes().await?;
+                Ok(ElevatedResponse {
+                    success: true,
+                    port: None,
+                    message: finish_message(finish),
                 })
             }
             ElevatedRequest::Attach {

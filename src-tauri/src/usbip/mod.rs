@@ -6,12 +6,17 @@
 
 mod commands;
 mod config;
+#[cfg(target_os = "windows")]
+mod devnode;
+mod diagnostics;
 mod device;
 mod elevated;
 mod exec;
 mod install;
+mod journal;
 mod manager;
 mod memo;
+mod nodes;
 mod signature;
 mod status;
 
@@ -59,6 +64,15 @@ pub struct UsbipStatus {
     pub version_valid: bool,
     pub reboot_recommended: bool,
     pub vhci_residual: bool,
+    /// What the leftover is: "" (none), "stale" (a working controller with older ones beside it; removing those is
+    /// enough) or "broken" (clean the transport and install it again).
+    pub residual_kind: String,
+    /// A cleanup was accepted by Windows and finishes at the next restart; the restart has not happened yet.
+    pub cleanup_pending_restart: bool,
+    /// Windows has restarted since a cleanup waited for it and the leftover is still there: continue the cleanup.
+    pub cleanup_resume: bool,
+    /// The last cleanup's error line as the helper answered it (codes and all), kept for the diagnostics.
+    pub last_cleanup_error: String,
     /// 结构化错误码（"USBIP-SETUP-003" 等），取自 detail 的码前缀；
     /// 前端按码判断语义，不得解析 detail 文本。
     pub error_code: String,
@@ -74,6 +88,8 @@ pub struct UsbipStatus {
 enum ElevatedRequest {
     Install,
     Cleanup,
+    /// Remove the older controllers beside the working one; the live controller stays.
+    RemoveStale,
     /// The person confirmed replacing an external USB/IP installation with the host's package.
     ReplaceLegacy,
     Attach {
@@ -96,6 +112,8 @@ impl ElevatedRequest {
             // The silent uninstaller plus the devnode sweep stay well below a
             // single Inno install, but leave headroom for slow driver teardown.
             Self::Cleanup => std::time::Duration::from_secs(15 * 60),
+            // Each node is asked for a few seconds over the polling budget of a cleanup, without an uninstaller.
+            Self::RemoveStale => std::time::Duration::from_secs(5 * 60),
             // The host's helper allows its uninstall and install ten minutes in total; leave the same headroom.
             Self::ReplaceLegacy => std::time::Duration::from_secs(15 * 60),
             Self::Attach { .. } | Self::Detach { .. } => {
@@ -215,6 +233,16 @@ mod tests {
     }
 
     #[test]
+    fn stale_removal_is_its_own_allowlisted_operation() {
+        let encoded = serde_json::to_string(&ElevatedRequest::RemoveStale).unwrap();
+        assert_eq!(encoded, r#"{"operation":"remove_stale"}"#);
+        assert!(matches!(
+            serde_json::from_str::<ElevatedRequest>(&encoded),
+            Ok(ElevatedRequest::RemoveStale)
+        ));
+    }
+
+    #[test]
     fn validates_usbip_win2_tcp_port_range() {
         assert_eq!(validate_tcp_port(None).unwrap(), DEFAULT_TCP_PORT);
         assert!(validate_tcp_port(Some(1023)).is_err());
@@ -236,6 +264,51 @@ mod tests {
             let error = device::cleanup_broken_transport().await.unwrap_err();
             assert!(error.starts_with("USBIP-CLEAN-005:"), "{error}");
         }
+    }
+
+    /// The 0.9.7.7 leftover: run in an elevated session after the old uninstaller left a host-controller node behind.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "changes the machine: removes usbip-win2 host-controller devnodes; needs an elevated session"]
+    async fn sweep_removes_every_leftover_controller() {
+        let interfaces = device::enumerate_vhci_interfaces().unwrap();
+        let before = device::enumerate_transport_nodes().unwrap();
+        println!("before: interfaces={interfaces:?} nodes={before:?}");
+        let finish = device::sweep_devnodes(false).await;
+        let after = device::enumerate_transport_nodes().unwrap();
+        println!("sweep: {finish:?}; after: nodes={after:?}");
+        let finish = finish.expect("the sweep must not fail");
+        if finish == device::Finish::Done {
+            assert!(after.is_empty(), "nothing may be left: {after:?}");
+        } else {
+            assert!(after.iter().all(|node| node.present), "{after:?}");
+        }
+    }
+
+    /// A working install with an older controller beside it: only the older one goes.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "changes the machine: removes usbip-win2 host-controller devnodes; needs an elevated session"]
+    async fn removing_the_stale_controller_keeps_the_live_one() {
+        let interfaces = device::enumerate_vhci_interfaces().unwrap();
+        assert_eq!(interfaces.len(), 1, "needs exactly one live controller: {interfaces:?}");
+        let before = device::enumerate_transport_nodes().unwrap();
+        println!("before: nodes={before:?} kind={:?}", device::residual_kind(&interfaces, &before));
+        let finish = device::remove_stale_nodes().await.expect("the repair must not fail");
+        let interfaces_after = device::enumerate_vhci_interfaces().unwrap();
+        let after = device::enumerate_transport_nodes().unwrap();
+        println!("repair: {finish:?}; interfaces={interfaces_after:?} nodes={after:?}");
+        assert_eq!(interfaces_after, interfaces, "the live controller must stay");
+        assert!(!device::transport_not_ready(&interfaces_after, &after));
+    }
+
+    /// What the panel reports for the machine as it is (read only).
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "reads the local USB/IP state"]
+    async fn prints_the_status_the_panel_would_show() {
+        let status = usbip_get_status().await.unwrap();
+        println!("{}", serde_json::to_string_pretty(&status).unwrap());
     }
 
     #[cfg(target_os = "windows")]

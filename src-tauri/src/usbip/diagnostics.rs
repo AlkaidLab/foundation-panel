@@ -1,0 +1,363 @@
+//! One-click export of what is needed to diagnose a USB/IP transport that will not install, clean or become ready: the
+//! status the panel computed, the host-controller device tree as Windows keeps it, the driver services, the driver
+//! packages, the registered installations, the last cleanup's error and the Windows version. Everything is read without
+//! administrator rights; nothing is changed.
+
+#![cfg_attr(not(target_os = "windows"), allow(dead_code))]
+
+#[cfg(target_os = "windows")]
+use std::fmt::Write as _;
+
+/// The text the file starts with: what it is for and what it does not contain.
+pub(super) const HEADER: &str = "USB/IP diagnostics\nThis file lists the USB/IP host-controller devices, driver services, driver packages and the Windows version of this PC. It contains no stream content and no account data.\n";
+
+/// Lines of `pnputil /enum-drivers` that belong to a usbip driver package: its output is blocks separated by empty lines.
+pub(super) fn usbip_driver_blocks(output: &str) -> String {
+    let text = output.replace("\r\n", "\n");
+    text.split("\n\n")
+        .filter(|block| block.to_ascii_lowercase().contains("usbip"))
+        .map(|block| block.trim())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The lines of the device-installation log (`setupapi.dev.log`) that mention the USB/IP drivers or their root nodes: the last `max`.
+/// `DiUninstallDevice` documents that log as where the detail of a removal is.
+pub(super) fn setupapi_usbip_lines(text: &str, max: usize) -> Vec<String> {
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("usbip") || lower.contains(r"root\usb\") || lower.contains(r"root\alkaidusb\")
+        })
+        .map(|line| line.trim_end().to_string())
+        .collect();
+    if lines.len() > max {
+        lines.drain(..lines.len() - max);
+    }
+    lines
+}
+
+/// The file name the export gets: sortable and free of characters Windows refuses.
+pub(super) fn file_name(timestamp: &str) -> String {
+    let safe: String = timestamp
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .collect();
+    format!("usbip-diagnostics-{safe}.txt")
+}
+
+#[cfg(target_os = "windows")]
+fn run_capture(program: &str, arguments: &[&str]) -> String {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return "(Windows directory unavailable)".to_string();
+    };
+    let path = std::path::PathBuf::from(root).join("System32").join(program);
+    let mut command = Command::new(path);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+    match command.spawn() {
+        Err(error) => format!("(could not start {program}: {error})"),
+        Ok(child) => {
+            // Bounded: wait on a thread so a hung tool cannot hang the export.
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(child.wait_with_output());
+            });
+            match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
+                Ok(Ok(output)) => {
+                    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        text = String::from_utf8_lossy(&output.stderr).into_owned();
+                    }
+                    text
+                }
+                Ok(Err(error)) => format!("({program} failed: {error})"),
+                Err(_) => format!("({program} did not answer in 20 seconds)"),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn registry_string(root: &winreg::RegKey, path: &str, name: &str) -> String {
+    root.open_subkey(path)
+        .ok()
+        .and_then(|key| key.get_value::<String, _>(name).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn registry_u32(root: &winreg::RegKey, path: &str, name: &str) -> Option<u32> {
+    root.open_subkey(path)
+        .ok()
+        .and_then(|key| key.get_value::<u32, _>(name).ok())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_section(out: &mut String) {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let version = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let _ = writeln!(out, "== Windows");
+    for name in [
+        "ProductName",
+        "DisplayVersion",
+        "ReleaseId",
+        "CurrentBuild",
+        "BuildLabEx",
+        "EditionID",
+    ] {
+        let _ = writeln!(out, "{name}: {}", registry_string(&hklm, version, name));
+    }
+    let _ = writeln!(
+        out,
+        "UBR: {}",
+        registry_u32(&hklm, version, "UBR").map_or(String::new(), |value| value.to_string())
+    );
+    let _ = writeln!(
+        out,
+        "FastStartup (HiberbootEnabled): {}",
+        registry_u32(
+            &hklm,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+            "HiberbootEnabled"
+        )
+        .map_or("unknown".to_string(), |value| value.to_string())
+    );
+    let uptime = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() } / 1000;
+    let _ = writeln!(out, "Uptime: {uptime} s");
+    let _ = writeln!(out, "Panel elevated: {}", crate::elevation::is_elevated());
+    let _ = writeln!(out, "Panel version: {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "Pinned USB/IP: {}", super::USBIP_VERSION);
+}
+
+#[cfg(target_os = "windows")]
+fn devices_section(out: &mut String) {
+    use super::nodes::instance_id_from_interface_path;
+
+    let _ = writeln!(out, "\n== Host-controller devices (hardware ID ROOT\\USBIP_WIN2\\UDE)");
+    match super::device::enumerate_vhci_interfaces() {
+        Ok(interfaces) => {
+            let _ = writeln!(out, "Present VHCI interfaces: {}", interfaces.len());
+            for path in &interfaces {
+                let _ = writeln!(
+                    out,
+                    "  {path} -> {}",
+                    instance_id_from_interface_path(path).unwrap_or_default()
+                );
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "Present VHCI interfaces: unreadable ({error})");
+        }
+    }
+    match super::device::enumerate_transport_nodes() {
+        Ok(nodes) => {
+            let _ = writeln!(out, "Nodes under Enum: {}", nodes.len());
+            for node in &nodes {
+                let _ = writeln!(
+                    out,
+                    "  {} in_device_tree={} disabled={}",
+                    node.instance_id, node.present, node.disabled
+                );
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "Nodes under Enum: unreadable ({error})");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn services_section(out: &mut String) {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let _ = writeln!(out, "\n== Driver services");
+    for name in ["usbip2_ude", "usbip2_filter", "usbip2_vhci"] {
+        let path = format!(r"SYSTEM\CurrentControlSet\Services\{name}");
+        if hklm.open_subkey(&path).is_err() {
+            let _ = writeln!(out, "{name}: not registered");
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "{name}: Start={} Type={} ImagePath={}",
+            registry_u32(&hklm, &path, "Start").map_or("?".to_string(), |value| value.to_string()),
+            registry_u32(&hklm, &path, "Type").map_or("?".to_string(), |value| value.to_string()),
+            registry_string(&hklm, &path, "ImagePath"),
+        );
+        let _ = writeln!(out, "{}", run_capture("sc.exe", &["query", name]).trim());
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn installations_section(out: &mut String) {
+    let _ = writeln!(out, "\n== Registered installations");
+    match super::usbip_uninstall_entries() {
+        Ok(entries) if entries.is_empty() => {
+            let _ = writeln!(out, "none");
+        }
+        Ok(entries) => {
+            for entry in entries {
+                let value = |name: &str| entry.key.get_value::<String, _>(name).unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "{} | DisplayVersion={} | InstallLocation={} | slim={} | UninstallString={}",
+                    entry.display_name,
+                    value("DisplayVersion"),
+                    value("InstallLocation"),
+                    entry.slim,
+                    value("UninstallString"),
+                );
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "unreadable ({error})");
+        }
+    }
+    let _ = writeln!(out, "\n== Driver packages (pnputil /enum-drivers, usbip only)");
+    let blocks = usbip_driver_blocks(&run_capture("pnputil.exe", &["/enum-drivers"]));
+    let _ = writeln!(out, "{}", if blocks.is_empty() { "none" } else { &blocks });
+}
+
+#[cfg(target_os = "windows")]
+fn setupapi_section(out: &mut String) {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let _ = writeln!(out, "\n== Device installation log (setupapi.dev.log, usbip lines, last 150)");
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        let _ = writeln!(out, "unavailable");
+        return;
+    };
+    let path = std::path::PathBuf::from(root).join("INF").join("setupapi.dev.log");
+    // The log grows to megabytes: only its tail is read.
+    const TAIL_BYTES: u64 = 6 * 1024 * 1024;
+    let text = std::fs::File::open(&path).and_then(|mut file| {
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(TAIL_BYTES)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    });
+    match text {
+        Ok(text) => {
+            let lines = setupapi_usbip_lines(&text, 150);
+            let _ = writeln!(out, "{}", if lines.is_empty() { "no usbip lines".to_string() } else { lines.join("\n") });
+        }
+        Err(error) => {
+            let _ = writeln!(out, "unreadable ({error})");
+        }
+    }
+}
+
+/// Writes the diagnostics next to the panel's log and shows the file in Explorer. Returns the path.
+#[cfg(target_os = "windows")]
+pub(super) async fn export() -> Result<String, String> {
+    let mut text = String::from(HEADER);
+    let _ = writeln!(text, "Created: {}", chrono::Local::now().to_rfc3339());
+    windows_section(&mut text);
+    let _ = writeln!(text, "\n== Panel status");
+    match super::status::usbip_get_status().await {
+        Ok(status) => {
+            let json = serde_json::to_string_pretty(&status)
+                .unwrap_or_else(|error| format!("(status could not be encoded: {error})"));
+            let _ = writeln!(text, "{json}");
+        }
+        Err(error) => {
+            let _ = writeln!(text, "unavailable: {error}");
+        }
+    }
+    let kept = super::journal::read();
+    let _ = writeln!(text, "\n== Last cleanup");
+    let _ = writeln!(text, "restart marker: {:?}", kept.marker);
+    let _ = writeln!(text, "last error: {}", kept.last_error);
+    // The slow reads (a process each) run off the async worker.
+    let rest = tokio::task::spawn_blocking(|| {
+        let mut part = String::new();
+        devices_section(&mut part);
+        services_section(&mut part);
+        installations_section(&mut part);
+        setupapi_section(&mut part);
+        part
+    })
+    .await
+    .map_err(|error| format!("USBIP-DIAG-001: the diagnostics could not be collected: {error}"))?;
+    text.push_str(&rest);
+
+    let directory = crate::logger::panel_log_path()
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or("USBIP-DIAG-001: the log folder is unavailable")?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("USBIP-DIAG-001: cannot create the log folder: {error}"))?;
+    let path = directory.join(file_name(
+        &chrono::Local::now().format("%Y%m%d-%H%M%S").to_string(),
+    ));
+    std::fs::write(&path, text)
+        .map_err(|error| format!("USBIP-DIAG-001: cannot write the diagnostics: {error}"))?;
+    reveal(&path);
+    Ok(path.display().to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) async fn export() -> Result<String, String> {
+    Err("USBIP-SETUP-004: USB/IP passthrough is only supported on Windows".to_string())
+}
+
+/// Shows the file selected in Explorer. Explorer answers exit code 1 even when it worked, so the result is not read.
+#[cfg(target_os = "windows")]
+fn reveal(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return;
+    };
+    let _ = std::process::Command::new(std::path::PathBuf::from(root).join("explorer.exe"))
+        .arg(format!("/select,{}", path.display()))
+        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0)
+        .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_the_driver_package_blocks_that_name_usbip() {
+        let output = "Microsoft PnP Utility\r\n\r\nPublished Name:     oem12.inf\r\nOriginal Name:      usbip2_ude.inf\r\nProvider Name:      USBip\r\n\r\nPublished Name:     oem3.inf\r\nOriginal Name:      netwtw.inf\r\n\r\nPublished Name:     oem13.inf\r\nOriginal Name:      usbip2_filter.inf\r\n";
+        let blocks = usbip_driver_blocks(output);
+        assert!(blocks.contains("oem12.inf"));
+        assert!(blocks.contains("oem13.inf"));
+        assert!(!blocks.contains("netwtw"));
+        assert_eq!(usbip_driver_blocks("nothing here"), "");
+    }
+
+    #[test]
+    fn keeps_the_setupapi_lines_about_usbip_and_its_root_nodes() {
+        let log = ">>>  [Device Install (UpdateDriverForPlugAndPlayDevices) - ROOT\\USBIP_WIN2\\UDE]\nunrelated line\n     dvi: Class installer: usbip2_ude.inf\n>>>  [Device Install - ROOT\\USB\\0000]\nanother unrelated\n";
+        let lines = setupapi_usbip_lines(log, 10);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("unrelated")));
+        // only the last ones are kept
+        assert_eq!(setupapi_usbip_lines(log, 2), lines[1..].to_vec());
+        assert!(setupapi_usbip_lines("nothing\nhere", 5).is_empty());
+    }
+
+    #[test]
+    fn the_file_name_is_safe_and_sortable() {
+        assert_eq!(file_name("20261120-093015"), "usbip-diagnostics-20261120-093015.txt");
+        assert_eq!(file_name("2026/11:20 ..\\x"), "usbip-diagnostics-20261120x.txt");
+    }
+}

@@ -42,13 +42,64 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
 /// Removes a broken USB/IP installation plus every leftover VHCI device node
 /// so the pinned installer can run from a clean state. The elevated helper
 /// uninstalls the registered transport (when present), then sweeps devnodes
-/// that the vendor uninstaller failed to remove.
+/// that the vendor uninstaller failed to remove. A removal that Windows finishes
+/// at the next restart is kept in the person's journal and continued after it.
 #[tauri::command]
 pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let _fresh = super::status::fresh();
-    run_elevated(ElevatedRequest::Cleanup).await?;
+    run_cleanup(ElevatedRequest::Cleanup).await
+}
+
+/// Removes the older controllers that stand beside the working one and keeps the live controller: no reinstall needed.
+#[tauri::command]
+pub async fn usbip_remove_stale_nodes() -> Result<UsbipStatus, String> {
+    let _guard = OPERATION_LOCK.lock().await;
+    let _fresh = super::status::fresh();
+    run_cleanup(ElevatedRequest::RemoveStale).await
+}
+
+/// Writes the USB/IP diagnostics file (device tree, services, driver packages, Windows version, status, last cleanup error)
+/// and shows it in Explorer. Returns the path so the person can attach it to a report.
+#[tauri::command]
+pub async fn usbip_export_diagnostics() -> Result<String, String> {
+    super::diagnostics::export().await
+}
+
+/// Runs one cleanup operation in the elevated helper and keeps what it answered: the error (for the diagnostics) and the
+/// restart marker. The helper always runs elevated (a UAC prompt when the panel is not), so a refused removal is a real
+/// refusal and is reported with the code Windows gave, never retried silently.
+async fn run_cleanup(request: ElevatedRequest) -> Result<UsbipStatus, String> {
+    #[cfg(target_os = "windows")]
+    let mut kept = super::journal::read();
+    #[cfg(target_os = "windows")]
+    if let Some(marker) = kept.marker.as_mut() {
+        // Continuing after a restart counts against the cap, so a node that never goes does not loop.
+        if marker.restarted_since(super::journal::boot_secs()) {
+            marker.resumed += 1;
+        }
+    }
+    let outcome = run_elevated(request).await;
     super::status::forget_kept();
+    #[cfg(target_os = "windows")]
+    {
+        match &outcome {
+            Ok(response) => {
+                kept.last_error.clear();
+                if response.message == super::elevated::RESTART_PENDING {
+                    kept.marker = Some(super::nodes::RestartMarker {
+                        written: super::journal::now_secs(),
+                        resumed: kept.marker.as_ref().map_or(0, |marker| marker.resumed),
+                    });
+                } else {
+                    kept.marker = None;
+                }
+            }
+            Err(error) => kept.last_error = error.clone(),
+        }
+        super::journal::write(&kept);
+    }
+    outcome?;
     super::status::usbip_get_status().await
 }
 
