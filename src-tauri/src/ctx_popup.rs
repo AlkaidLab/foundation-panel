@@ -253,6 +253,8 @@ pub fn ctx_popup_loaded(app: AppHandle) {
     FAILED.store(false, Ordering::SeqCst);
     LOADED.store(true, Ordering::SeqCst);
     LOADED_NOTIFY.notify_waiters();
+    // a window that has just loaded has not been idle yet (its making can wait for a native menu that is open, 31 s in a measurement)
+    note_use();
     info!("[ctxpop] menu page ready");
     // the tray's own menu window is usable now: the native menu steps aside (unless the person asked for it), and a window that is loaded again has earned the failures it was blamed for
     crate::tray::menu_window_loaded(&app);
