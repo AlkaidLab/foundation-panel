@@ -220,9 +220,9 @@ pub(super) async fn cleanup_broken_transport() -> Result<Finish, String> {
 #[cfg(target_os = "windows")]
 pub(super) async fn remove_stale_nodes() -> Result<Finish, String> {
     // No stream check: the controller behind the live interface stays, so nothing a stream uses is touched.
-    // Only a working transport is repaired this way; with no live controller (or two) nothing says which node to keep.
-    if enumerate_vhci_interfaces()?.len() != 1 {
-        return Err("USBIP-CLEAN-002: there is no single live USB/IP controller to keep; clean the shared transport instead".to_string());
+    // Only a transport with a live controller is repaired this way; with none, nothing says which node to keep.
+    if enumerate_vhci_interfaces()?.is_empty() {
+        return Err("USBIP-CLEAN-002: there is no live USB/IP controller to keep; clean the shared transport instead".to_string());
     }
     sweep_devnodes(true).await
 }
@@ -233,7 +233,7 @@ pub(super) async fn remove_stale_nodes() -> Result<Finish, String> {
 #[cfg(target_os = "windows")]
 pub(super) async fn sweep_stale_after_install() -> Finish {
     match enumerate_vhci_interfaces() {
-        Ok(interfaces) if interfaces.len() == 1 => {
+        Ok(interfaces) if !interfaces.is_empty() => {
             sweep_devnodes(true).await.unwrap_or(Finish::Done)
         }
         _ => Finish::Done,
@@ -242,7 +242,7 @@ pub(super) async fn sweep_stale_after_install() -> Finish {
 
 /// Removes devnodes until none is left that should go. PnP teardown is asynchronous, so a node that is still listed is
 /// asked again for the whole polling budget; a node Windows accepted but keeps until the restart is set aside.
-/// `keep_live` keeps the controller behind the single live interface.
+/// `keep_live` keeps one live controller and removes the others.
 #[cfg(target_os = "windows")]
 pub(super) async fn sweep_devnodes(keep_live: bool) -> Result<Finish, String> {
     use super::nodes::{

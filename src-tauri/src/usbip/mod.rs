@@ -285,20 +285,20 @@ mod tests {
         }
     }
 
-    /// A working install with an older controller beside it: only the older one goes.
+    /// A working install with an older controller beside it (both may be live): one controller stays, the rest go.
     #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "changes the machine: removes usbip-win2 host-controller devnodes; needs an elevated session"]
-    async fn removing_the_stale_controller_keeps_the_live_one() {
+    async fn removing_the_stale_controller_keeps_one_live_controller() {
         let interfaces = device::enumerate_vhci_interfaces().unwrap();
-        assert_eq!(interfaces.len(), 1, "needs exactly one live controller: {interfaces:?}");
+        assert!(!interfaces.is_empty(), "needs a live controller: {interfaces:?}");
         let before = device::enumerate_transport_nodes().unwrap();
-        println!("before: nodes={before:?} kind={:?}", device::residual_kind(&interfaces, &before));
+        println!("before: interfaces={interfaces:?} nodes={before:?} kind={:?}", device::residual_kind(&interfaces, &before));
         let finish = device::remove_stale_nodes().await.expect("the repair must not fail");
         let interfaces_after = device::enumerate_vhci_interfaces().unwrap();
         let after = device::enumerate_transport_nodes().unwrap();
         println!("repair: {finish:?}; interfaces={interfaces_after:?} nodes={after:?}");
-        assert_eq!(interfaces_after, interfaces, "the live controller must stay");
+        assert_eq!(interfaces_after.len(), 1, "exactly one live controller must stay");
         assert!(!device::transport_not_ready(&interfaces_after, &after));
     }
 

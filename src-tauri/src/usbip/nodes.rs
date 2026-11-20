@@ -43,7 +43,7 @@ pub(super) struct TransportNode {
 ///
 /// usbip.exe fails when more than one present VHCI interface exists. Only a node that is in the device tree can become a
 /// second controller, so only a present node counts:
-/// - an enabled present node that is not the one behind the single live interface is the leftover of an old version (the
+/// - an enabled present node that is not the one behind the live interface is the leftover of an old version (the
 ///   new driver matches its hardware ID, so Windows may start it as a second controller) and blocks;
 /// - a present node with no live interface at all is a controller that does not work and blocks;
 /// - a ghost (not present) never blocks, and neither does a disabled node next to the live controller (the previous
@@ -69,10 +69,10 @@ pub(super) fn transport_not_ready(interfaces: &[String], nodes: &[TransportNode]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Residual {
     Clear,
-    /// One controller is live and works; older controllers of the same driver are still in the device tree beside it.
-    /// Removing those is enough, nothing needs to be reinstalled.
+    /// A controller is live; others of the same driver are in the device tree beside it (an older version's leftover that the new
+    /// driver has taken over and started, or one that stays idle). Keeping one and removing the rest is enough, nothing is reinstalled.
     Stale,
-    /// No working controller, or more than one live interface: the transport has to be cleaned and installed again.
+    /// No live controller at all: the transport has to be cleaned and installed again.
     Broken,
 }
 
@@ -90,37 +90,39 @@ impl Residual {
 pub(super) fn residual_kind(interfaces: &[String], nodes: &[TransportNode]) -> Residual {
     if !transport_not_ready(interfaces, nodes) {
         Residual::Clear
-    } else if interfaces.len() == 1 {
-        Residual::Stale
-    } else {
+    } else if interfaces.is_empty() {
         Residual::Broken
+    } else {
+        Residual::Stale
     }
 }
 
 /// The devnodes to remove.
 ///
-/// `keep_live` keeps the controller behind the single live interface (the person has a working transport and only the
-/// leftovers go: enabled nodes that are not the live one, present or ghost; a disabled node is left alone, it is the
-/// previous enumerator). Without it every node and every interface owner goes (the whole transport is being removed).
+/// `keep_live` keeps one controller that is live (the first live interface by instance ID, so a repair is deterministic) and
+/// removes the rest: every other enabled node, present or ghost, and the owner of every other live interface (the new driver
+/// starts an older version's leftover node too, which is how two live interfaces arise). A disabled node is left alone, it is
+/// the previous enumerator. Without it every node and every interface owner goes (the whole transport is being removed).
 pub(super) fn removal_targets(
     interfaces: &[String],
     nodes: &[TransportNode],
     keep_live: bool,
 ) -> Vec<String> {
-    let live = if keep_live && interfaces.len() == 1 {
-        instance_id_from_interface_path(&interfaces[0])
-    } else {
-        None
-    };
+    let mut owners: Vec<String> = interfaces
+        .iter()
+        .filter_map(|path| instance_id_from_interface_path(path))
+        .collect();
+    owners.sort_unstable_by_key(|id| id.to_ascii_uppercase());
+    let keep = if keep_live { owners.first().cloned() } else { None };
     let mut targets: Vec<String> = Vec::new();
     for node in nodes {
+        if keep.is_some() && node.disabled {
+            continue;
+        }
         if keep_live && node.disabled && !node.present {
             continue;
         }
-        if keep_live && node.disabled && live.is_some() {
-            continue;
-        }
-        if live
+        if keep
             .as_ref()
             .is_some_and(|id| node.instance_id.eq_ignore_ascii_case(id))
         {
@@ -128,13 +130,11 @@ pub(super) fn removal_targets(
         }
         targets.push(node.instance_id.clone());
     }
-    if live.is_none() {
-        targets.extend(
-            interfaces
-                .iter()
-                .filter_map(|path| instance_id_from_interface_path(path)),
-        );
-    }
+    targets.extend(
+        owners
+            .into_iter()
+            .filter(|id| !keep.as_ref().is_some_and(|kept| kept.eq_ignore_ascii_case(id))),
+    );
     targets.sort_unstable_by_key(|id| id.to_ascii_uppercase());
     targets.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     targets
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leftover_beside_a_working_controller_is_stale_not_broken() {
+    fn a_leftover_beside_a_live_controller_is_stale_not_broken() {
         let interfaces = live("ROOT#USB#0001");
         let both = [
             node(r"ROOT\USB\0000", false, true),
@@ -414,7 +414,7 @@ mod tests {
         );
         assert_eq!(
             residual_kind(&[interfaces[0].clone(), interfaces[0].clone()], &[]),
-            Residual::Broken
+            Residual::Stale
         );
         assert_eq!(residual_kind(&[], &[]), Residual::Clear);
         assert_eq!(Residual::Stale.as_str(), "stale");
@@ -487,12 +487,32 @@ mod tests {
     }
 
     #[test]
-    fn without_a_single_live_interface_nothing_is_kept() {
+    fn without_a_live_interface_nothing_is_kept() {
         let nodes = [
             node(r"ROOT\USB\0000", false, true),
             node(r"ROOT\USB\0001", false, true),
         ];
         assert_eq!(removal_targets(&[], &nodes, true).len(), 2);
+    }
+
+    /// 0.9.8.1 installed beside a leftover of 0.9.7.7: the new driver starts both nodes, two live interfaces.
+    #[test]
+    fn two_live_controllers_keep_one_and_remove_the_other() {
+        let interfaces = [live("ROOT#USB#0001")[0].clone(), live("ROOT#USB#0000")[0].clone()];
+        let nodes = [
+            node(r"ROOT\USB\0000", false, true),
+            node(r"ROOT\USB\0001", false, true),
+        ];
+        assert_eq!(
+            removal_targets(&interfaces, &nodes, true),
+            vec![r"ROOT\USB\0001".to_string()]
+        );
+        assert_eq!(residual_kind(&interfaces, &nodes), Residual::Stale);
+        // the node list missing one of them does not matter: the interface names its owner
+        assert_eq!(
+            removal_targets(&interfaces, &nodes[..1], true),
+            vec![r"ROOT\USB\0001".to_string()]
+        );
     }
 
     #[test]
