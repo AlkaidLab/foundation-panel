@@ -153,7 +153,7 @@ fn release_hidden_main(app: &AppHandle, held: &mut Held, delay: Option<Duration>
         return;
     };
     // a window made ahead of a click is given time to be clicked
-    if PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some_and(|at| at.elapsed() < PREWARM_GRACE) {
+    if prewarm_state().ready_at.is_some_and(|at| at.elapsed() < PREWARM_GRACE) {
         held.main_since = None;
         return;
     }
@@ -197,54 +197,71 @@ fn release_idle_splash(app: &AppHandle, delay: Option<Duration>) {
 static RELEASED_MAIN: AtomicBool = AtomicBool::new(false);
 /// The pressure level the last release happened at (the situation the guard judges it by).
 static RELEASE_PRESSURE: AtomicU8 = AtomicU8::new(0);
-/// When a main window was made ahead of a click (and not shown since).
-static PREWARM_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static PREWARMING: AtomicBool = AtomicBool::new(false);
-/// A click came while the window was being made ahead: it is shown as soon as it is made.
-static SHOW_WHEN_MADE: AtomicBool = AtomicBool::new(false);
-
-/// A main window is being made ahead of a click right now.
-pub fn prewarm_in_progress() -> bool {
-    PREWARMING.load(Ordering::SeqCst)
+#[derive(Default)]
+struct Prewarm {
+    building: bool,
+    ready_at: Option<Instant>,
+    requested: bool,
+    target_url: Option<String>,
 }
 
-/// The person asked for the window while it was being made ahead: the maker shows it when it is done.
-pub fn show_when_made() {
-    SHOW_WHEN_MADE.store(true, Ordering::SeqCst);
+static PREWARM: Mutex<Prewarm> = Mutex::new(Prewarm {
+    building: false, ready_at: None, requested: false, target_url: None,
+});
+
+fn prewarm_state() -> std::sync::MutexGuard<'static, Prewarm> {
+    PREWARM.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The pointer is on the tray icon (called for every event of the icon's hover): the person is about to click it.
-pub fn on_tray_hover(app: &AppHandle) {
-    prewarm_main(app, "hover on the tray icon");
+/// Queue activation atomically with the end of a prewarm. Keep the most recent
+/// explicit URL if a plain activation arrives before construction finishes.
+pub fn defer_open(target_url: &mut Option<String>) -> bool {
+    let mut prewarm = prewarm_state();
+    if !prewarm.building {
+        return false;
+    }
+    prewarm.requested = true;
+    if target_url.is_some() {
+        prewarm.target_url = target_url.take();
+    }
+    true
 }
 
-/// A menu of the tray opened: "open the panel" is one tap away.
-pub fn on_tray_menu_opened(app: &AppHandle) {
-    prewarm_main(app, "tray menu opened");
-}
-
-/// Makes the main window again, hidden, if it was let go: a click then finds it there. Several calls in a row make one window.
-fn prewarm_main(app: &AppHandle, why: &str) {
+/// A pointer gesture, a tray menu or a shortcut can precede activation.
+/// The single-instance callback can also begin construction while handling its arguments.
+pub fn prewarm_main<R: Runtime>(app: &AppHandle<R>, why: &str) {
     if !RELEASED_MAIN.load(Ordering::SeqCst) || app.get_webview_window("main").is_some() || crate::windows::main_window_closing() {
         return;
     }
-    if PREWARMING.swap(true, Ordering::SeqCst) {
-        return;
+    {
+        let mut prewarm = prewarm_state();
+        if prewarm.building {
+            return;
+        }
+        prewarm.building = true;
     }
     info!("[memadapt] {why}: the main window is made ahead of the click");
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
-        match crate::windows::create_main_window_hidden(&app) {
+        let ready = match crate::windows::create_main_window_hidden(&app) {
             Ok(()) => {
-                *PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
                 info!("[memadapt] the main window was made ahead in {} ms", started.elapsed().as_millis());
+                true
             }
-            Err(error) => warn!("[memadapt] the main window could not be made ahead: {error}"),
-        }
-        PREWARMING.store(false, Ordering::SeqCst);
-        if SHOW_WHEN_MADE.swap(false, Ordering::SeqCst) {
-            crate::windows::activate_main_window(&app, None);
+            Err(error) => {
+                warn!("[memadapt] the main window could not be made ahead: {error}");
+                false
+            }
+        };
+        let (requested, target_url) = {
+            let mut prewarm = prewarm_state();
+            prewarm.building = false;
+            prewarm.ready_at = ready.then(Instant::now);
+            (std::mem::take(&mut prewarm.requested), prewarm.target_url.take())
+        };
+        if requested {
+            crate::windows::activate_main_window(&app, target_url);
         }
     });
 }
@@ -313,17 +330,21 @@ fn guard_enabled() -> bool {
 
 /// Whether the window may be let go at the pressure of now.
 fn release_allowed() -> bool {
-    !guard_enabled() || guard(|guard| guard.allows_release(pressure(), now_secs()))
+    !guard_enabled() || guard(|guard| guard.cold_open_qualified() && guard.allows_release(pressure(), now_secs()))
 }
 
 /// The person asked for the main window (a click, a hotkey, a second start): the clock of the reopen starts. Only a window that is hidden or absent counts.
 pub fn note_open_request(existing_hidden: bool, exists: bool) {
-    let kind = if exists && existing_hidden {
-        if PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some() { Reopen::Prewarmed } else { Reopen::Kept }
-    } else if !exists {
-        if RELEASED_MAIN.load(Ordering::SeqCst) { Reopen::Cold } else { Reopen::First }
-    } else {
+    if exists && !existing_hidden {
         return;
+    }
+    let kind = if RELEASED_MAIN.load(Ordering::SeqCst) {
+        let prewarm = prewarm_state();
+        if prewarm.building || prewarm.ready_at.is_some() { Reopen::Prewarmed } else { Reopen::Cold }
+    } else if exists {
+        Reopen::Kept
+    } else {
+        Reopen::First
     };
     let mut request = OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // a second ask for the same window (the click that waits for a window being made, and then the activation that shows it) keeps the first clock
@@ -338,7 +359,13 @@ pub fn note_main_shown() {
     let Some((at, kind)) = OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else { return };
     let ms = at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
     match kind {
-        Reopen::First => {}
+        Reopen::First => {
+            let limit = guard(|guard| {
+                guard.record_cold_open(ms);
+                guard.limit_ms()
+            });
+            info!("[memadapt] first cold window: {ms} ms against {limit} ms; main release requires a qualified cold open");
+        }
         Reopen::Kept => {
             guard(|guard| guard.record_kept(ms));
             info!("[memadapt] reopen kept window: {ms} ms");
@@ -355,11 +382,11 @@ pub fn note_main_shown() {
                 if kind == Reopen::Prewarmed { "made ahead" } else { "made by the click" },
                 if verdict == Verdict::Blocked && guard_enabled() { "; releasing stops in this situation for six hours" } else { "" }
             );
-            if verdict == Verdict::Blocked {
+            if verdict == Verdict::Blocked && guard_enabled() {
                 save_guard();
             }
             RELEASED_MAIN.store(false, Ordering::SeqCst);
-            *PREWARM_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            prewarm_state().ready_at = None;
             crate::view_state::clear_carry();
         }
     }

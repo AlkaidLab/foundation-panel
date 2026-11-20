@@ -791,20 +791,8 @@ fn open_desktop_gui_from_tray<R: Runtime>(app: &AppHandle<R>, source: &str) {
 }
 
 fn open_main_panel_from_tray<R: Runtime>(app: &AppHandle<R>, source: &str) {
-    // the old window is still being closed: the panel opens when it is gone
-    if windows::closing::is_closing("main") {
-        let source = source.to_owned();
-        windows::closing::after_closed(app, "main", move |app| open_main_panel_from_tray(&app, &source));
-        return;
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        windows::show_and_activate_window(&window);
-        return;
-    }
-
-    if let Err(e) = windows::create_main_window(app) {
-        error!("Failed to open main panel from tray {}: {}", source, e);
-    }
+    debug!("Main panel requested from tray {source}");
+    windows::activate_main_window(app, None);
 }
 
 pub fn mark_main_panel_loading() {

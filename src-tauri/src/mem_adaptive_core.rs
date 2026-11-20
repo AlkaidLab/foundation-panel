@@ -187,19 +187,15 @@ pub fn held_for(first_seen: Option<std::time::Instant>, now: std::time::Instant)
 /// A window that comes back after a release must be as quick as one that was never released. The ledger keeps the times the person waited for a kept window (hidden -> shown) and for a released one
 /// (asked -> shown) and says, per pressure level (the "situation" a release happens in), whether releasing is still allowed. A situation in which the released window was measurably slower is blocked
 /// for `BLOCK_SECS`; after that it is tried again (the machine, the prewarm and the runtime may have changed).
-pub const KEPT_FLOOR_MS: u32 = 250;
-const MIN_EXTRA_MS: u32 = 100;
-const CLEARLY_SLOWER: u32 = 3;
+pub const KEPT_FLOOR_MS: u32 = 100;
+const MIN_EXTRA_MS: u32 = 50;
 const BLOCK_SECS: u64 = 6 * 3600;
 const KEPT_KEEP: usize = 7;
-const RELEASED_KEEP: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// as quick as a kept window
     Fine,
-    /// slower, but not yet enough to stop releasing
-    Slower,
     /// releasing is stopped in this situation until the block ends
     Blocked,
 }
@@ -207,7 +203,7 @@ pub enum Verdict {
 #[derive(Clone, Debug, Default)]
 pub struct Guard {
     kept: Vec<u32>,
-    released: [Vec<u32>; 3],
+    cold_open_ms: Option<u32>,
     blocked_until: [u64; 3],
 }
 
@@ -219,10 +215,10 @@ impl Guard {
         kept.get(kept.len() / 2).copied().unwrap_or(0).max(KEPT_FLOOR_MS)
     }
 
-    /// The most a released window may take: the baseline and a quarter of it, at least 100 ms more.
+    /// The kept median plus a quarter, with 50 ms for measurement variation.
     pub fn limit_ms(&self) -> u32 {
         let base = self.baseline_ms();
-        base + MIN_EXTRA_MS.max(base / 4)
+        base.saturating_add(MIN_EXTRA_MS.max(base / 4))
     }
 
     pub fn record_kept(&mut self, ms: u32) {
@@ -232,24 +228,22 @@ impl Guard {
         }
     }
 
+    pub fn record_cold_open(&mut self, ms: u32) {
+        self.cold_open_ms = Some(ms);
+    }
+
+    /// A plain click has no lead time. Qualify its cost from a window that
+    /// already had to be created before releasing a window the user could keep.
+    pub fn cold_open_qualified(&self) -> bool {
+        self.cold_open_ms.is_some_and(|ms| ms <= self.limit_ms())
+    }
+
     pub fn record_released(&mut self, pressure: Pressure, ms: u32, now_secs: u64) -> Verdict {
-        let index = pressure as usize;
-        let limit = self.limit_ms();
-        let ledger = &mut self.released[index];
-        ledger.push(ms);
-        if ledger.len() > RELEASED_KEEP {
-            ledger.remove(0);
-        }
-        if ms <= limit {
+        if ms <= self.limit_ms() {
             return Verdict::Fine;
         }
-        let slower = ledger.iter().filter(|&&seen| seen > limit).count();
-        if ms > limit.saturating_mul(CLEARLY_SLOWER) || slower >= 2 {
-            ledger.clear();
-            self.blocked_until[index] = now_secs + BLOCK_SECS;
-            return Verdict::Blocked;
-        }
-        Verdict::Slower
+        self.blocked_until[pressure as usize] = now_secs.saturating_add(BLOCK_SECS);
+        Verdict::Blocked
     }
 
     pub fn allows_release(&self, pressure: Pressure, now_secs: u64) -> bool {
@@ -412,13 +406,13 @@ mod tests {
         }
         assert_eq!(slow.baseline_ms(), 600);
         assert_eq!(slow.limit_ms(), 750, "a quarter more");
-        assert_eq!(Guard::default().limit_ms(), 350, "at least 100 ms more");
+        assert_eq!(Guard::default().limit_ms(), 150, "at least 50 ms more");
     }
 
     #[test]
     fn a_released_window_as_quick_as_a_kept_one_keeps_releasing_allowed() {
         let mut guard = Guard::default();
-        for ms in [180, 210, 190] {
+        for ms in [110, 145, 130] {
             assert_eq!(guard.record_released(Pressure::None, ms, 1_000), Verdict::Fine);
         }
         assert!(guard.allows_release(Pressure::None, 1_000));
@@ -427,7 +421,7 @@ mod tests {
     #[test]
     fn a_clearly_slower_release_stops_releasing_in_that_situation_only() {
         let mut guard = Guard::default();
-        // a cold reopen of two seconds against a limit of 350 ms
+        // a cold reopen of two seconds against a limit of 150 ms
         assert_eq!(guard.record_released(Pressure::None, 2_100, 1_000), Verdict::Blocked);
         assert!(!guard.allows_release(Pressure::None, 1_001));
         assert!(guard.allows_release(Pressure::Elevated, 1_001), "another situation has its own record");
@@ -435,13 +429,22 @@ mod tests {
     }
 
     #[test]
-    fn a_little_slower_twice_in_a_row_also_stops_it_but_once_does_not() {
+    fn release_requires_a_measured_fast_cold_open() {
         let mut guard = Guard::default();
-        assert_eq!(guard.record_released(Pressure::Elevated, 500, 10), Verdict::Slower);
-        assert!(guard.allows_release(Pressure::Elevated, 11));
-        assert_eq!(guard.record_released(Pressure::Elevated, 120, 20), Verdict::Fine);
-        assert_eq!(guard.record_released(Pressure::Elevated, 520, 30), Verdict::Blocked, "two of the last three were slower");
-        assert!(!guard.allows_release(Pressure::Elevated, 31));
+        assert!(!guard.cold_open_qualified());
+        guard.record_cold_open(515);
+        guard.record_kept(91);
+        assert!(!guard.cold_open_qualified());
+        guard.record_cold_open(140);
+        assert!(guard.cold_open_qualified());
+    }
+
+    #[test]
+    fn the_first_slow_release_blocks_that_pressure() {
+        let mut guard = Guard::default();
+        assert_eq!(guard.record_released(Pressure::Elevated, 151, 10), Verdict::Blocked);
+        assert!(!guard.allows_release(Pressure::Elevated, 11));
+        assert!(guard.allows_release(Pressure::None, 11));
     }
 
     #[test]

@@ -117,7 +117,12 @@ pub(super) fn on_icon_event(event: TrayIconEvent) {
     let Some(app) = ctx_popup::app() else { return };
     let prefs = tray_prefs::current();
     match event {
-        TrayIconEvent::Click { button: MouseButton::Left, button_state: tauri::tray::MouseButtonState::Down, .. } => gate(|g| g.left_down()),
+        TrayIconEvent::Click { button: MouseButton::Left, button_state: tauri::tray::MouseButtonState::Down, .. } => {
+            gate(|g| g.left_down());
+            if matches!(prefs.action(Gesture::Click), Action::Panel) || matches!(prefs.action(Gesture::Double), Action::Panel) {
+                crate::mem_adaptive::prewarm_main(&app, "tray press");
+            }
+        },
         TrayIconEvent::Click { button: MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, rect, .. } => {
             let decision = gate(|g| g.left_up(&prefs, tray_prefs::double_click_wait()));
             run(&app, decision, physical_rect(&rect));
@@ -127,7 +132,7 @@ pub(super) fn on_icon_event(event: TrayIconEvent) {
             run(&app, decision, physical_rect(&rect));
         }
         // the pointer is on the icon (the events repeat while it moves): a main window that was let go for memory is made again now, hidden, so that the click that follows finds it
-        TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => crate::mem_adaptive::on_tray_hover(&app),
+        TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => crate::mem_adaptive::prewarm_main(&app, "tray hover"),
         TrayIconEvent::Click { button: MouseButton::Right, button_state: tauri::tray::MouseButtonState::Up, rect, .. } => {
             crate::mem_adaptive::note_click();
             // with the native menu on the icon, the system shows it by itself on this very event

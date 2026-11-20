@@ -11,7 +11,7 @@
       <template #controls><div class="panel-caption__controls">
         <button type="button" class="panel-caption__btn" :aria-label="t.sidebar.minimize" :data-tip="t.sidebar.minimize" @click="minimizeWindow"><MIcon name="remove" /></button>
         <button type="button" class="panel-caption__btn" :aria-label="isMaximized ? t.sidebar.restore : t.sidebar.maximize" :data-tip="isMaximized ? t.sidebar.restore : t.sidebar.maximize" @click="toggleMaximize"><MIcon :name="isMaximized ? 'filter_none' : 'crop_square'" /></button>
-        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" @click="closeWindow"><MIcon name="close" /></button>
+        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" data-panel-hide @click="hidePanel"><MIcon name="close" /></button>
       </div></template>
     </MCaption>
     <div class="panel-body">
@@ -139,7 +139,7 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, getCurrentInstance, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, getCurrentInstance, nextTick, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import { sunshine, sunshineService, tools, openExternalUrl } from '../tauri-adapter.js'
 import { SPONSORS, sponsorUrl } from '../config/sponsors.js'
 import QRCode from 'qrcode'
@@ -662,6 +662,32 @@ const onUnifiedChoose = (doc) => jumps.jump(() => {
   else if (doc.type === 'tile') { addTileToHome('panel-home', doc.tile); router.navigate(ROUTES.HOME) }
 })
 const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose })
+let searchBeforeHide = null
+
+// Capture on Window before the search component handles the outside press
+// on Document (panel-memory-dom-dispatch, Dispatching events).
+function captureHideIntent(event) {
+  searchBeforeHide = event.button === 0 && event.target?.closest?.('[data-panel-hide]')
+    ? uni.query.value : null
+}
+function clearHideIntent() { searchBeforeHide = null }
+
+async function hidePanel(event) {
+  if (event.detail > 0 && searchBeforeHide !== null) uni.query.value = searchBeforeHide
+  clearHideIntent()
+  await nextTick()
+  await window.__panelViewState?.flush()
+  await closeWindow()
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', captureHideIntent, true)
+  window.addEventListener('pointercancel', clearHideIntent, true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', captureHideIntent, true)
+  window.removeEventListener('pointercancel', clearHideIntent, true)
+})
 // Where an error of the diagnostics page leads
 // 体检: the entries of help and search open it running; a fix leads to a setting row or a page of the panel; 米塔 AI gets the result
 // each press of 「开始体检」 carries its own token: the history entry keeps it, so Back from a fix finds the result instead of running every check again (MDoctor)

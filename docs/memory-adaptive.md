@@ -19,12 +19,19 @@ The panel keeps WebViews alive after use so that the next use is instant. This i
 ## Coming back without being noticed
 
 1. While the page is used, `inject-viewstate.js` keeps a snapshot (route, scroll positions, selected tabs, open sections, drafts typed by the person; never a password, hidden or file field, nor a field named like a secret, token, PIN, OTP or card) and hands it to the native side (`view_state.rs`). It lives in memory only and is never written to disk. The Web UI pages in the frame report theirs to the shell by `postMessage`.
-2. A hover on the tray icon, or the tray menu opening, makes the main window again, hidden, with the snapshot in `window.__PANEL_RESTORE__`. The router starts from the saved stack; the rest is applied as the page draws, and stops the moment the person touches the page.
+2. Tray hover or press, opening the tray menu, the toolbar shortcut press, and an activation message from a second launch can begin making the main window again, hidden, with the snapshot in `window.__PANEL_RESTORE__`. The router starts from the saved stack; the rest is applied as the page draws, and stops the moment the person touches the page.
 3. A click then shows a window that is already there, as it shows one that was never released. A click that comes first is shown the moment the page is ready.
 
 ## The guard
 
-The time from the request to the shown window is measured for kept windows and for released ones. In a pressure level in which a released window was measurably slower than a kept one (more than the kept median, never below 250 ms, plus a quarter and at least 100 ms; or two slower of the last three), releasing stops for six hours (`memory-guard.json`). `SUNSHINE_GUI_MEM_GUARD=off` records without stopping (measurements).
+The controller times an initial cold construction before qualifying a main
+window for release. The cutoff is the median kept reopen (at least 100 ms)
+plus a quarter or 50 ms, whichever is larger. An unknown or slow cold cost
+keeps the main window in memory. A tray click with no advance signal can
+arrive at any pressure level. A released window that exceeds the cutoff
+blocks further release at that pressure for six hours
+(`memory-guard.json`). `SUNSHINE_GUI_MEM_GUARD=off` records measurements
+and permits forced releases without persisting those blocks.
 
 ## One WebView2 environment, and 0x8007139F
 

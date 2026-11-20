@@ -126,6 +126,15 @@ test('a restore puts a draft back as the person typed it and tells the page, but
   assert.equal(secret.value, '', 'a secret is never written, even if a snapshot carried one')
 })
 
+test('a restored draft remains eligible for a second release', async () => {
+  const input = element('input', { id: 'draft' })
+  const { api } = world({ '#draft': [input], 'input,textarea,select': [input] })
+  await new Promise((resolve) => api.apply({
+    fields: [{ at: { p: { tag: 'input', id: 'draft' }, i: 0 }, type: 'text', value: 'carry me twice' }],
+  }, resolve))
+  assert.equal(api.collect().fields[0].value, 'carry me twice')
+})
+
 test('a scroll is applied once the box is tall enough, and a missing part ends the restore after its budget, not before', async () => {
   const pane = element('div', { classes: ['m-scene__pane'] }, { scrollHeight: 500, clientHeight: 400 })
   const { api, ctx } = world({ 'div.m-scene__pane': [pane] })

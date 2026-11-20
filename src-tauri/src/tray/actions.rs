@@ -522,17 +522,8 @@ fn open_main_window_view<R: Runtime + 'static>(
         windows::closing::after_closed(app, "main", move |app| open_main_window_view(&app, event, description));
         return;
     }
-    if app.get_webview_window("main").is_none()
-        && let Err(e) = windows::create_main_window(app)
-    {
-        error!("Failed to create main window for {}: {}", description, e);
-        return;
-    }
-
-    if let Some(window) = app.get_webview_window("main") {
-        windows::show_and_activate_window(&window);
-        emit_to_main_when_ready(app, event, serde_json::Value::Null);
-    }
+    open_main_panel_from_tray(app, description);
+    emit_to_main_when_ready(app, event, serde_json::Value::Null);
 }
 
 /// 更新 Sunshine 用户模式状态
@@ -611,17 +602,8 @@ fn toggle_toolbar<R: Runtime>(app: &AppHandle<R>) {
 /// 检查更新（托盘菜单触发，`manual = true`）
 fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
     info!("🔄 托盘菜单：检查更新");
-    if app.get_webview_window("main").is_none()
-        && let Err(e) = windows::create_main_window(app)
-    {
-        error!("Failed to create main window for update check: {}", e);
-        return;
-    }
+    open_main_panel_from_tray(app, "update check");
     let app_handle = app.clone();
-
-    if let Some(window) = app.get_webview_window("main") {
-        windows::show_and_activate_window(&window);
-    }
 
     let include_prerelease = update::get_include_prerelease(app);
     tauri::async_runtime::spawn(async move {

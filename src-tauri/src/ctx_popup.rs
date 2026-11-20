@@ -552,7 +552,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     info!("[ctxpop] tray menu {} shown {} ms after the click (edge {}, token {})", variant.as_str(), started.elapsed().as_millis(), edge.as_str(), token);
     crate::mem_adaptive::note_menu_shown();
     // "open the panel" is one tap away: a main window that was let go is made again now
-    crate::mem_adaptive::on_tray_menu_opened(&app);
+    crate::mem_adaptive::prewarm_main(&app, "tray menu opened");
     watch(app, token);
     Ok(true)
 }

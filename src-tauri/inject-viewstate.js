@@ -172,7 +172,9 @@
   const fire = (el, type) => el.dispatchEvent(new Event(type, { bubbles: true }))
 
   function setField(el, item) {
-    if (isSensitiveField(fieldInfo(el)) || el.disabled || el.readOnly) return true
+    if (isSensitiveField(fieldInfo(el)) || el.disabled || el.readOnly || el.type !== item.type) return true
+    // A restored draft must also survive the next release. Synthetic events are not trusted.
+    touched.add(el)
     if (typeof item.checked === 'boolean') {
       if (el.checked === item.checked) return true
       el.checked = item.checked
@@ -274,7 +276,7 @@
     let state
     try { state = snapshot() } catch (e) { return }
     if (isTop) {
-      try { window.__TAURI_INTERNALS__.invoke('panel_state_save', { state: JSON.stringify(state) }).catch(() => {}) } catch (e) { /* the native side keeps the last one */ }
+      try { return window.__TAURI_INTERNALS__.invoke('panel_state_save', { state: JSON.stringify(state) }).catch(() => {}) } catch (e) { /* the native side keeps the last one */ }
     } else {
       const origin = parentOrigin()
       if (origin) { try { window.parent.postMessage({ type: 'panel-view-state', state }, origin) } catch (e) { /* no parent */ } }
@@ -288,7 +290,7 @@
 
   function flush() {
     if (timer) { clearTimeout(timer); timer = 0 }
-    save()
+    return save()
   }
 
   function start() {

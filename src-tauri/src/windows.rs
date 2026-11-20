@@ -234,6 +234,9 @@ fn uncloak_cold<R: Runtime>(window: &WebviewWindow<R>, why: &str) {
         #[cfg(target_os = "windows")]
         force_activate_window_win32(window);
     }
+    if window.is_visible().unwrap_or(false) {
+        crate::mem_adaptive::note_main_shown();
+    }
 }
 
 /// The page painted its first frame: the cloaked window shows it.
@@ -405,12 +408,9 @@ pub fn show_and_activate_window<R: Runtime>(window: &WebviewWindow<R>) {
         return;
     }
     log::info!("[cold] window {} shown", window.label());
-    if window.label() == MAIN_WINDOW_ID {
-        crate::mem_adaptive::note_main_shown();
-    }
     let cloaked = COLD_CLOAK.load(std::sync::atomic::Ordering::SeqCst) && window.label() == MAIN_WINDOW_ID;
     let _ = window.unminimize();
-    let _ = window.show();
+    let shown = window.show().is_ok();
     if cloaked {
         // the person sees the window when the page has painted; if that does not come, after the cap
         let capped = window.clone();
@@ -438,6 +438,9 @@ pub fn show_and_activate_window<R: Runtime>(window: &WebviewWindow<R>) {
         refresh_webview_surface(window);
     }
     crate::power::refresh_ecoqos_state(window.app_handle());
+    if shown && !cloaked && window.label() == MAIN_WINDOW_ID {
+        crate::mem_adaptive::note_main_shown();
+    }
 }
 
 /// 使用 Windows API 强制激活窗口
@@ -584,14 +587,8 @@ pub fn open_main_panel_page<R: Runtime>(app: &AppHandle<R>, page: &str) -> Resul
         });
         return Ok(());
     }
-    if app.get_webview_window(MAIN_WINDOW_ID).is_none() {
-        create_main_window(app).map_err(|error| error.to_string())?;
-    }
-    let window = app
-        .get_webview_window(MAIN_WINDOW_ID)
-        .ok_or_else(|| "main panel window is unavailable".to_string())?;
-    show_and_activate_window(&window);
-    crate::panel_page::open_page(&window, page);
+    crate::panel_page::open_page(app, page);
+    request_main_window(app, None)?;
     debug!("✅ main panel page requested: {page}");
     Ok(())
 }
@@ -624,6 +621,9 @@ pub fn open_debug_page<R: Runtime>(app: &AppHandle<R>) {
 pub fn create_main_window<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if app.get_webview_window(MAIN_WINDOW_ID).is_none() {
+        crate::mem_adaptive::note_open_request(false, false);
+    }
     create_main_window_internal(app, true)
 }
 
@@ -853,7 +853,13 @@ pub fn close_desktop_window<R: Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// 激活主窗口
-pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) {
+pub fn activate_main_window<R: Runtime>(app: &AppHandle<R>, target_url: Option<String>) {
+    if let Err(error) = request_main_window(app, target_url) {
+        error!("Failed to activate main panel: {error}");
+    }
+}
+
+fn request_main_window<R: Runtime>(app: &AppHandle<R>, mut target_url: Option<String>) -> Result<(), String> {
     debug!(
         "📱 activate_main_window 被调用，target_url: {:?}",
         target_url
@@ -861,31 +867,24 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
 
     if closing::is_closing(MAIN_WINDOW_ID) {
         closing::after_closed(app, MAIN_WINDOW_ID, move |app| activate_main_window(&app, target_url));
-        return;
+        return Ok(());
     }
-    // a window is being made ahead of this very click (mem_adaptive.rs): it is shown when it is there, not made a second time
-    if app.get_webview_window(MAIN_WINDOW_ID).is_none() && crate::mem_adaptive::prewarm_in_progress() {
-        crate::mem_adaptive::note_open_request(false, false);
-        crate::mem_adaptive::show_when_made();
+    let existing = app.get_webview_window(MAIN_WINDOW_ID);
+    crate::mem_adaptive::note_open_request(
+        existing.as_ref().is_some_and(|window| !window.is_visible().unwrap_or(true) || window.is_minimized().unwrap_or(false)),
+        existing.is_some(),
+    );
+    if crate::mem_adaptive::defer_open(&mut target_url) {
         info!("[memadapt] the main window is being made ahead: it is shown when it is made");
-        return;
+        return Ok(());
     }
-    // the clock of the reopen starts here (mem_adaptive.rs times a kept window, one made ahead of the click and one the click had to make)
-    {
-        let existing = app.get_webview_window(MAIN_WINDOW_ID);
-        crate::mem_adaptive::note_open_request(existing.as_ref().is_some_and(|window| !window.is_visible().unwrap_or(true)), existing.is_some());
-        // a window made ahead of the click that is still loading is shown the moment its page is ready, not as a bare surface
-        if target_url.is_none() && existing.is_some() && lifecycle::show_when_loaded(MAIN_WINDOW_ID) {
-            info!("[memadapt] the main window made ahead is still loading: it is shown when its page is ready");
-            return;
-        }
+    if target_url.is_none() && existing.is_some() && lifecycle::show_when_loaded(MAIN_WINDOW_ID) {
+        info!("[memadapt] the main window made ahead is still loading: it is shown when its page is ready");
+        return Ok(());
     }
     let created = if app.get_webview_window(MAIN_WINDOW_ID).is_none() {
         info!("主窗口尚未创建，正在从用户会话 agent 按需创建");
-        if let Err(e) = create_main_window(app) {
-            error!("❌ 按需创建主窗口失败: {}", e);
-            return;
-        }
+        create_main_window(app).map_err(|error| error.to_string())?;
         true
     } else {
         false
@@ -895,13 +894,11 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
     // composited first frame. The startup page reads any runtime URL itself.
     // (A window that a memory-release prewarm made in the meantime and that has loaded already is not cold: it is shown below.)
     if created && lifecycle::show_when_loaded(MAIN_WINDOW_ID) {
-        return;
+        return Ok(());
     }
 
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_ID) else {
-        error!("❌ 主窗口创建后仍不可用");
-        return;
-    };
+    let window = app.get_webview_window(MAIN_WINDOW_ID)
+        .ok_or_else(|| "Main panel window is unavailable".to_string())?;
 
     debug!("📱 正在激活主窗口...");
 
@@ -920,10 +917,11 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
     });
 
     debug!("✅ 窗口激活完成");
+    Ok(())
 }
 
 /// 导航到指定 URL
-fn navigate_to_url(window: &WebviewWindow, url: &str) {
+fn navigate_to_url<R: Runtime>(window: &WebviewWindow<R>, url: &str) {
     debug!("🔄 正在导航到: {}", url);
 
     let Ok(parsed_url) = url::Url::parse(url) else {
