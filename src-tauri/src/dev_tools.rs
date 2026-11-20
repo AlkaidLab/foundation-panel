@@ -127,7 +127,7 @@ fn real_dpi(_window: &tauri::WebviewWindow) -> u32 {
 pub fn dev_simulate_dpi(window: tauri::WebviewWindow, percent: u32) -> Result<(), String> {
     let dpi = simulated_dpi(real_dpi(&window), percent).ok_or("the scale must be between 50 and 400 percent")?;
     log::info!("[developer] simulated scale change to {dpi} dpi ({percent}%)");
-    crate::windows::send_synthetic_dpi(&window, dpi)
+    crate::windows::send_synthetic_dpi(&window, dpi, false)
 }
 
 /// DevTools of the main window. The embedded Web UI is a frame of the same page: pick its context in the console or the frame in Elements.

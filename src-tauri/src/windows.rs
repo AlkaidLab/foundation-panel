@@ -251,16 +251,17 @@ pub fn panel_activity() {
 /// Measurement instances only: the message Windows sends when the scale of the window's monitor changes, with the size the window gets at the new scale.
 /// An off-screen window gets none from the system, and the display of whoever uses the machine stays as it is.
 #[tauri::command]
-pub fn test_synthetic_dpi(window: tauri::WebviewWindow, dpi: u32) -> Result<(), String> {
+pub fn test_synthetic_dpi(window: tauri::WebviewWindow, dpi: u32, keep_pixels: Option<bool>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     if !test_offscreen() {
         return Err("only a measurement instance takes a synthetic scale change".to_string());
     }
-    send_synthetic_dpi(&window, dpi)
+    send_synthetic_dpi(&window, dpi, keep_pixels.unwrap_or(false))
 }
 
 /// The message itself: used by the measurement instances above and by the developer page (dev_tools), which asks the person first.
-pub(crate) fn send_synthetic_dpi(window: &tauri::WebviewWindow, dpi: u32) -> Result<(), String> {
+/// `keep_pixels`: the suggested rectangle has the pixels the window has (what a display whose resolution and scale change together gives: the observed behaviour of a virtual display), not the DIPs.
+pub(crate) fn send_synthetic_dpi(window: &tauri::WebviewWindow, dpi: u32, keep_pixels: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
@@ -272,14 +273,14 @@ pub(crate) fn send_synthetic_dpi(window: &tauri::WebviewWindow, dpi: u32) -> Res
         let known = CURRENT.swap(dpi, std::sync::atomic::Ordering::SeqCst);
         let (mut rect, old) = (RECT::default(), if known == 0 { unsafe { GetDpiForWindow(hwnd) }.max(1) } else { known });
         unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| e.to_string())?;
-        let size = |extent: i32| (i64::from(extent) * i64::from(dpi) / i64::from(old)) as i32;
+        let size = |extent: i32| if keep_pixels { extent } else { (i64::from(extent) * i64::from(dpi) / i64::from(old)) as i32 };
         let suggested = RECT { left: rect.left, top: rect.top, right: rect.left + size(rect.right - rect.left), bottom: rect.top + size(rect.bottom - rect.top) };
         unsafe { SendMessageW(hwnd, WM_DPICHANGED, Some(WPARAM(((dpi << 16) | dpi) as usize)), Some(LPARAM(&suggested as *const RECT as isize))) };
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (window, dpi);
+        let _ = (window, dpi, keep_pixels);
         Err("windows only".to_string())
     }
 }
