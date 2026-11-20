@@ -238,9 +238,9 @@ pub fn init_logger() {
         .expect("Failed to initialize logger");
 }
 
-/// Return all collected logs.
+/// Return all collected logs. Async so that copying and serialising up to 10000 lines is a worker's job: the feedback sheet asks for them while it opens.
 #[tauri::command]
-pub fn get_all_logs() -> Vec<LogEntry> {
+pub async fn get_all_logs() -> Vec<LogEntry> {
     if let Some(collector) = LOG_COLLECTOR.get() {
         collector.get_logs()
     } else {
