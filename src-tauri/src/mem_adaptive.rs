@@ -200,6 +200,18 @@ static RELEASE_PRESSURE: AtomicU8 = AtomicU8::new(0);
 /// When a main window was made ahead of a click (and not shown since).
 static PREWARM_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static PREWARMING: AtomicBool = AtomicBool::new(false);
+/// A click came while the window was being made ahead: it is shown as soon as it is made.
+static SHOW_WHEN_MADE: AtomicBool = AtomicBool::new(false);
+
+/// A main window is being made ahead of a click right now.
+pub fn prewarm_in_progress() -> bool {
+    PREWARMING.load(Ordering::SeqCst)
+}
+
+/// The person asked for the window while it was being made ahead: the maker shows it when it is done.
+pub fn show_when_made() {
+    SHOW_WHEN_MADE.store(true, Ordering::SeqCst);
+}
 
 /// The pointer is on the tray icon (called for every event of the icon's hover): the person is about to click it.
 pub fn on_tray_hover(app: &AppHandle) {
@@ -231,6 +243,9 @@ fn prewarm_main(app: &AppHandle, why: &str) {
             Err(error) => warn!("[memadapt] the main window could not be made ahead: {error}"),
         }
         PREWARMING.store(false, Ordering::SeqCst);
+        if SHOW_WHEN_MADE.swap(false, Ordering::SeqCst) {
+            crate::windows::activate_main_window(&app, None);
+        }
     });
 }
 
@@ -251,6 +266,8 @@ enum Reopen {
 }
 
 static OPEN_REQUEST: Mutex<Option<(Instant, Reopen)>> = Mutex::new(None);
+/// An ask for the window older than this is a stale one (the window was never shown for it).
+const OPEN_REQUEST_TTL: Duration = Duration::from_secs(30);
 
 fn guard<T>(f: impl FnOnce(&mut Guard) -> T) -> T {
     let mut slot = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -308,7 +325,12 @@ pub fn note_open_request(existing_hidden: bool, exists: bool) {
     } else {
         return;
     };
-    *OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), kind));
+    let mut request = OPEN_REQUEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // a second ask for the same window (the click that waits for a window being made, and then the activation that shows it) keeps the first clock
+    if request.is_some_and(|(at, _)| at.elapsed() < OPEN_REQUEST_TTL) {
+        return;
+    }
+    *request = Some((Instant::now(), kind));
 }
 
 /// The main window is on screen: the reopen is timed and judged.

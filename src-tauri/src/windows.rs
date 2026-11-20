@@ -863,6 +863,13 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
         closing::after_closed(app, MAIN_WINDOW_ID, move |app| activate_main_window(&app, target_url));
         return;
     }
+    // a window is being made ahead of this very click (mem_adaptive.rs): it is shown when it is there, not made a second time
+    if app.get_webview_window(MAIN_WINDOW_ID).is_none() && crate::mem_adaptive::prewarm_in_progress() {
+        crate::mem_adaptive::note_open_request(false, false);
+        crate::mem_adaptive::show_when_made();
+        info!("[memadapt] the main window is being made ahead: it is shown when it is made");
+        return;
+    }
     // the clock of the reopen starts here (mem_adaptive.rs times a kept window, one made ahead of the click and one the click had to make)
     {
         let existing = app.get_webview_window(MAIN_WINDOW_ID);
@@ -886,7 +893,8 @@ pub fn activate_main_window(app: &tauri::AppHandle, target_url: Option<String>) 
 
     // Cold windows are revealed by the page-load hook after WebView2 has a
     // composited first frame. The startup page reads any runtime URL itself.
-    if created {
+    // (A window that a memory-release prewarm made in the meantime and that has loaded already is not cold: it is shown below.)
+    if created && lifecycle::show_when_loaded(MAIN_WINDOW_ID) {
         return;
     }
 
