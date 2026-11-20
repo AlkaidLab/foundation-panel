@@ -154,6 +154,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         ctx_popup::schedule_create(&app_handle);
     }
     crate::mem_adaptive::start(&app_handle);
+    crate::launch_splash::start_for_measurement(&app_handle);
     crate::power::refresh_ecoqos_state(&app_handle);
     if !crate::test_isolation::active() {
         #[cfg(target_os = "windows")]

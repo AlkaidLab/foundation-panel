@@ -144,7 +144,11 @@ fn run<R: Runtime + 'static>(app: AppHandle<R>, rx: mpsc::Receiver<Msg>) {
             note_use();
         }
         let timeout = if plan.watching().is_some() { TICK } else { IDLE };
-        let cmds = match rx.recv_timeout(timeout) {
+        let received = match measurement_announcement() {
+            Some(state) => Ok(Msg::State(state)),
+            None => rx.recv_timeout(timeout),
+        };
+        let cmds = match received {
             Ok(Msg::State(state)) => {
                 note_timing(&app, &state);
                 let began = plan.watching().map(|l| l.id.clone()) != Some(state.id.clone()) && state.active && state.kind != "resume";
@@ -167,6 +171,26 @@ fn run<R: Runtime + 'static>(app: AppHandle<R>, rx: mpsc::Receiver<Msg>) {
             note_use();
             apply(&app, &mut world, cmd);
         }
+    }
+}
+
+/// Measurement only: with `SUNSHINE_GUI_TEST_SPLASH_FILE` set, a file at that path (its text is the launch id) is taken as the host's announcement of a launch whose display is not ready, and deleted. It is looked
+/// at every time the worker wakes (at most every `IDLE`). Nothing of it exists without the variable.
+fn measurement_announcement() -> Option<sunshine::TrayLaunchState> {
+    let path = std::env::var_os("SUNSHINE_GUI_TEST_SPLASH_FILE")?;
+    let id = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    serde_json::from_value(serde_json::json!({ "id": id, "active": true, "kind": "launch", "app_name": "Memory test", "stage": "preparing", "display_ready": false })).ok()
+}
+
+/// Measurement only (SUNSHINE_GUI_TEST_SPLASH_FILE): starts the worker at the application's start, as the first state of a host that offers the splash does in the product.
+pub fn start_for_measurement<R: Runtime + 'static>(app: &AppHandle<R>) {
+    if std::env::var_os("SUNSHINE_GUI_TEST_SPLASH_FILE").is_some() {
+        send(app, Msg::Disconnected);
     }
 }
 
