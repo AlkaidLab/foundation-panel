@@ -4,6 +4,7 @@
 
 ## 以前为什么清不掉
 
+0. **旧版自己就要求重启。** 0.9.7.7 的 Inno 脚本里 `UninstallNeedRestart` 恒为真，卸载时调用 `devnode.exe remove`，它用 `DiUninstallDevice` 删除控制器节点并在 `NeedReboot` 时提醒重启。静默卸载带 `/NORESTART`（控制面板和宿主助手都是这样调用的），节点于是留在设备树里等重启；这时再装 0.9.8.1，会出现第二个控制器。
 1. **清理根本没动节点。** 控制面板在宿主的安装助手存在时，把卸载交给助手；助手对「没有任何登记的安装」直接返回成功，不碰节点。旧版卸载程序恰好把登记删掉、把节点留下，于是清理「成功」，状态仍报残留，界面只剩一句「无法移除」。
 2. **删除节点的调用本身不合规范。** 原来只调 `CM_Locate_DevNode(PHANTOM)` 加 `CM_Uninstall_DevNode`。官方对这个函数的说明：它删除设备的全部持久状态，**不发 `IRP_MN_QUERY_REMOVE_DEVICE`、不经类安装程序**；桌面应用应改用 `SetupDiCallClassInstaller(DIF_REMOVE)` 或 `DiUninstallDevice`；若一定要用，顺序是先 `CM_Get_DevNode_Status`（设备在不在），在就先 `CM_Query_And_Remove_SubTree`，最后才 `CM_Uninstall_DevNode`。对仍在设备树里的节点直接调它，设备并没有被停掉。
 3. **失败原因被吞掉。** 只返回 USBIP-CLEAN-002，`CR_*` 返回码不进界面也不进诊断。
