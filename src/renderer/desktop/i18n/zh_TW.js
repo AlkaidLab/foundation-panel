@@ -313,6 +313,7 @@ export const zh_TW = {
     resetDefaults: '恢復預設',
     saveSettings: '儲存設定',
     saveSuccess: '設定已儲存',
+    saveError: '儲存設定失敗',
     resetSuccess: '設定已恢復預設',
   },
 

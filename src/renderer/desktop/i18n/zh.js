@@ -315,6 +315,7 @@ export const zh = {
     resetDefaults: '恢复默认',
     saveSettings: '保存设置',
     saveSuccess: '设置已保存',
+    saveError: '保存设置失败',
     resetSuccess: '设置已恢复默认',
   },
 

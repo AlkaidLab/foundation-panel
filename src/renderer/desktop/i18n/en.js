@@ -315,6 +315,7 @@ export const en = {
     resetDefaults: 'Reset to Defaults',
     saveSettings: 'Save Settings',
     saveSuccess: 'Settings saved',
+    saveError: 'Failed to save settings',
     resetSuccess: 'Settings reset to defaults',
   },
 
