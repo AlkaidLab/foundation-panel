@@ -48,3 +48,11 @@ test('the tray menu opens the feedback panel, and a crash left by the previous r
   assert.match(rust('main.rs'), /commands::crash_recovered_answered,/)
   assert.match(side, /watch\(\(\) => devReport\.decision, \(now, was\) => \{ if \(was === 'crash' && !now\) invoke\('crash_recovered_answered'\)/)
 })
+
+test('the developers\' answers to the feedback of this window go to the status button of the caption bar, once the window is up', () => {
+  const side = read('./SidebarMenu.vue')
+  assert.match(side, /import \{[^}]*useFeedbackReplies[^}]*\} from 'foundation-ui\/vue'/)
+  assert.equal((side.match(/useFeedbackReplies\(\{ locale \}\)/g) || []).length, 1, 'asked from one place')
+  assert.ok(side.indexOf('useSystemNotices({') < side.indexOf('useFeedbackReplies({ locale })'), 'after the component notices that share the bell')
+  assert.match(side, /<DevReportHost :locale="locale" \/>/, 'the sheet of an answer is drawn by the host that draws the feedback panel')
+})
