@@ -1534,7 +1534,7 @@ export const cs = {
       "enableFailed": "Aktivace se nezdařila:",
       "uninstallFailed": "Odinstalace se nezdařila:",
       "operationTimeout": "Operace přesáhla tři minuty a možná stále probíhá. Zkontrolujte to znovu později a vyhněte se spuštění další operace.",
-      "operationBusy": "Další operace ovladače VB-CABLE stále běží. Zkuste to znovu později.",
+      "operationBusy": "Další operace ovladače stále běží. Zkuste to znovu později.",
       "deviceBusy": "Windows stále používá ovladač VB-CABLE a nelze jej odinstalovat. Zavřete aplikace používající toto zařízení a zkuste to znovu. Může být potřeba restart.",
       "unsupportedArchitecture": "Pack43 lze nainstalovat pouze na x64 Windows. Ostatní nainstalované verze lze stále kontrolovat a odinstalovat."
     },

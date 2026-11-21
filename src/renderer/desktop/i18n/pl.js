@@ -1534,7 +1534,7 @@ export const pl = {
       "enableFailed": "Włączenie nie powiodło się:",
       "uninstallFailed": "Odinstalowanie nie powiodło się:",
       "operationTimeout": "Operacja trwała ponad trzy minuty i może nadal trwać. Sprawdź ponownie później i unikaj rozpoczynania kolejnej operacji.",
-      "operationBusy": "Inna operacja sterownika VB-CABLE nadal trwa. Spróbuj ponownie później.",
+      "operationBusy": "Inna operacja sterownika nadal trwa. Spróbuj ponownie później.",
       "deviceBusy": "System Windows nadal korzysta ze sterownika VB-CABLE i nie może go odinstalować. Zamknij aplikacje korzystające z tego urządzenia i spróbuj ponownie. Może być konieczne ponowne uruchomienie.",
       "unsupportedArchitecture": "Pack43 można zainstalować tylko na x64 Windows. Inne zainstalowane wersje można nadal sprawdzić i odinstalować."
     },

@@ -144,6 +144,7 @@ function Remove-VbCableOrphanService([object[]]$InstalledPackages, [scriptblock]
 function Remove-VbCableDrivers([scriptblock]$ReadBindings, [scriptblock]$ReadPackages, [scriptblock]$RemoveDevice, [scriptblock]$RemovePackage, [scriptblock]$IsDriverStopped, [scriptblock]$WaitForRefresh, [scriptblock]$RemoveOrphanService) {
   # Refresh both the device tree and the driver store after every change: an
   # older installed package can become bound while a device is being removed.
+  $attemptedAbsentDevices = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   for ($pass = 0; $pass -lt 32; $pass++) {
     $bindings = @(& $ReadBindings)
     try { $installedPackages = @(& $ReadPackages) }
@@ -151,6 +152,7 @@ function Remove-VbCableDrivers([scriptblock]$ReadBindings, [scriptblock]$ReadPac
     $packages = @(Get-VbCablePackages $bindings $installedPackages)
     $devices = @($bindings | Where-Object { $_.IsVbCable -and $_.Present })
     if ($devices.Count) {
+      $deviceRestartSuggested = $false
       foreach ($device in $devices) {
         if ([string]$device.InstanceId -notmatch '^ROOT\\[A-Za-z0-9_.&{}-]+\\[A-Za-z0-9_.&{}-]+$') {
           throw 'The VB-Cable device has an unexpected instance ID; refusing to remove it.'
@@ -159,7 +161,7 @@ function Remove-VbCableDrivers([scriptblock]$ReadBindings, [scriptblock]$ReadPac
       foreach ($device in $devices) {
         Write-Host "Removing VB-Cable device $($device.InstanceId)..."
         $code = & $RemoveDevice $device.InstanceId
-        if ($code -eq 3010) { $script:restartSuggested = $true }
+        if ($code -eq 3010) { $script:restartSuggested = $true; $deviceRestartSuggested = $true }
         elseif ($code -in @(32, 170, 2404)) { throw 'VBCABLE-DEVICE-BUSY: Windows reports that the device is in use.' }
         elseif ($code -ne 0) { throw "VB-Cable device $($device.InstanceId) could not be removed (exit $code)." }
       }
@@ -175,6 +177,9 @@ function Remove-VbCableDrivers([scriptblock]$ReadBindings, [scriptblock]$ReadPac
         if ($retry -lt 10) { & $WaitForRefresh }
       }
       if (-not $detached) {
+        # A pending reboot is not a completed removal. Keep the package and
+        # return Windows' result instead of converting it to a generic error.
+        if ($deviceRestartSuggested) { return }
         throw 'VBCABLE-DEVICE-BUSY: VB-Cable is still in use or being released.'
       }
       continue
@@ -204,8 +209,38 @@ function Remove-VbCableDrivers([scriptblock]$ReadBindings, [scriptblock]$ReadPac
     Write-Host "Removing VB-Cable driver package $package..."
     $code = & $RemovePackage $package
     if ($code -eq 3010) { $script:restartSuggested = $true; return }
-    if ($code -in @(32, 170, 2404)) { throw 'VBCABLE-DEVICE-BUSY: Windows reports that the driver package is in use.' }
-    if ($code -ne 0) { throw "Driver package $package could not be removed (exit $code)." }
+    if ($code -ne 0) {
+      # Some versions of Windows keep a removed device bound to its INF. Only
+      # after ordinary package removal failed, take a new complete snapshot and
+      # attempt the specifically identified VB-Cable nodes, never /force or a
+      # package-wide uninstall that could affect another device.
+      $freshBindings = @(& $ReadBindings)
+      try { $freshInstalled = @(& $ReadPackages) }
+      catch { throw "Could not inspect the driver store: $($_.Exception.Message)" }
+      $freshPackages = @(Get-VbCablePackages $freshBindings $freshInstalled)
+      if ($freshPackages -inotcontains $package -or
+          @($freshBindings | Where-Object { $_.IsVbCable -and $_.Present }).Count -or
+          -not (& $IsDriverStopped)) { continue }
+      $absent = @($freshBindings | Where-Object { $_.IsVbCable -and -not $_.Present -and $_.InfName -ieq $package })
+      if (-not $absent.Count) {
+        if ($code -in @(32, 170, 2404)) { throw 'VBCABLE-DEVICE-BUSY: Windows reports that the driver package is in use.' }
+        throw "Driver package $package could not be removed (exit $code)."
+      }
+      foreach ($device in $absent) {
+        if ([string]$device.InstanceId -notmatch '^ROOT\\[A-Za-z0-9_.&{}-]+\\[A-Za-z0-9_.&{}-]+$' -or
+            $attemptedAbsentDevices.Contains([string]$device.InstanceId)) {
+          throw 'A residual VB-Cable device could not be safely released; use the VB-Audio uninstaller instead.'
+        }
+      }
+      foreach ($device in $absent) {
+        [void]$attemptedAbsentDevices.Add([string]$device.InstanceId)
+        Write-Host "Removing residual VB-Cable device $($device.InstanceId)..."
+        $deviceCode = & $RemoveDevice $device.InstanceId
+        if ($deviceCode -eq 3010) { $script:restartSuggested = $true; return }
+        if ($deviceCode -in @(32, 170, 2404)) { throw 'VBCABLE-DEVICE-BUSY: Windows reports that the device is in use.' }
+        if ($deviceCode -ne 0) { throw "Residual VB-Cable device $($device.InstanceId) could not be removed (exit $deviceCode)." }
+      }
+    }
   }
   throw 'Could not verify VB-Cable driver removal.'
 }

@@ -10,6 +10,8 @@ const ARCHIVE_URL: &str = "https://download.vb-audio.com/Download_CABLE/VBCABLE_
 const ARCHIVE_SHA256: &str = "66fd0a4d9f4896ff41632b7e3d53892c085c4561f53e8ae8d0f0bc10eedd1cdd";
 const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 const DRIVER_OPERATION_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+#[cfg(target_os = "windows")]
+const DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 static OPERATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn wait_for_driver_operation<F, T>(operation: F, timeout: Duration) -> Result<T, String>
@@ -84,6 +86,34 @@ fn usable_archive() -> Option<PathBuf> {
     archive_is_valid(&cached).then_some(cached)
 }
 
+// A cancelled download or a failed cache publication must not leave a new
+// UUID-named partial file behind. A successful rename leaves nothing to remove.
+struct TemporaryDownload(PathBuf);
+
+impl TemporaryDownload {
+    async fn publish(self, destination: &Path) -> Result<(), String> {
+        if destination.exists() {
+            tokio::fs::remove_file(destination)
+                .await
+                .map_err(|error| format!("VB-CABLE: cannot replace cached archive: {error}"))?;
+        }
+        tokio::fs::rename(&self.0, destination)
+            .await
+            .map_err(|error| format!("VB-CABLE: cannot save downloaded archive: {error}"))
+    }
+}
+
+impl Drop for TemporaryDownload {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_powershell_modules() -> PathBuf {
+    crate::elevation::system_binary(r"WindowsPowerShell\v1.0\Modules")
+}
+
 // Query the live PnP tree and driver service; neither the driver version nor
 // the number of audio endpoints determines whether the device is installed.
 // When both are absent, also check for a package left in the driver store.
@@ -103,7 +133,7 @@ try {
       # original INF name, which is independent of the Windows display language.
       $drivers = @(& (Join-Path $env:SystemRoot 'System32\pnputil.exe') /enum-drivers 2>$null)
       if ($LASTEXITCODE -ne 0) { throw 'driver store enumeration failed' }
-      $remaining = @($drivers | Where-Object { $_ -match '(?i)\bvbmmecable(?:64)?_(?:win[0-9]+|vista|xp|2003)\.inf\b' })
+      $remaining = @($drivers | Where-Object { $_ -match '(?i)^\s*[^:]+:\s*vbmmecable(?:64)?_(?:win[0-9]+|vista|xp|2003)\.inf\s*$' })
       $state = if ($remaining.Count) { 'pending' } else { 'missing' }
     }
   }
@@ -120,11 +150,11 @@ try {
 "#;
 
 #[cfg(target_os = "windows")]
-fn probe_device() -> Result<String, String> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
+async fn probe_device() -> Result<String, String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
 
-    let output = Command::new(crate::elevation::system_binary(
+    let child = Command::new(crate::elevation::system_binary(
         r"WindowsPowerShell\v1.0\powershell.exe",
     ))
     .args([
@@ -133,14 +163,16 @@ fn probe_device() -> Result<String, String> {
         "-Command",
         DEVICE_PROBE_SCRIPT,
     ])
+    .env("PSModulePath", system_powershell_modules())
     .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .kill_on_drop(true)
     .creation_flags(0x08000000)
-    .output()
+    .spawn()
     .map_err(|error| format!("VB-CABLE: device check could not start: {error}"))?;
-    if !output.status.success() {
-        return Err("VB-CABLE: unable to check the device and driver service".into());
-    }
-    let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stdout = wait_for_device_probe(child, DEVICE_PROBE_TIMEOUT).await?;
+    let state = String::from_utf8_lossy(&stdout).trim().to_string();
     match state.as_str() {
         "missing" | "installed" | "disabled" | "unavailable" | "pending" => Ok(state),
         _ => Err("VB-CABLE: unexpected device check result".into()),
@@ -148,19 +180,52 @@ fn probe_device() -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn probe_device() -> Result<String, String> {
+async fn probe_device() -> Result<String, String> {
     Err("VB-CABLE is supported only on Windows".into())
 }
 
-async fn read_status() -> Result<ComponentStatus, String> {
-    tokio::task::spawn_blocking(|| {
-        Ok(ComponentStatus {
-            state: probe_device()?,
-            archive_ready: usable_archive().is_some(),
-        })
+#[cfg(target_os = "windows")]
+async fn wait_for_device_probe(
+    mut child: tokio::process::Child,
+    budget: Duration,
+) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("VB-CABLE: device check has no output")?;
+    let result = tokio::time::timeout(budget, async {
+        // The script returns only a state string. Read concurrently with wait
+        // so an unexpected large output cannot fill the pipe indefinitely.
+        let mut bytes = Vec::new();
+        let mut limited = stdout.take(4096);
+        let (_, status) = tokio::try_join!(limited.read_to_end(&mut bytes), child.wait())?;
+        Ok::<_, std::io::Error>((status, bytes))
     })
-    .await
-    .map_err(|error| format!("VB-CABLE: device check failed: {error}"))?
+    .await;
+    match result {
+        Ok(Ok((status, bytes))) if status.success() => Ok(bytes),
+        Ok(Ok(_)) => Err("VB-CABLE: unable to check the device and driver service".into()),
+        Ok(Err(error)) => Err(format!("VB-CABLE: device check failed: {error}")),
+        Err(_) => {
+            // This child only reads device state; never terminate the elevated
+            // helper that may be changing a driver.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err("VB-CABLE: device check timed out".into())
+        }
+    }
+}
+
+async fn read_status() -> Result<ComponentStatus, String> {
+    let state = probe_device().await?;
+    let archive_ready = tokio::task::spawn_blocking(|| usable_archive().is_some())
+        .await
+        .map_err(|error| format!("VB-CABLE: archive check failed: {error}"))?;
+    Ok(ComponentStatus {
+        state,
+        archive_ready,
+    })
 }
 
 /// Check only; neither a download nor a driver operation is started.
@@ -183,10 +248,11 @@ pub async fn vb_cable_download() -> Result<(), String> {
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("VB-CABLE: cannot prepare download directory: {error}"))?;
-    let partial = parent.join(format!("download-{}.partial", uuid::Uuid::new_v4()));
+    let partial =
+        TemporaryDownload(parent.join(format!("download-{}.partial", uuid::Uuid::new_v4())));
     let request = crate::github_download::DownloadRequest {
         url: ARCHIVE_URL,
-        destination: &partial,
+        destination: &partial.0,
         expected_size: None,
         expected_sha256: Some(ARCHIVE_SHA256),
         max_size: Some(MAX_ARCHIVE_BYTES),
@@ -204,18 +270,9 @@ pub async fn vb_cable_download() -> Result<(), String> {
         crate::github_download::download_to_file_from_candidates(request, &candidates, |_| {})
             .await;
     if let Err(error) = outcome {
-        let _ = tokio::fs::remove_file(&partial).await;
         return Err(format!("VB-CABLE: download failed: {error}"));
     }
-    if destination.exists() {
-        tokio::fs::remove_file(&destination)
-            .await
-            .map_err(|error| format!("VB-CABLE: cannot replace cached archive: {error}"))?;
-    }
-    tokio::fs::rename(&partial, &destination)
-        .await
-        .map_err(|error| format!("VB-CABLE: cannot save downloaded archive: {error}"))?;
-    Ok(())
+    partial.publish(&destination).await
 }
 
 async fn ensure_no_streams() -> Result<(), String> {
@@ -491,7 +548,7 @@ async fn run_elevated(_request: Request) -> Result<i32, String> {
 // The helper, rather than the GUI, owns this lock while it changes the
 // driver. It therefore survives the GUI being closed or crashing.
 #[cfg(target_os = "windows")]
-struct DriverOperationGuard(windows::Win32::Foundation::HANDLE);
+pub(crate) struct DriverOperationGuard(windows::Win32::Foundation::HANDLE);
 
 #[cfg(target_os = "windows")]
 impl Drop for DriverOperationGuard {
@@ -504,7 +561,7 @@ impl Drop for DriverOperationGuard {
 }
 
 #[cfg(target_os = "windows")]
-fn lock_driver_operation() -> Result<DriverOperationGuard, String> {
+pub(crate) fn lock_driver_operation() -> Result<DriverOperationGuard, String> {
     use windows::Win32::Foundation::{
         CloseHandle, HLOCAL, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
@@ -539,7 +596,13 @@ fn lock_driver_operation() -> Result<DriverOperationGuard, String> {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
         result
     }
-    .map_err(|error| format!("VB-CABLE: cannot coordinate driver operations: {error}"))?;
+    .map_err(|error| {
+        if error.code() == windows::core::HRESULT::from_win32(5) {
+            format!("VBCABLE-OP-ACCESS-DENIED: {error}")
+        } else {
+            format!("VB-CABLE: cannot coordinate driver operations: {error}")
+        }
+    })?;
     match unsafe { WaitForSingleObject(handle, 0) } {
         WAIT_OBJECT_0 => Ok(DriverOperationGuard(handle)),
         WAIT_ABANDONED => {
@@ -589,6 +652,7 @@ $acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
     let powershell = crate::elevation::system_binary(r"WindowsPowerShell\v1.0\powershell.exe");
     let output = Command::new(powershell)
         .args(["-NoProfile", "-NonInteractive", "-Command", CREATE_STAGE])
+        .env("PSModulePath", system_powershell_modules())
         .stdin(Stdio::null())
         .creation_flags(0x08000000)
         .output()
@@ -690,6 +754,7 @@ $acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
                 "-File",
                 "enable-vsink.ps1",
             ]);
+            command.env("PSModulePath", system_powershell_modules());
             command
         }
     };
@@ -737,7 +802,7 @@ async fn helper(token: uuid::Uuid, request: Request) -> i32 {
         }
         let _driver_operation = lock_driver_operation()?;
         ensure_no_streams().await?;
-        let state = probe_device()?;
+        let state = probe_device().await?;
         match &request {
             Request::Install { archive } if state == "missing" && archive_is_valid(archive) => {
                 ensure_pack43_architecture()?;
@@ -750,6 +815,9 @@ async fn helper(token: uuid::Uuid, request: Request) -> i32 {
                 ) => {}
             _ => return Err("VB-CABLE: device or package changed before the operation".into()),
         }
+        // Device inspection can take time. Recheck the host immediately
+        // before starting the driver operation in case a stream began meanwhile.
+        ensure_no_streams().await?;
         run_script(&request)
     }
     .await;
@@ -800,17 +868,159 @@ pub(crate) fn try_handle_elevated_command() -> Option<i32> {
 mod tests {
     use super::pack43_supports_native_machine;
 
+    #[tokio::test]
+    async fn failed_cache_publication_removes_the_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("download.partial");
+        let destination = dir.path().join("occupied");
+        std::fs::write(&partial, b"verified archive").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let error = super::TemporaryDownload(partial.clone())
+            .publish(&destination)
+            .await
+            .unwrap_err();
+        assert!(error.contains("cannot replace cached archive"));
+        assert!(!partial.exists());
+        assert!(destination.is_dir());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn timed_out_device_probe_is_terminated() {
+        use std::process::Stdio;
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let completed = dir.path().join("completed");
+        let child = tokio::process::Command::new(crate::elevation::system_binary(
+            r"WindowsPowerShell\v1.0\powershell.exe",
+        ))
+        .args([
+            "-NoProfile", "-NonInteractive", "-Command",
+            "[IO.File]::WriteAllText($env:SUNSHINE_PROBE_STARTED, 'started'); Start-Sleep -Seconds 2; [IO.File]::WriteAllText($env:SUNSHINE_PROBE_COMPLETED, 'completed')",
+        ])
+        .env("PSModulePath", super::system_powershell_modules())
+        .env("SUNSHINE_PROBE_STARTED", &started)
+        .env("SUNSHINE_PROBE_COMPLETED", &completed)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .creation_flags(0x08000000)
+        .spawn()
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("probe started");
+        let error = super::wait_for_device_probe(child, std::time::Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(error.contains("device check timed out"));
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        assert!(!completed.exists(), "the timed-out probe must not continue");
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
-    fn driver_operations_are_exclusive_across_threads() {
-        let guard = super::lock_driver_operation().expect("acquire driver operation lock");
-        let blocked = std::thread::spawn(|| super::lock_driver_operation().err())
-            .join()
-            .expect("join competing operation")
-            .expect("competing operation must be blocked");
-        assert!(blocked.contains("VBCABLE-OP-BUSY:"), "{blocked}");
-        drop(guard);
-        assert!(super::lock_driver_operation().is_ok());
+    fn device_removal_keeps_restart_result_without_deleting_the_package() {
+        use std::os::windows::process::CommandExt;
+        let script = include_str!("../resources/vb-cable/uninstall-vsink.ps1");
+        let (functions, _) = script.split_once("\ntry {").expect("uninstall entry point");
+        let mock = r#"
+$mockDevice = [pscustomobject]@{ IsVbCable = $true; Present = $true; InstanceId = 'ROOT\MEDIA\0000'; InfName = 'oem42.inf' }
+$mockPackage = [pscustomobject]@{ ProviderName = 'VB-Audio Software'; ClassName = 'MEDIA'; Inbox = $false; Driver = 'oem42.inf'; OriginalFileName = 'vbmmecable64_win10.inf' }
+try {
+  $script:restartSuggested = $false
+  Remove-VbCableDrivers { $mockDevice } { $mockPackage } { 3010 } { throw 'package removal must not run' } { $false } { } { }
+  if (-not $script:restartSuggested) { throw '3010 was not retained' }
+  $script:restartSuggested = $false
+  try {
+    Remove-VbCableDrivers { $mockDevice } { $mockPackage } { 0 } { throw 'package removal must not run' } { $false } { } { }
+    throw 'busy removal incorrectly succeeded'
+  } catch {
+    if ($_.Exception.Message -notlike 'VBCABLE-DEVICE-BUSY:*') { throw }
+  }
+} catch { [Console]::Error.Write($_.Exception.Message); exit 1 }
+exit 0
+"#;
+        let output = std::process::Command::new(crate::elevation::system_binary(
+            r"WindowsPowerShell\v1.0\powershell.exe",
+        ))
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &(functions.to_string() + mock),
+        ])
+        .env("PSModulePath", super::system_powershell_modules())
+        .creation_flags(0x08000000)
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "status: {}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn failed_package_removal_retries_only_the_identified_absent_device() {
+        use std::os::windows::process::CommandExt;
+        let script = include_str!("../resources/vb-cable/uninstall-vsink.ps1");
+        let (functions, _) = script.split_once("\ntry {").expect("uninstall entry point");
+        let mock = r#"
+$mockDevice = [pscustomobject]@{ IsVbCable = $true; Present = $false; InstanceId = 'ROOT\MEDIA\0000'; InfName = 'oem42.inf' }
+$mockOther = [pscustomobject]@{ IsVbCable = $false; Present = $false; InstanceId = 'ROOT\MEDIA\0001'; InfName = 'oem42.inf' }
+$mockPackage = [pscustomobject]@{ ProviderName = 'VB-Audio Software'; ClassName = 'MEDIA'; Inbox = $false; Driver = 'oem42.inf'; OriginalFileName = 'vbmmecable64_win10.inf' }
+try {
+  $script:ghost = $true; $script:installed = $true; $script:removed = 0; $script:attempts = 0
+  Remove-VbCableDrivers { if ($script:ghost) { $mockDevice } } { if ($script:installed) { $mockPackage } } `
+    { param($id) if ($id -ne $mockDevice.InstanceId) { throw 'unexpected device' }; $script:removed++; $script:ghost = $false; 0 } `
+    { $script:attempts++; if ($script:ghost) { 5 } else { $script:installed = $false; 0 } } { $true } { } { }
+  if ($script:removed -ne 1 -or $script:attempts -ne 2 -or $script:installed) { throw 'residual cleanup failed' }
+  try {
+    Remove-VbCableDrivers { $mockDevice; $mockOther } { $mockPackage } { throw 'device removal must not run' } `
+      { throw 'package removal must not run' } { $true } { } { }
+    throw 'shared package incorrectly accepted'
+  } catch {
+    if ($_.Exception.Message -notlike '*also used by another device*') { throw }
+  }
+  $script:removed = 0
+  try {
+    Remove-VbCableDrivers { $mockDevice } { $mockPackage } { $script:removed++; 0 } { 5 } { $true } { } { }
+    throw 'unchanged residual incorrectly accepted'
+  } catch {
+    if ($_.Exception.Message -notlike '*could not be safely released*' -or $script:removed -ne 1) { throw }
+  }
+} catch { [Console]::Error.Write($_.Exception.Message); exit 1 }
+exit 0
+"#;
+        let output = std::process::Command::new(crate::elevation::system_binary(
+            r"WindowsPowerShell\v1.0\powershell.exe",
+        ))
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &(functions.to_string() + mock),
+        ])
+        .env("PSModulePath", super::system_powershell_modules())
+        .creation_flags(0x08000000)
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "status: {}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]
@@ -935,6 +1145,16 @@ function Get-PnpDeviceProperty { param($InstanceId, $KeyName, $ErrorAction) [psc
         for (line, exit_code, expected) in [
             ("Original Name: vbMmeCable64_win7.inf", 0, Some("pending")),
             ("Original Name: vbMmeCable64_win10.inf", 0, Some("pending")),
+            (
+                "Original Name: vendor-vbmmecable64_win10.inf",
+                0,
+                Some("missing"),
+            ),
+            (
+                "Original Name: vbmmecable64_win10.inf.fake",
+                0,
+                Some("missing"),
+            ),
             ("Original Name: unrelated.inf", 0, Some("missing")),
             ("", 1, None),
         ] {

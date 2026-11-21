@@ -1231,7 +1231,7 @@ export const zh = {
       restartSuggested: 'Windows 提示此次操作可能需要重启电脑；请保存工作后自行处理。',
       checkFailed: '检查失败：', downloadFailed: '下载失败：', installFailed: '安装失败：', enableFailed: '启用失败：', uninstallFailed: '卸载失败：',
       operationTimeout: '操作已超过三分钟，驱动可能仍在后台处理。请稍后重新检查，避免重复操作。',
-      operationBusy: '另一项 VB-CABLE 驱动操作仍在进行，请稍后重试。',
+      operationBusy: '另一项驱动操作仍在进行，请稍后重试。',
       deviceBusy: 'VB-CABLE 驱动仍在使用或正在释放，无法卸载。请关闭使用虚拟声卡的程序后重试；可能需要重启。',
       unsupportedArchitecture: 'Pack43 仅支持在 x64 Windows 上安装；已安装的其他版本仍可检查和卸载。',
     },

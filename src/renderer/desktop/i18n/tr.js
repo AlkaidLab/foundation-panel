@@ -1534,7 +1534,7 @@ export const tr = {
       "enableFailed": "Etkinleştirme başarısız oldu:",
       "uninstallFailed": "Kaldırma başarısız oldu:",
       "operationTimeout": "İşlem üç dakikayı aştı ve hâlâ çalışıyor olabilir. Daha sonra tekrar kontrol edin ve başka bir işlem başlatmaktan kaçının.",
-      "operationBusy": "Başka bir VB-CABLE sürücü işlemi hala çalışıyor. Daha sonra tekrar deneyin.",
+      "operationBusy": "Başka bir sürücü işlemi hala çalışıyor. Daha sonra tekrar deneyin.",
       "deviceBusy": "Windows hala VB-CABLE sürücüsünü kullanıyor ve onu kaldıramıyor. Bu cihazı kullanan uygulamaları kapatın ve tekrar deneyin. Yeniden başlatma gerekebilir.",
       "unsupportedArchitecture": "Pack43 yalnızca x64 Windows üzerine kurulabilir. Diğer yüklü sürümler yine de kontrol edilebilir ve kaldırılabilir."
     },

@@ -1534,7 +1534,7 @@ export const sv = {
       "enableFailed": "Aktivering misslyckades:",
       "uninstallFailed": "Avinstallationen misslyckades:",
       "operationTimeout": "Operationen översteg tre minuter och kan fortfarande pågå. Kontrollera igen senare och undvik att starta en annan operation.",
-      "operationBusy": "En annan VB-CABLE drivrutinsoperation körs fortfarande. Försök igen senare.",
+      "operationBusy": "En annan drivrutinsoperation körs fortfarande. Försök igen senare.",
       "deviceBusy": "Windows använder fortfarande drivrutinen VB-CABLE och kan inte avinstallera den. Stäng appar som använder den här enheten och försök igen. En omstart kan behövas.",
       "unsupportedArchitecture": "Pack43 kan endast installeras på x64 Windows. Andra installerade versioner kan fortfarande kontrolleras och avinstalleras."
     },

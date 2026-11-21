@@ -1256,7 +1256,7 @@ export const zh_TW = {
       "enableFailed": "啟用失敗：",
       "uninstallFailed": "解除安裝失敗：",
       "operationTimeout": "操作已超過三分鐘，驅動程式可能仍在背景執行。請稍後重新檢查，避免重複操作。",
-      "operationBusy": "另一項 VB-CABLE 驅動程式操作仍在進行，請稍後再試。",
+      "operationBusy": "另一項驅動程式操作仍在進行，請稍後再試。",
       "deviceBusy": "Windows 仍在使用 VB-CABLE 驅動程式，無法解除安裝。請關閉使用此裝置的應用程式後再試，可能需要重新啟動。",
       "unsupportedArchitecture": "Pack43 僅能安裝在 x64 Windows 上，仍可檢查及解除安裝已安裝的其他版本。"
     },

@@ -1534,7 +1534,7 @@ export const de = {
       "enableFailed": "Aktivierung fehlgeschlagen:",
       "uninstallFailed": "Deinstallation fehlgeschlagen:",
       "operationTimeout": "Der Vorgang hat länger als drei Minuten gedauert und wird möglicherweise noch ausgeführt. Überprüfen Sie es später noch einmal und vermeiden Sie, einen weiteren Vorgang zu starten.",
-      "operationBusy": "Ein weiterer VB-CABLE-Treibervorgang wird noch ausgeführt. Versuchen Sie es später noch einmal.",
+      "operationBusy": "Ein weiterer Treibervorgang wird noch ausgeführt. Versuchen Sie es später noch einmal.",
       "deviceBusy": "Windows verwendet immer noch den VB-CABLE-Treiber und kann ihn nicht deinstallieren. Schließen Sie Anwendungen mit diesem Gerät und versuchen Sie es erneut. Möglicherweise ist ein Neustart erforderlich.",
       "unsupportedArchitecture": "Pack43 kann nur auf x64 Windows installiert werden. Andere installierte Versionen können weiterhin überprüft und deinstalliert werden."
     },

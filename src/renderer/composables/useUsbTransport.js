@@ -1,4 +1,4 @@
-import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from './notifyMessage.js'
 import { usbip } from '../tauri-adapter.js'
 import { useI18n } from '../desktop/i18n/index.js'
@@ -35,10 +35,11 @@ export function emitUsbipErrorReport(error, reporter) {
 }
 
 /** Resolves the most specific translated user message for a structured USB/IP error. */
-export function formatUsbipFriendlyError(error, usbTexts = {}) {
+export function formatUsbipFriendlyError(error, usbTexts = {}, componentTexts = {}) {
   const message = String(error || '')
   const codes = message.match(/USBIP-[A-Z]+-\d{3}/g) || []
   const code = (codes[0] === 'USBIP-SETUP-007' && codes[1]) ? codes[1] : codes[0]
+  if (code === 'USBIP-SETUP-018' && componentTexts.operationBusy) return componentTexts.operationBusy
   const translated = code && usbTexts.errors?.[code]
   return translated || usbTexts.unknownError || 'The USB/IP operation did not complete.'
 }
@@ -77,7 +78,27 @@ export function useUsbTransport(options = {}) {
   const exporting = ref(false)
   // The cleanup that waited for a restart is continued once per run of the panel, so a node that never goes cannot loop.
   let resumeStarted = false
+  let resumeAnnounced = false
+  let resumeRetryTimer
+  let resumeBusyRetries = 0
+  let disposed = false
   let statusRefreshPromise = null
+
+  function retryBusyResume(error, auto) {
+    if (!auto || !String(error || '').includes('USBIP-SETUP-018') || resumeBusyRetries >= 36) return false
+    if (!resumeRetryTimer && !disposed) {
+      resumeBusyRetries += 1
+      // The native preflight checks the mutex before UAC, so retrying a busy
+      // automatic recovery does not repeatedly ask for administrator access.
+      resumeRetryTimer = setTimeout(() => {
+        resumeRetryTimer = undefined
+        resumeStarted = false
+        if (!disposed) void refreshStatus({ force: true })
+      }, 5000)
+    }
+    return true
+  }
+  onBeforeUnmount(() => { disposed = true; clearTimeout(resumeRetryTimer) })
 
   const attachedDevices = computed(() => status.attached_devices || [])
   const needsCleanup = computed(() => usbipTransportNeedsCleanup(status))
@@ -106,7 +127,7 @@ export function useUsbTransport(options = {}) {
   }
 
   function friendlyError(error) {
-    return formatUsbipFriendlyError(error, t.value.deviceHub.usb)
+    return formatUsbipFriendlyError(error, t.value.deviceHub.usb, t.value.deviceHub.vbComponent)
   }
 
   function reportError(error) {
@@ -154,11 +175,13 @@ export function useUsbTransport(options = {}) {
     const resumeStale = status.cleanup_resume_op === 'stale'
     if (status.cleanup_resume && !resumeStarted && !statusProbeFailed.value && !transportBusy.value && (resumeStale || !status.externally_managed)) {
       resumeStarted = true
-      ElMessage.info(t.value.deviceHub.usb.resumeCleanup)
-      queueMicrotask(() => (resumeStale ? removeStale() : cleanupResidual({ auto: true })))
+      if (!resumeAnnounced) ElMessage.info(t.value.deviceHub.usb.resumeCleanup)
+      resumeAnnounced = true
+      queueMicrotask(() => (resumeStale ? removeStale({ auto: true }) : cleanupResidual({ auto: true })))
     } else if (status.install_resume && !resumeStarted && !statusProbeFailed.value && !transportBusy.value && !status.externally_managed && !status.vhci_residual) {
       resumeStarted = true
-      ElMessage.info(t.value.deviceHub.usb.resumeInstall)
+      if (!resumeAnnounced) ElMessage.info(t.value.deviceHub.usb.resumeInstall)
+      resumeAnnounced = true
       queueMicrotask(() => installTransport({ auto: true }))
     }
   }
@@ -203,6 +226,7 @@ export function useUsbTransport(options = {}) {
     try {
       result = await usbip.installTransport()
     } catch (error) {
+      if (retryBusyResume(error, auto)) return
       reportError(error)
       await refreshStatus({ force: true })
       if (!status.last_install_error && error) status.last_install_error = String(error)
@@ -211,6 +235,7 @@ export function useUsbTransport(options = {}) {
       installing.value = false
     }
     if (!result?.success) {
+      if (retryBusyResume(result?.message, auto)) return
       reportError(result?.message)
       await refreshStatus({ force: true })
       if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
@@ -244,6 +269,7 @@ export function useUsbTransport(options = {}) {
     try {
       result = await usbip.cleanupTransport()
     } catch (error) {
+      if (retryBusyResume(error, auto)) return
       reportError(error)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(error))
@@ -251,6 +277,7 @@ export function useUsbTransport(options = {}) {
       cleaning.value = false
     }
     if (!result?.success) {
+      if (retryBusyResume(result?.message, auto)) return
       reportError(result?.message)
       // The failed cleanup may still have removed some devnodes; refresh so the
       // residual flag reflects the actual state instead of the stale snapshot.
@@ -265,8 +292,9 @@ export function useUsbTransport(options = {}) {
   })
 
   /** Removes the older controllers beside the working one; the live controller stays and nothing is reinstalled. */
-  const removeStale = sharedOperation.wrap(async () => {
+  const removeStale = sharedOperation.wrap(async (options = {}) => {
     if (transportBusy.value || !staleResidual.value) return
+    const auto = options?.auto === true
     cleaning.value = true
     if (statusRefreshPromise) await statusRefreshPromise
     sharedOperation.markChanged()
@@ -275,6 +303,7 @@ export function useUsbTransport(options = {}) {
     try {
       result = await usbip.removeStaleNodes()
     } catch (error) {
+      if (retryBusyResume(error, auto)) return
       reportError(error)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(error))
@@ -282,6 +311,7 @@ export function useUsbTransport(options = {}) {
       cleaning.value = false
     }
     if (!result?.success) {
+      if (retryBusyResume(result?.message, auto)) return
       reportError(result?.message)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(result?.message))

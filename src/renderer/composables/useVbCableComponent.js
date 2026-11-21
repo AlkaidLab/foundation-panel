@@ -68,7 +68,10 @@ export function useVbCableComponent({ api, text, shared, confirm, invalidate }) 
       if (result.data.status) applyStatus(result.data.status)
       else status.value = null
       const successKey = { install: 'installed', enable: 'enabled', uninstall: 'uninstalled' }[action]
-      notice.value = action !== 'uninstall' && result.data.restart_suggested === true ? text.value.restartSuggested : text.value[successKey]
+      const incompleteRemoval = action === 'uninstall' && result.data.status?.state !== 'missing'
+      notice.value = result.data.restart_suggested === true
+        ? `${incompleteRemoval ? `${text.value.states[result.data.status?.state] || text.value.notChecked} ` : ''}${text.value.restartSuggested}`
+        : text.value[successKey]
       if (result.data.check_error) notice.value += ` ${text.value.checkFailed} ${result.data.check_error}`
     } catch (error) {
       const reason = String(error.message || '')

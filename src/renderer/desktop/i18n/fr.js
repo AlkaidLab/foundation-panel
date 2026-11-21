@@ -1534,7 +1534,7 @@ export const fr = {
       "enableFailed": "Échec de l'activation :",
       "uninstallFailed": "Échec de la désinstallation :",
       "operationTimeout": "L'opération a duré plus de trois minutes et est peut-être toujours en cours. Vérifiez à nouveau plus tard et évitez de recommencer une autre opération.",
-      "operationBusy": "Une autre opération du pilote VB-CABLE est toujours en cours d'exécution. Réessayez plus tard.",
+      "operationBusy": "Une autre opération du pilote est toujours en cours d'exécution. Réessayez plus tard.",
       "deviceBusy": "Windows utilise toujours le pilote VB-CABLE et ne peut pas le désinstaller. Fermez les applications utilisant cet appareil et réessayez. Un redémarrage peut être nécessaire.",
       "unsupportedArchitecture": "Pack43 peut être installé sur x64 Windows uniquement. Les autres versions installées peuvent toujours être vérifiées et désinstallées."
     },

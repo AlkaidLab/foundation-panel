@@ -52,6 +52,10 @@ test('formatUsbipFriendlyError unwraps USBIP-SETUP-007 to the underlying specifi
     'reboot pending',
   )
   assert.equal(formatUsbipFriendlyError('USBIP-SETUP-007: raw error', usbTexts), 'generic install failed')
+  assert.equal(
+    formatUsbipFriendlyError('USBIP-SETUP-018: another driver operation', usbTexts, { operationBusy: 'driver busy' }),
+    'driver busy',
+  )
   assert.equal(formatUsbipFriendlyError('other', usbTexts), 'fallback')
 })
 
@@ -63,6 +67,43 @@ test('emitUsbipErrorReport sends only component, code and severity', () => {
   )
   assert.equal(code, 'usbip-setup-015.exit-3010')
   assert.deepEqual(sent, [{ component: 'usbip', code: 'usbip-setup-015.exit-3010', severity: 'error' }])
+})
+
+test('automatic USB/IP cleanup retries after another driver operation releases the guard', async (t) => {
+  const originalFetch = usbipStatusChannel.fetch
+  const originalCleanup = usbip.cleanupTransport
+  let cleanupCalls = 0
+  let firstAttempt
+  let completed
+  const first = new Promise(resolve => { firstAttempt = resolve })
+  const done = new Promise(resolve => { completed = resolve })
+  usbipStatusChannel.fetch = async () => ({ success: true, data: {
+    supported: true, cleanup_resume: cleanupCalls < 2, cleanup_resume_op: 'cleanup', externally_managed: false,
+    vhci_residual: true, attached_devices: [],
+  } })
+  usbip.cleanupTransport = async () => {
+    cleanupCalls += 1
+    if (cleanupCalls === 1) {
+      firstAttempt()
+      return { success: false, message: 'USBIP-SETUP-018: another driver operation' }
+    }
+    completed()
+    return { success: true, data: { cleanup_resume: false, vhci_residual: false } }
+  }
+  const renderer = createRenderer({
+    patchProp() {}, insert() {}, remove() {}, createElement: () => ({}), createText: () => ({}),
+    createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  const app = renderer.createApp({ setup() { useUsbTransport(); return () => null } })
+  app.mount({})
+  t.after(() => { app.unmount(); usbipStatusChannel.fetch = originalFetch; usbip.cleanupTransport = originalCleanup })
+  await first
+  assert.equal(cleanupCalls, 1)
+  let deadline
+  t.after(() => clearTimeout(deadline))
+  await Promise.race([done, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('cleanup did not retry')), 15000) })])
+  clearTimeout(deadline)
+  assert.equal(cleanupCalls, 2)
 })
 
 test('a pending USB/IP cleanup resumes when a VB-CABLE confirmation is cancelled', async (t) => {

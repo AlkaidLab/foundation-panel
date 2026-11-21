@@ -1534,7 +1534,7 @@ export const ko = {
       "enableFailed": "활성화 실패:",
       "uninstallFailed": "제거 실패:",
       "operationTimeout": "작업이 3분을 초과했으며 여전히 실행 중일 수 있습니다. 나중에 다시 확인하고 다른 작업을 시작하지 마세요.",
-      "operationBusy": "또 다른 VB-CABLE 드라이버 작업이 아직 실행 중입니다. 나중에 다시 시도하세요.",
+      "operationBusy": "또 다른 드라이버 작업이 아직 실행 중입니다. 나중에 다시 시도하세요.",
       "deviceBusy": "Windows에서는 여전히 VB-CABLE 드라이버를 사용하고 있어 제거할 수 없습니다. 이 장치를 사용하는 애플리케이션을 닫고 다시 시도하세요. 다시 시작해야 할 수도 있습니다.",
       "unsupportedArchitecture": "Pack43은 x64 Windows에만 설치할 수 있습니다. 설치된 다른 버전은 계속 확인하고 제거할 수 있습니다."
     },

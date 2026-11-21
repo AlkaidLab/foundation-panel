@@ -1534,7 +1534,7 @@ export const pt_BR = {
       "enableFailed": "Falha ao ativar:",
       "uninstallFailed": "Falha na desinstalação:",
       "operationTimeout": "A operação excedeu três minutos e ainda pode estar em execução. Verifique novamente mais tarde e evite iniciar outra operação.",
-      "operationBusy": "Outra operação do driver VB-CABLE ainda está em execução. Tente novamente mais tarde.",
+      "operationBusy": "Outra operação do driver ainda está em execução. Tente novamente mais tarde.",
       "deviceBusy": "O Windows ainda está usando o driver VB-CABLE e não pode desinstalá-lo. Feche os aplicativos que usam este dispositivo e tente novamente. Pode ser necessário reiniciar.",
       "unsupportedArchitecture": "Pack43 pode ser instalado apenas em x64 Windows. Outras versões instaladas ainda podem ser verificadas e desinstaladas."
     },

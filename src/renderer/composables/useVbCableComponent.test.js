@@ -7,6 +7,7 @@ import { useVbCableComponent } from './useVbCableComponent.js'
 function fixture(initial, overrides = {}, confirmation = async () => {}) {
   const calls = []
   const text = ref({ downloaded: 'downloaded', installed: 'installed', enabled: 'enabled', uninstalled: 'uninstalled (restart may be needed)', restartSuggested: 'restart may be needed',
+    states: { pending: 'driver remains', installed: 'driver still installed' }, notChecked: 'not checked',
     checkFailed: 'check failed', downloadFailed: 'download failed', installFailed: 'install failed', enableFailed: 'enable failed', uninstallFailed: 'uninstall failed', unsupportedArchitecture: 'unsupported architecture',
     operationTimeout: 'operation timed out', operationBusy: 'operation busy', deviceBusy: 'device busy' })
   const api = {
@@ -103,13 +104,13 @@ test('a remaining driver can be uninstalled without allowing installation over i
   assert.match(manager.notice.value, /restart may be needed/)
 })
 
-test('3010 is a reminder and does not block another cleanup attempt', async () => {
+test('3010 reports the remaining driver and does not block another cleanup attempt', async () => {
   const { manager, calls } = fixture({ state: 'pending', archive_ready: true }, {
     uninstall: async () => { calls.push('uninstall'); return { success: true, data: { status: { state: 'pending', archive_ready: true }, restart_suggested: true } } },
   })
   await manager.check()
   await manager.changeDriver('uninstall')
-  assert.equal(manager.notice.value, 'uninstalled (restart may be needed)')
+  assert.equal(manager.notice.value, 'driver remains restart may be needed')
   await manager.check()
   assert.equal(manager.canUninstall.value, true)
   await manager.changeDriver('uninstall')
