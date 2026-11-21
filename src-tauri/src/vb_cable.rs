@@ -890,16 +890,18 @@ mod tests {
         use std::process::Stdio;
         let dir = tempfile::tempdir().unwrap();
         let started = dir.path().join("started");
+        let release = dir.path().join("release");
         let completed = dir.path().join("completed");
         let child = tokio::process::Command::new(crate::elevation::system_binary(
             r"WindowsPowerShell\v1.0\powershell.exe",
         ))
         .args([
             "-NoProfile", "-NonInteractive", "-Command",
-            "[IO.File]::WriteAllText($env:SUNSHINE_PROBE_STARTED, 'started'); Start-Sleep -Seconds 2; [IO.File]::WriteAllText($env:SUNSHINE_PROBE_COMPLETED, 'completed')",
+            "[IO.File]::WriteAllText($env:SUNSHINE_PROBE_STARTED, 'started'); while (-not [IO.File]::Exists($env:SUNSHINE_PROBE_RELEASE)) { Start-Sleep -Milliseconds 100 }; [IO.File]::WriteAllText($env:SUNSHINE_PROBE_COMPLETED, 'completed')",
         ])
         .env("PSModulePath", super::system_powershell_modules())
         .env("SUNSHINE_PROBE_STARTED", &started)
+        .env("SUNSHINE_PROBE_RELEASE", &release)
         .env("SUNSHINE_PROBE_COMPLETED", &completed)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -919,6 +921,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("device check timed out"));
+        std::fs::write(&release, b"release").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
         assert!(!completed.exists(), "the timed-out probe must not continue");
     }
