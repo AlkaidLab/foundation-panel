@@ -30,6 +30,8 @@ pub async fn usbip_list_remote(
 #[tauri::command]
 pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     #[cfg(target_os = "windows")]
     let mut kept = {
@@ -89,6 +91,8 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     run_cleanup(ElevatedRequest::Cleanup, super::nodes::MarkerOp::Cleanup).await
 }
@@ -97,6 +101,8 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_remove_stale_nodes() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     run_cleanup(ElevatedRequest::RemoveStale, super::nodes::MarkerOp::RemoveStale).await
 }
@@ -183,6 +189,8 @@ async fn run_cleanup(
 #[tauri::command]
 pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     let before = super::status::usbip_get_status().await?;
     if !before.replaceable {

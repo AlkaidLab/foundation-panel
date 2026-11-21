@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { compactLocale, expandLocale } from './compact.js'
-import { mergeLocale } from './merge.js'
+import { coversTexts, mergeLocale } from './merge.js'
 import { en } from './en.js'
 import { zh } from './zh.js'
 
@@ -12,11 +12,16 @@ const codes = ['zh_TW', 'en_GB', 'en_US', 'de', 'fr', 'es', 'it', 'ja', 'ko', 'r
 for (const code of codes) {
   test(`${code}: the merged table is the same from the compact form`, async () => {
     const table = (await import(`./${code}.js`))[code]
+    assert.ok(coversTexts(en.deviceHub.vbComponent, table.deviceHub?.vbComponent), `${code}: VB-CABLE text is incomplete`)
     const { values, extras } = compactLocale(table, en, { fallbacks: code === 'zh_TW' ? [zh, en] : [en] })
     const back = expandLocale(JSON.parse(JSON.stringify(values)), JSON.parse(JSON.stringify(extras)))
     assert.deepEqual(mergeLocale(en, zh, code, back), mergeLocale(en, zh, code, table))
   })
 }
+
+test('Chinese VB-CABLE component text covers the English source', () => {
+  assert.ok(coversTexts(en.deviceHub.vbComponent, zh.deviceHub.vbComponent))
+})
 
 test('a table without a key gives the fallback, an empty text counts as none, and a key English lacks is kept', () => {
   const english = { a: 'one', b: { c: 'two', d: ['x', 'y'] } }
