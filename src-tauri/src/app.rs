@@ -145,7 +145,11 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         ctx_popup::schedule_create_after(&app_handle, std::time::Duration::ZERO);
     } else {
         ctx_popup::schedule_create(&app_handle);
+        // the main window's first view normally makes it (panel_content_ready); if that is late, a click on the icon in the first seconds must still find the Material menu coming
+        ctx_popup::schedule_create_after(&app_handle, std::time::Duration::from_secs(6));
     }
+    crate::mem_adaptive::start(&app_handle);
+    crate::launch_splash::start_for_measurement(&app_handle);
     crate::power::refresh_ecoqos_state(&app_handle);
     if !crate::test_isolation::active() {
         #[cfg(target_os = "windows")]
@@ -321,6 +325,11 @@ pub fn sync_toolbar_shortcut(app_handle: &AppHandle, enabled: bool) -> Result<bo
     match shortcut_manager.on_shortcut(TOOLBAR_SHORTCUT, move |_app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
             debug!("Global shortcut triggered: CTRL+SHIFT+ALT+T");
+            // The shortcut opens the toolbar, whose actions lead to the main panel.
+            // Begin warming on the existing Pressed event (panel-memory-tauri-shortcut, Usage).
+            if app_handle.get_webview_window("toolbar").is_none() {
+                crate::mem_adaptive::prewarm_main(&app_handle, "toolbar shortcut pressed");
+            }
             toggle_toolbar_window(&app_handle);
         }
     }) {
@@ -393,14 +402,8 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
     if crate::start_guide::requests_start_guide(&args) {
         info!("--start-guide: forwarding to the running panel");
         crate::start_guide::queue_start_guide();
-        if app.get_webview_window("main").is_none() {
-            if let Err(e) = windows::create_main_window(app) {
-                error!("failed to open the panel for --start-guide: {e}");
-                return;
-            }
-        } else {
-            windows::activate_main_window(app, None);
-        }
+        crate::mem_adaptive::prewarm_main(app, "start-guide message");
+        windows::activate_main_window(app, None);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("start-guide-pending", ());
         }
@@ -464,11 +467,8 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
         }
     }
 
-    if app.get_webview_window("main").is_none() {
-        if let Err(e) = windows::create_main_window(app) {
-            error!("Failed to create main panel for second instance: {}", e);
-            return;
-        }
-    }
+    // A second-instance message is the earliest signal for this activation
+    // (panel-memory-tauri-instance, Usage).
+    crate::mem_adaptive::prewarm_main(app, "second-instance message");
     windows::activate_main_window(app, target_url);
 }

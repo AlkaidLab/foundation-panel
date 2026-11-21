@@ -2,6 +2,7 @@ import { computed } from 'vue'
 import { createNav, isCompactNav } from 'foundation-ui/vue'
 import { settingsHash, DEFAULT_PLACE, parentPlace } from 'foundation-ui/settings/index.js'
 import { useI18n } from '../desktop/i18n/index.js'
+import { restoredStack } from './restoredStack.js'
 
 /** Destinations of the control panel. A page is a detail entry of one back stack (see foundation-ui createNav). */
 export const ROUTES = {
@@ -197,7 +198,13 @@ export const PHONE_MAX = 600
 export const isPhone = () => typeof window !== 'undefined' && isCompactNav(window.innerWidth, window.innerHeight)
 
 let nav = null
-const shared = () => (nav ||= createNav({ routes, home: ROUTES.HOME, compact: isPhone, hubOf: HUB_OF }))
+const shared = () => {
+  if (nav) return nav
+  nav = createNav({ routes, home: ROUTES.HOME, compact: isPhone, hubOf: HUB_OF, initial: restoredStack(globalThis.__PANEL_RESTORE__, routes) })
+  // the page-state recorder asks for the stack when it keeps a snapshot of the window
+  globalThis.__panelNavState = () => nav.entries.value.map(({ id, params, root }) => ({ id, ...(params ? { params } : {}), ...(root ? { root: true } : {}) }))
+  return nav
+}
 
 /** Navigation of the panel: one back stack for the whole window. */
 export function useRouter() {

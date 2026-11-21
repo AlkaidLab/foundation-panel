@@ -226,6 +226,22 @@ fn get(label: &str) -> Option<Panel> {
     PANELS.lock().unwrap().panels.get(label).cloned()
 }
 
+/// The page of `label` has been put to sleep (hidden, suspended): it was shown once and is not any more. A window that is still loading, or waiting to be shown for the first time, is not.
+/// A window that was made ahead of a click and is still loading is shown by the moment its page is ready. False when it has loaded already (then it is shown at once) or is not there.
+pub(crate) fn show_when_loaded(label: &str) -> bool {
+    let Some(panel) = get(label) else { return false };
+    let mut state = panel.state.lock().unwrap();
+    if state.phase == Phase::Loading {
+        state.show_on_load = true;
+        return true;
+    }
+    false
+}
+
+pub(crate) fn is_background(label: &str) -> bool {
+    get(label).is_some_and(|panel| panel.state.lock().unwrap().phase == Phase::Background)
+}
+
 impl Panel {
     pub(super) fn initialization_script(&self) -> String {
         include_str!("lifecycle.js")

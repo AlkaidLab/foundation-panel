@@ -34,6 +34,11 @@ mod host_version;
 mod hwinfo;
 mod install_integrity;
 mod logger;
+mod mem_adaptive;
+mod mem_adaptive_core;
+mod view_state;
+mod webview_env;
+mod webview_env_core;
 mod menu_place;
 mod moonlight_web;
 mod native_tools;
@@ -115,28 +120,17 @@ fn configure_loopback_proxy_bypass() {
     // This runs before any helper path or async worker can create an HTTP
     // client, so every GUI-owned loopback request gets the same direct route.
     unsafe {
-        // A caller-provided value (for example --remote-debugging-port to trace
-        // a separately launched instance) stays in front of ours.
-        let mut browser_arguments = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .into_iter()
-            .collect::<Vec<_>>();
-        browser_arguments.extend([
-            // WebView2 uses Chromium's bypass syntax. Keep external requests on the
-            // user's configured proxy while forcing every loopback form to direct.
-            "--proxy-bypass-list=localhost;*.localhost;127.0.0.0/8;[::1]".to_owned(),
-            // UI 音效：手柄输入不属于「用户手势」，不解锁 AudioContext；
-            // 应用自身的导航反馈音不是网页自动播放媒体
-            "--autoplay-policy=no-user-gesture-required".to_owned(),
-        ]);
-        // A window whose renderer or GPU process kept dying runs without GPU acceleration (crash/recover.rs, crash/fallback.rs).
+        // A caller-provided value (for example --remote-debugging-port to trace a separately launched instance) stays in front of ours. A panel started by a panel (restart after a crash, the
+        // elevated restart, the updater's relaunch) inherits the value of its parent, which already holds our switches: they are not added twice, because a value that differs from the one the
+        // parent's browser process runs with makes WebView2 refuse the window (0x8007139F, webview_env.rs).
+        let inherited = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+        let mut switches = webview_env_core::PANEL_SWITCHES.to_vec();
         if crate::crash::fallback::software_rendering() {
-            browser_arguments.push(crate::crash::fallback::BROWSER_ARGUMENT.to_owned());
+            switches.push(crate::crash::fallback::BROWSER_ARGUMENT);
         }
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            browser_arguments.join(" "),
+            webview_env_core::merge_browser_arguments(inherited.as_deref(), &switches),
         );
 
         // reqwest follows NO_PROXY/no_proxy. Preserve the user's existing
@@ -416,6 +410,7 @@ fn main() {
             windows::webview_heartbeat,
             logger::frontend_slow,
             windows::panel_content_ready,
+            view_state::panel_state_save,
             ctx_popup::ctx_popup_loaded,
             ctx_popup::ctx_popup_open,
             ctx_popup::ctx_popup_ready,
@@ -444,6 +439,7 @@ fn main() {
             launch_splash::launch_splash_frame,
             launch_splash::launch_splash_prepared,
             launch_splash::launch_splash_painted,
+            launch_splash::launch_splash_selftest,
             nr_overlay::nr_overlay_capture_shortcut,
             nr_overlay::nr_overlay_settings,
             nr_overlay::nr_overlay_save_settings,
