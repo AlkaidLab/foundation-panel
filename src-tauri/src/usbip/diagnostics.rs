@@ -21,17 +21,35 @@ pub(super) fn usbip_driver_blocks(output: &str) -> String {
         .join("\n\n")
 }
 
-/// The lines of the device-installation log (`setupapi.dev.log`) that mention the USB/IP drivers or their root nodes: the last `max`.
+/// The lines of the device-installation log (`setupapi.dev.log`) that mention the USB/IP drivers or their root nodes
+/// plus error/exit status lines within those matching sections: the last `max`.
 /// `DiUninstallDevice` documents that log as where the detail of a removal is.
 pub(super) fn setupapi_usbip_lines(text: &str, max: usize) -> Vec<String> {
-    let mut lines: Vec<String> = text
-        .lines()
-        .filter(|line| {
-            let lower = line.to_ascii_lowercase();
-            lower.contains("usbip") || lower.contains(r"root\usb\") || lower.contains(r"root\alkaidusb\")
-        })
-        .map(|line| line.trim_end().to_string())
-        .collect();
+    let mut in_usbip_section = false;
+    let mut lines: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let trimmed = raw.trim_end();
+        let lower = trimmed.to_ascii_lowercase();
+        let mentions_usbip = lower.contains("usbip")
+            || lower.contains(r"root\usb\")
+            || lower.contains(r"root\alkaidusb\");
+        if trimmed.trim_start().starts_with(">>>") {
+            in_usbip_section = mentions_usbip;
+        }
+        let is_diag_outcome = in_usbip_section
+            && (trimmed.trim_start().starts_with("!!!")
+                || trimmed.trim_start().starts_with("<<<")
+                || lower.contains("error ")
+                || lower.contains("exit status")
+                || lower.contains("0x")
+                || lower.contains("cm_prob"));
+        if mentions_usbip || is_diag_outcome {
+            lines.push(trimmed.to_string());
+        }
+        if trimmed.trim_start().starts_with("<<<") {
+            in_usbip_section = false;
+        }
+    }
     if lines.len() > max {
         lines.drain(..lines.len() - max);
     }
@@ -254,31 +272,34 @@ fn installations_section(out: &mut String) {
 }
 
 #[cfg(target_os = "windows")]
-fn setupapi_section(out: &mut String) {
+pub(super) fn read_setupapi_usbip_tail(max: usize) -> Result<Vec<String>, String> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let _ = writeln!(out, "\n== Device installation log (setupapi.dev.log, usbip lines, last 150)");
-    let Some(root) = std::env::var_os("SystemRoot") else {
-        let _ = writeln!(out, "unavailable");
-        return;
-    };
+    let root = std::env::var_os("SystemRoot").ok_or_else(|| "unavailable".to_string())?;
     let path = std::path::PathBuf::from(root).join("INF").join("setupapi.dev.log");
     // The log grows to megabytes: only its tail is read.
     const TAIL_BYTES: u64 = 6 * 1024 * 1024;
-    let text = std::fs::File::open(&path).and_then(|mut file| {
-        let length = file.metadata()?.len();
-        file.seek(SeekFrom::Start(length.saturating_sub(TAIL_BYTES)))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    });
-    match text {
-        Ok(text) => {
-            let lines = setupapi_usbip_lines(&text, 150);
+    let text = std::fs::File::open(&path)
+        .and_then(|mut file| {
+            let length = file.metadata()?.len();
+            file.seek(SeekFrom::Start(length.saturating_sub(TAIL_BYTES)))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        })
+        .map_err(|error| format!("unreadable ({error})"))?;
+    Ok(setupapi_usbip_lines(&text, max))
+}
+
+#[cfg(target_os = "windows")]
+fn setupapi_section(out: &mut String) {
+    let _ = writeln!(out, "\n== Device installation log (setupapi.dev.log, usbip lines, last 150)");
+    match read_setupapi_usbip_tail(150) {
+        Ok(lines) => {
             let _ = writeln!(out, "{}", if lines.is_empty() { "no usbip lines".to_string() } else { lines.join("\n") });
         }
         Err(error) => {
-            let _ = writeln!(out, "unreadable ({error})");
+            let _ = writeln!(out, "{error}");
         }
     }
 }
@@ -304,6 +325,8 @@ pub(super) async fn export() -> Result<String, String> {
     let _ = writeln!(text, "\n== Last cleanup");
     let _ = writeln!(text, "restart marker: {:?}", kept.marker);
     let _ = writeln!(text, "last error: {}", kept.last_error);
+    let _ = writeln!(text, "\n== Last install");
+    let _ = writeln!(text, "last install error: {}", kept.last_install_error);
     // The slow reads (a process each) run off the async worker.
     let rest = tokio::task::spawn_blocking(|| {
         let mut part = String::new();
@@ -367,12 +390,13 @@ mod tests {
 
     #[test]
     fn keeps_the_setupapi_lines_about_usbip_and_its_root_nodes() {
-        let log = ">>>  [Device Install (UpdateDriverForPlugAndPlayDevices) - ROOT\\USBIP_WIN2\\UDE]\nunrelated line\n     dvi: Class installer: usbip2_ude.inf\n>>>  [Device Install - ROOT\\USB\\0000]\nanother unrelated\n";
+        let log = ">>>  [Device Install (UpdateDriverForPlugAndPlayDevices) - ROOT\\USBIP_WIN2\\UDE]\nunrelated line\n     dvi: Class installer: usbip2_ude.inf\n!!!  dvi: Error 0xe0000247: A problem was encountered\n<<<  [Exit status: FAILURE(0xe0000247)]\n>>>  [Device Install - ROOT\\USB\\0000]\nanother unrelated\n";
         let lines = setupapi_usbip_lines(log, 10);
-        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(lines.iter().all(|line| !line.contains("unrelated")));
+        assert!(lines.iter().any(|line| line.contains("0xe0000247")));
         // only the last ones are kept
-        assert_eq!(setupapi_usbip_lines(log, 2), lines[1..].to_vec());
+        assert_eq!(setupapi_usbip_lines(log, 2), lines[lines.len() - 2..].to_vec());
         assert!(setupapi_usbip_lines("nothing\nhere", 5).is_empty());
     }
 

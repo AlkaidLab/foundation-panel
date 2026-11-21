@@ -18,26 +18,36 @@ pub(super) struct Journal {
     pub last_error: String,
     /// When `last_error` was kept (seconds since the Unix epoch); 0 when there is none.
     pub error_at: u64,
+    pub last_install_error: String,
+    /// When `last_install_error` was kept (seconds since the Unix epoch); 0 when there is none.
+    pub install_error_at: u64,
 }
 
 fn path() -> Option<std::path::PathBuf> {
     crate::test_isolation::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
-/// Line 1: the marker (`written TAB resumed TAB op`) or empty. Line 2: the last error, one line. Line 3: when it was kept.
+fn clean_line(text: &str) -> String {
+    text.chars()
+        .map(|character| if character.is_control() { ' ' } else { character })
+        .take(MAX_ERROR_CHARS)
+        .collect()
+}
+
+/// Line 1: the marker (`written TAB resumed TAB op`) or empty. Line 2: the last cleanup error, one line.
+/// Line 3: when it was kept. Line 4: the last install error, one line. Line 5: when it was kept.
 pub(super) fn encode(journal: &Journal) -> String {
     let marker = journal
         .marker
         .as_ref()
         .map(|marker| marker.encode().trim_end().to_string())
         .unwrap_or_default();
-    let error: String = journal
-        .last_error
-        .chars()
-        .map(|character| if character.is_control() { ' ' } else { character })
-        .take(MAX_ERROR_CHARS)
-        .collect();
-    format!("{marker}\n{error}\n{}\n", journal.error_at)
+    let error = clean_line(&journal.last_error);
+    let install_error = clean_line(&journal.last_install_error);
+    format!(
+        "{marker}\n{error}\n{}\n{install_error}\n{}\n",
+        journal.error_at, journal.install_error_at
+    )
 }
 
 pub(super) fn decode(text: &str) -> Journal {
@@ -45,7 +55,15 @@ pub(super) fn decode(text: &str) -> Journal {
     let marker = lines.next().and_then(RestartMarker::decode);
     let last_error = lines.next().unwrap_or_default().trim().to_string();
     let error_at = lines.next().and_then(|line| line.trim().parse().ok()).unwrap_or(0);
-    Journal { marker, last_error, error_at }
+    let last_install_error = lines.next().unwrap_or_default().trim().to_string();
+    let install_error_at = lines.next().and_then(|line| line.trim().parse().ok()).unwrap_or(0);
+    Journal {
+        marker,
+        last_error,
+        error_at,
+        last_install_error,
+        install_error_at,
+    }
 }
 
 pub(super) fn read() -> Journal {
@@ -100,12 +118,31 @@ mod tests {
             }),
             last_error: "USBIP-CLEAN-008: in use [node=ROOT\\USB\\0000 cr=23]".to_string(),
             error_at: 99,
+            last_install_error: "USBIP-SETUP-016: blocked [0xe0000247]".to_string(),
+            install_error_at: 123,
         };
         assert_eq!(decode(&encode(&journal)), journal);
+        // 3-line journals written by older builds decode with empty install error fields.
+        assert_eq!(
+            decode("42\t1\tstale\nUSBIP-CLEAN-008: in use\n99\n"),
+            Journal {
+                marker: Some(RestartMarker {
+                    written: 42,
+                    resumed: 1,
+                    op: MarkerOp::RemoveStale,
+                }),
+                last_error: "USBIP-CLEAN-008: in use".to_string(),
+                error_at: 99,
+                last_install_error: String::new(),
+                install_error_at: 0,
+            }
+        );
         let noisy = Journal {
             marker: None,
             last_error: "first\nsecond\tthird".to_string(),
             error_at: 0,
+            last_install_error: String::new(),
+            install_error_at: 0,
         };
         assert_eq!(decode(&encode(&noisy)).last_error, "first second third");
         assert_eq!(decode(""), Journal::default());
@@ -114,7 +151,11 @@ mod tests {
             marker: None,
             last_error: "x".repeat(5000),
             error_at: 0,
+            last_install_error: "y".repeat(5000),
+            install_error_at: 0,
         };
-        assert_eq!(decode(&encode(&long)).last_error.len(), MAX_ERROR_CHARS);
+        let decoded_long = decode(&encode(&long));
+        assert_eq!(decoded_long.last_error.len(), MAX_ERROR_CHARS);
+        assert_eq!(decoded_long.last_install_error.len(), MAX_ERROR_CHARS);
     }
 }

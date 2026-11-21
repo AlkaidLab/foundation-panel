@@ -127,7 +127,13 @@ async fn run_elevated_helper(token: uuid::Uuid, request: ElevatedRequest) -> i32
                 })?;
                 let result = super::install::ensure_pinned_usbip(&root)
                     .await
-                    .map_err(|error| format!("USBIP-SETUP-007: transport installation failed: {error}"))?;
+                    .map_err(|error| {
+                        if super::status::detail_error_code(&error).is_empty() {
+                            format!("USBIP-SETUP-007: transport installation failed: {error}")
+                        } else {
+                            error
+                        }
+                    })?;
                 // Controllers an older version left beside the new live one go now, so the person never meets "installed, not ready".
                 let restart_for_leftovers = super::device::sweep_stale_after_install().await
                     == super::device::Finish::RestartNeeded;

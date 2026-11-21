@@ -75,6 +75,12 @@ pub struct UsbipStatus {
     pub cleanup_resume_op: String,
     /// The last cleanup's error line as the helper answered it (codes and all), kept for the diagnostics.
     pub last_cleanup_error: String,
+    /// The last install/replace error line with the underlying classification and code, kept for the diagnostics.
+    pub last_install_error: String,
+    /// An install failed because Windows has a pending restart; retry after the restart.
+    pub install_pending_restart: bool,
+    /// Windows has restarted since an install waited for a pending reboot: retry the install once.
+    pub install_resume: bool,
     /// 结构化错误码（"USBIP-SETUP-003" 等），取自 detail 的码前缀；
     /// 前端按码判断语义，不得解析 detail 文本。
     pub error_code: String,
@@ -326,6 +332,7 @@ mod tests {
             "== Windows",
             "== Panel status",
             "== Last cleanup",
+            "== Last install",
             "== Host-controller devices",
             "== Driver services",
             "== Registered installations",

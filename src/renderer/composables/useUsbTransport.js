@@ -6,8 +6,45 @@ import { useDeviceComponentOperation } from './useDeviceComponentOperation.js'
 import { usbipStatusChannel } from './deviceStatusStore.js'
 import { usbipCanReplaceLegacy, usbipResidualIsStale, usbipTransportNeedsCleanup } from './deviceHubStatus.js'
 
+/** Extracts a fixed-vocabulary telemetry error code (never user text or paths). */
+export function usbipErrorReportCode(error) {
+  const message = String(error || '')
+  const codes = message.match(/USBIP-[A-Z]+-\d{3}/g) || []
+  const primary = (codes[0] === 'USBIP-SETUP-007' && codes[1]) ? codes[1] : (codes[0] || '')
+  if (!primary) return 'usbip-unknown'
+  const hex = message.match(/\b0x[0-9a-f]+\b/i)?.[0]?.toLowerCase()
+  const exit = message.match(/\bexit code (-?\d+)\b/i)?.[1]
+  const sub = hex || (exit ? `exit-${exit}` : '')
+  const raw = sub ? `${primary}.${sub}` : primary
+  return raw.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').slice(0, 40).replace(/-+$/, '')
+}
+
+/** Dispatches a structured USB/IP error event without any user text. */
+export function emitUsbipErrorReport(error, reporter) {
+  const code = usbipErrorReportCode(error)
+  if (typeof reporter === 'function') {
+    reporter({ component: 'usbip', code, severity: 'error' })
+    return code
+  }
+  if (typeof globalThis.window?.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
+    globalThis.window.dispatchEvent(new globalThis.CustomEvent('foundation-error-event', {
+      detail: { component: 'usbip', code, severity: 'error' },
+    }))
+  }
+  return code
+}
+
+/** Resolves the most specific translated user message for a structured USB/IP error. */
+export function formatUsbipFriendlyError(error, usbTexts = {}) {
+  const message = String(error || '')
+  const codes = message.match(/USBIP-[A-Z]+-\d{3}/g) || []
+  const code = (codes[0] === 'USBIP-SETUP-007' && codes[1]) ? codes[1] : codes[0]
+  const translated = code && usbTexts.errors?.[code]
+  return translated || usbTexts.unknownError || 'The USB/IP operation did not complete.'
+}
+
 /** Coordinates shared transport maintenance and refreshes actual state after failed operations. */
-export function useUsbTransport() {
+export function useUsbTransport(options = {}) {
   const { t } = useI18n()
   const sharedOperation = useDeviceComponentOperation()
   const status = reactive({
@@ -25,6 +62,9 @@ export function useUsbTransport() {
     cleanup_resume: false,
     cleanup_resume_op: '',
     last_cleanup_error: '',
+    last_install_error: '',
+    install_pending_restart: false,
+    install_resume: false,
     attached_devices: [],
     detail: '',
   })
@@ -66,10 +106,11 @@ export function useUsbTransport() {
   }
 
   function friendlyError(error) {
-    const message = String(error || '')
-    const code = message.match(/^(USBIP-[A-Z]+-\d{3})/)?.[1]
-    const translated = code && t.value.deviceHub.usb.errors?.[code]
-    return translated || t.value.deviceHub.usb.unknownError
+    return formatUsbipFriendlyError(error, t.value.deviceHub.usb)
+  }
+
+  function reportError(error) {
+    emitUsbipErrorReport(error, options?.onErrorEvent)
   }
 
   /** The text of a cleanup failure: what Windows said and the next step; the codes themselves are in the diagnostics. */
@@ -115,6 +156,10 @@ export function useUsbTransport() {
       resumeStarted = true
       ElMessage.info(t.value.deviceHub.usb.resumeCleanup)
       queueMicrotask(() => (resumeStale ? removeStale() : cleanupResidual({ auto: true })))
+    } else if (status.install_resume && !resumeStarted && !statusProbeFailed.value && !transportBusy.value && !status.externally_managed && !status.vhci_residual) {
+      resumeStarted = true
+      ElMessage.info(t.value.deviceHub.usb.resumeInstall)
+      queueMicrotask(() => installTransport({ auto: true }))
     }
   }
 
@@ -136,16 +181,19 @@ export function useUsbTransport() {
     }
   }
 
-  const installTransport = sharedOperation.wrap(async () => {
+  const installTransport = sharedOperation.wrap(async (installOptions = {}) => {
     if (transportBusy.value || status.externally_managed) return
+    const auto = installOptions?.auto === true
     installing.value = true
-    try {
-      await ElMessageBox.confirm(
-        t.value.deviceHub.usb.installConfirm,
-        t.value.deviceHub.usb.installTransport,
-        { confirmButtonText: t.value.deviceHub.usb.continue, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning' },
-      )
-    } catch { installing.value = false; return }
+    if (!auto) {
+      try {
+        await ElMessageBox.confirm(
+          t.value.deviceHub.usb.installConfirm,
+          t.value.deviceHub.usb.installTransport,
+          { confirmButtonText: t.value.deviceHub.usb.continue, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning' },
+        )
+      } catch { installing.value = false; return }
+    }
     // Do not let an in-flight status refresh apply stale data over the result
     // of the operation that is about to run.
     if (statusRefreshPromise) await statusRefreshPromise
@@ -155,13 +203,17 @@ export function useUsbTransport() {
     try {
       result = await usbip.installTransport()
     } catch (error) {
+      reportError(error)
       await refreshStatus({ force: true })
+      if (!status.last_install_error && error) status.last_install_error = String(error)
       return ElMessage.error(friendlyError(error))
     } finally {
       installing.value = false
     }
     if (!result?.success) {
+      reportError(result?.message)
       await refreshStatus({ force: true })
+      if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
       return ElMessage.error(friendlyError(result?.message))
     }
     applyStatus(result.data)
@@ -192,12 +244,14 @@ export function useUsbTransport() {
     try {
       result = await usbip.cleanupTransport()
     } catch (error) {
+      reportError(error)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(error))
     } finally {
       cleaning.value = false
     }
     if (!result?.success) {
+      reportError(result?.message)
       // The failed cleanup may still have removed some devnodes; refresh so the
       // residual flag reflects the actual state instead of the stale snapshot.
       await refreshStatus({ force: true })
@@ -221,12 +275,14 @@ export function useUsbTransport() {
     try {
       result = await usbip.removeStaleNodes()
     } catch (error) {
+      reportError(error)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(error))
     } finally {
       cleaning.value = false
     }
     if (!result?.success) {
+      reportError(result?.message)
       await refreshStatus({ force: true })
       return ElMessage.error(cleanupError(result?.message))
     }
@@ -270,14 +326,18 @@ export function useUsbTransport() {
     try {
       result = await usbip.replaceLegacyTransport()
     } catch (error) {
+      reportError(error)
       await refreshStatus({ force: true })
+      if (!status.last_install_error && error) status.last_install_error = String(error)
       return ElMessage.error(friendlyError(error))
     } finally {
       replacing.value = false
     }
     if (!result?.success) {
+      reportError(result?.message)
       // A failed replacement may have changed the system (rolled back to "not installed"): show what is really there.
       await refreshStatus({ force: true })
+      if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
       return ElMessage.error(friendlyError(result?.message))
     }
     applyStatus(result.data)

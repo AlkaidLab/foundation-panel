@@ -70,6 +70,9 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
         cleanup_resume: false,
         cleanup_resume_op: String::new(),
         last_cleanup_error: String::new(),
+        last_install_error: String::new(),
+        install_pending_restart: false,
+        install_resume: false,
         error_code: String::new(),
         attached_devices: Vec::new(),
         detail: "USB/IP passthrough is only supported on Windows".to_string(),
@@ -95,13 +98,25 @@ fn settle(mut status: UsbipStatus, kind: super::device::Residual) -> UsbipStatus
         String::new()
     };
     let mut kept = journal::read();
+    let mut journal_dirty = false;
     if let Some(marker) = kept.marker.clone() {
-        if !marker.restarted_since(journal::boot_secs()) {
+        let restarted = marker.restarted_since(journal::boot_secs());
+        if marker.op == super::nodes::MarkerOp::Install {
+            if !restarted {
+                status.install_pending_restart = true;
+                status.reboot_recommended = true;
+            } else if status.ready || status.externally_managed || status.vhci_residual {
+                kept.marker = None;
+                journal_dirty = true;
+            } else {
+                status.install_resume = marker.may_resume();
+            }
+        } else if !restarted {
             status.cleanup_pending_restart = true;
             status.reboot_recommended = true;
         } else if !status.vhci_residual {
             kept.marker = None;
-            journal::write(&kept);
+            journal_dirty = true;
         } else {
             status.cleanup_resume = marker.may_resume();
             if status.cleanup_resume {
@@ -119,9 +134,22 @@ fn settle(mut status: UsbipStatus, kind: super::device::Residual) -> UsbipStatus
     {
         kept.last_error.clear();
         kept.error_at = 0;
+        journal_dirty = true;
+    }
+    if status.ready
+        && kept.marker.is_none()
+        && !kept.last_install_error.is_empty()
+        && journal::now_secs().saturating_sub(kept.install_error_at) > KEEP_ERROR_SECS
+    {
+        kept.last_install_error.clear();
+        kept.install_error_at = 0;
+        journal_dirty = true;
+    }
+    if journal_dirty {
         journal::write(&kept);
     }
     status.last_cleanup_error = kept.last_error;
+    status.last_install_error = kept.last_install_error;
     status
 }
 
@@ -152,6 +180,9 @@ async fn probe_status() -> Result<(UsbipStatus, super::device::Residual), String
         cleanup_resume: false,
         cleanup_resume_op: String::new(),
         last_cleanup_error: String::new(),
+        last_install_error: String::new(),
+        install_pending_restart: false,
+        install_resume: false,
         error_code: String::new(),
         attached_devices: Vec::new(),
         detail: String::new(),
