@@ -594,6 +594,7 @@ const onFramePin = (event) => {
 }
 let unlistenConnect = null
 let unlistenFeedback = null
+let unlistenShowMessage = null
 let stopCrashWatch = null
 onMounted(async () => {
   pairing.start()
@@ -603,12 +604,16 @@ onMounted(async () => {
   try {
     const { listen } = await import('@tauri-apps/api/event')
     unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    unlistenShowMessage = await listen('show-message', (event) => {
+      const msg = String(event?.payload?.message || '').trim()
+      if (msg) useNotify().snack(msg)
+    })
     if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
     // the answer (feedback sent, or let go) is what stops the question: a program that ends before it asks again at the next start
     stopCrashWatch = watch(() => devReport.decision, (now, was) => { if (was === 'crash' && !now) invoke('crash_recovered_answered').catch(() => {}) })
   } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); stopCrashWatch?.(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); if (unlistenShowMessage) unlistenShowMessage(); stopCrashWatch?.(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {

@@ -639,6 +639,17 @@ fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+#[cfg(target_os = "windows")]
+fn describe_auto_start_error(error: &str, strings: &TrayStrings) -> String {
+    if error.starts_with("SVC-UAC-001:") {
+        strings.auto_start_uac_canceled.to_string()
+    } else if error.starts_with("SVC-UAC-003:") {
+        strings.auto_start_untrusted_dir.to_string()
+    } else {
+        strings.auto_start_failed.replace("{error}", error)
+    }
+}
+
 /// The tray's start-up item. With SunshineService it sets the service start
 /// type through the same back end as 系统 › Sunshine 服务; turning it off
 /// (Manual) first asks for confirmation that the host will not be reachable
@@ -647,11 +658,16 @@ fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
 fn toggle_auto_start<R: Runtime + 'static>(app: &AppHandle<R>) {
     let enabled = !desktop_settings::is_combined_auto_start_enabled();
     refresh_menu(app);
-    let needs_confirmation = !enabled
-        && matches!(
-            desktop_settings::startup_owner(),
-            Ok(desktop_settings::StartupOwner::Service(_))
-        );
+    let owner = match desktop_settings::startup_owner() {
+        Ok(owner) => owner,
+        Err(error) => {
+            error!("Failed to inspect start-up owner: {}", error);
+            emit_message(app, "error", &describe_auto_start_error(&error, get_tray_strings()));
+            refresh_menu(app);
+            return;
+        }
+    };
+    let needs_confirmation = !enabled && matches!(owner, desktop_settings::StartupOwner::Service(_));
     if needs_confirmation {
         use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
         let strings = get_tray_strings();
@@ -690,11 +706,8 @@ fn apply_auto_start<R: Runtime + 'static>(app: &AppHandle<R>, enabled: bool, ack
                 Ok(()) => info!("Start-up changed from the tray: {}", enabled),
                 Err(error) => {
                     error!("Failed to update start-up: {}", error);
-                    emit_message(
-                        &menu_handle,
-                        "error",
-                        &format!("Failed to update auto-start: {error}"),
-                    );
+                    let message = describe_auto_start_error(&error, get_tray_strings());
+                    emit_message(&menu_handle, "error", &message);
                 }
             }
             refresh_menu(&menu_handle);
@@ -772,5 +785,21 @@ mod tests {
         let connect = body_of("open_connect_dialog");
         assert!(connect.contains("open_main_panel_and_emit(app, \"connect\", \"open-connect\""));
         assert!(!connect.contains("emit_to_main_when_ready"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn auto_start_errors_translate_uac_and_untrusted_directory_causes() {
+        use crate::tray::{EN_STRINGS, ZH_STRINGS};
+        assert_eq!(
+            super::describe_auto_start_error("SVC-UAC-001: canceled", &ZH_STRINGS),
+            ZH_STRINGS.auto_start_uac_canceled
+        );
+        assert_eq!(
+            super::describe_auto_start_error("SVC-UAC-003: writable dir", &ZH_STRINGS),
+            ZH_STRINGS.auto_start_untrusted_dir
+        );
+        let other = super::describe_auto_start_error("SVC-SCM-002: denied", &EN_STRINGS);
+        assert!(other.contains("SVC-SCM-002: denied"), "{other}");
     }
 }
