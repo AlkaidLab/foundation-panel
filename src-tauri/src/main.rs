@@ -83,6 +83,7 @@ mod usbip;
 mod utils;
 mod vdd;
 mod vdd_calibration;
+mod vb_cable;
 #[cfg(target_os = "windows")]
 mod vdd_ioctl;
 mod vigem;
@@ -183,6 +184,11 @@ fn main() {
 
         #[cfg(target_os = "windows")]
         if let Some(exit_code) = usbip::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = vb_cable::try_handle_elevated_command() {
             std::process::exit(exit_code);
         }
 
@@ -330,7 +336,11 @@ fn main() {
             controller_hub::save_controller_hub_config,
             controller_hub::get_virtual_microphone_status,
             controller_hub::get_audio_devices,
-            controller_hub::start_vb_cable_job,
+            vb_cable::vb_cable_check,
+            vb_cable::vb_cable_download,
+            vb_cable::vb_cable_install,
+            vb_cable::vb_cable_enable,
+            vb_cable::vb_cable_uninstall,
             controller_hub::test_virtual_microphone,
             controller_hub::save_microphone_backend,
             vigem::get_vigem_status,
