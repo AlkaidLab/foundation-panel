@@ -148,6 +148,7 @@ import { qrSvgDataUrl } from '../composables/qrSvg.js'
 import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
+import { installSearchShortcut } from '../composables/searchShortcut.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
 import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
@@ -661,7 +662,11 @@ const onUnifiedChoose = (doc) => jumps.jump(() => {
   else if (doc.type === 'app') { emit('webui-navigate', `/apps${filterHash(doc.app?.name || doc.title)}`); router.navigate(ROUTES.WEB_APPS) }
   else if (doc.type === 'tile') { addTileToHome('panel-home', doc.tile); router.navigate(ROUTES.HOME) }
 })
-const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose })
+const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose, shortcuts: false })
+// the shared search judges a field by the event target, which is the host element of a Material field; this guard looks through the whole path
+let removeSearchShortcut = () => {}
+onMounted(() => { removeSearchShortcut = installSearchShortcut(uni) })
+onBeforeUnmount(() => removeSearchShortcut())
 let searchBeforeHide = null
 
 // Capture on Window before the search component handles the outside press
