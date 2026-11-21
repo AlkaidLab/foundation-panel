@@ -152,6 +152,12 @@ fn configure_loopback_proxy_bypass() {
 }
 
 fn main() {
+    // The read-only probe also serves an isolated Panel, before any GUI or profile setup.
+    #[cfg(target_os = "windows")]
+    if let Some(code) = vb_cable::probe::handle_command() {
+        std::process::exit(code);
+    }
+
     if let Err(error) = test_isolation::configure() {
         eprintln!("Unable to initialize test isolation: {error}");
         std::process::exit(2);
