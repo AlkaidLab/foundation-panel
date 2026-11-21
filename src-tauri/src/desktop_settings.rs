@@ -52,6 +52,8 @@ pub struct DesktopSettings {
     pub log_level: String,
     pub toolbar_shortcut_enabled: bool,
     pub text_context_enabled: bool,
+    /// A change of the monitor's scale gives the window its size in DIPs back (a virtual display that follows the client's resolution changes the scale; the window kept its pixels and shrank in DIPs). Off by default.
+    pub keep_window_size_on_dpi_change: bool,
 }
 
 impl Default for DesktopSettings {
@@ -68,6 +70,7 @@ impl Default for DesktopSettings {
             log_level: "info".to_string(),
             toolbar_shortcut_enabled: true,
             text_context_enabled: true,
+            keep_window_size_on_dpi_change: false,
         }
     }
 }
