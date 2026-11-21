@@ -3,12 +3,10 @@
 //!
 //! Adaptive is the default on every machine (`Setting::Auto` picks the tier from the installed memory); `Off` and a fixed tier are settings the person (or a measurement) chooses.
 //!
-//! Sources of the thresholds:
-//! * Microsoft Learn, Win32 `GlobalMemoryStatusEx` / "Memory Performance Information" (ms.date 2018): `ullAvailPhys` is the physical memory that can be reused at once, `ullTotalPhys` the installed
-//!   memory; `GetPerformanceInfo` gives `CommitLimit - CommitTotal` (in pages), the commit that can still be promised.
-//! * Microsoft Learn, `CreateMemoryResourceNotification` (ms.date 2018): "If available memory is low, the application can reduce its working set." The object is system-wide and signals only when
-//!   `LowMemoryResourceNotification` is true; the page gives no byte figure, so it is used as a hard "critical" signal and not as the only one.
-//! * Microsoft Learn, WebView2 "Performance best practices" (ms.date 2026-01-12): release what is not used; share environments; `MemoryUsageTargetLevel = Low` on inactive WebViews (lifecycle.rs).
+//! Physical memory and commit signals use Microsoft Learn `MEMORYSTATUSEX` and `PERFORMANCE_INFORMATION` (Members; `panel-memory-win32-physical` and `panel-memory-win32-commit`).
+//! The system notification can independently indicate low memory (`CreateMemoryResourceNotification` and `QueryMemoryResourceNotification`; `panel-memory-win32-notification` and
+//! `panel-memory-win32-notification-query`). The Panel's numerical thresholds and hysteresis are application policy. Inactive WebViews share the environment and lower their usage target
+//! (`panel-memory-webview2-performance`, Memory usage and process management; `windows/lifecycle.rs`).
 
 use std::time::Duration;
 
@@ -18,7 +16,7 @@ pub enum Mode {
     Off,
     /// the windows stay warm while memory is plentiful; idle ones go when the machine is short of memory
     Adaptive,
-    /// the preset for machines short of memory: nothing is kept warm for a first use; a hover warms the tray menu, idle windows go quickly
+    /// the preset for machines with less installed memory: the launch splash is created on demand
     Low,
 }
 
@@ -132,15 +130,16 @@ pub fn classify(sample: &Sample, before: Pressure) -> Pressure {
     }
 }
 
-/// What a mode does at a pressure. The tray menu window is not in here: it stays up in every mode and at every pressure (the tray menu is always the Material menu), and it shares the WebView2
-/// environment of the other windows (webview_env.rs), so it costs little; only the main window and the launch splash are let go.
+/// The hidden main window may be released only under measured system pressure in an enabled tier.
+pub fn may_release_hidden_main(mode: Mode, measured: Pressure) -> bool {
+    mode != Mode::Off && measured != Pressure::None
+}
+
+/// Launch splash behavior for a selected tier and pressure. The Material tray menu always stays resident.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Policy {
-    /// the main window, hidden to the tray (not minimized), is destroyed after this long; None keeps it
-    pub hidden_release: Option<Duration>,
-    /// the launch splash window is made at the start (a first launch finds it there); otherwise the host's announcement of a launch makes it
+pub struct SplashPolicy {
     pub warm_splash: bool,
-    /// the splash window, idle, is destroyed after this long; None keeps it
+    /// The idle splash is destroyed after this long. `None` keeps it.
     pub splash_idle_release: Option<Duration>,
 }
 
@@ -148,25 +147,23 @@ const fn secs(s: u64) -> Duration {
     Duration::from_secs(s)
 }
 
-pub fn policy(mode: Mode, pressure: Pressure) -> Policy {
+pub fn splash_policy(mode: Mode, pressure: Pressure) -> SplashPolicy {
     match (mode, pressure) {
-        (Mode::Off, _) => Policy { hidden_release: None, warm_splash: true, splash_idle_release: None },
-        (Mode::Adaptive, Pressure::None) => Policy { hidden_release: Some(secs(300)), warm_splash: true, splash_idle_release: None },
-        (Mode::Adaptive, Pressure::Elevated) => Policy { hidden_release: Some(secs(30)), warm_splash: false, splash_idle_release: Some(secs(60)) },
-        (Mode::Adaptive, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_splash: false, splash_idle_release: Some(secs(15)) },
-        (Mode::Low, Pressure::None) => Policy { hidden_release: Some(secs(60)), warm_splash: false, splash_idle_release: Some(secs(60)) },
-        (Mode::Low, Pressure::Elevated) => Policy { hidden_release: Some(secs(20)), warm_splash: false, splash_idle_release: Some(secs(30)) },
-        (Mode::Low, Pressure::Critical) => Policy { hidden_release: Some(secs(5)), warm_splash: false, splash_idle_release: Some(secs(10)) },
+        (Mode::Off, _) | (Mode::Adaptive, Pressure::None) => SplashPolicy { warm_splash: true, splash_idle_release: None },
+        (Mode::Adaptive, Pressure::Elevated) | (Mode::Low, Pressure::None) => SplashPolicy { warm_splash: false, splash_idle_release: Some(secs(60)) },
+        (Mode::Adaptive, Pressure::Critical) => SplashPolicy { warm_splash: false, splash_idle_release: Some(secs(15)) },
+        (Mode::Low, Pressure::Elevated) => SplashPolicy { warm_splash: false, splash_idle_release: Some(secs(30)) },
+        (Mode::Low, Pressure::Critical) => SplashPolicy { warm_splash: false, splash_idle_release: Some(secs(10)) },
     }
 }
 
-/// Measurement overrides (SUNSHINE_GUI_MEM_HIDDEN_SECS / SUNSHINE_GUI_MEM_TRAY_IDLE_SECS): a number of seconds replaces the delay at every pressure; 0 or text keeps the policy's.
+/// A positive `SUNSHINE_GUI_MEM_TRAY_IDLE_SECS` replaces the measurement splash delay.
 pub fn override_secs(text: Option<&str>) -> Option<Duration> {
     let seconds: u64 = text?.trim().parse().ok()?;
     (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
-/// A simulated pressure (SUNSHINE_GUI_MEM_FAKE_PRESSURE_FILE holds a word): used by measurements to drive the policy without taking the machine's memory.
+/// Parses the simulated pressure used by the splash measurement hook.
 pub fn parse_fake_pressure(text: &str) -> Option<Pressure> {
     match text.trim().to_ascii_lowercase().as_str() {
         "none" | "ok" => Some(Pressure::None),
@@ -175,12 +172,6 @@ pub fn parse_fake_pressure(text: &str) -> Option<Pressure> {
         _ => None,
     }
 }
-
-/// How long something has been in a state, as the poller sees it: the instant it was first seen in it (None when it is not in it now).
-pub fn held_for(first_seen: Option<std::time::Instant>, now: std::time::Instant) -> Duration {
-    first_seen.map_or(Duration::ZERO, |at| now.saturating_duration_since(at))
-}
-
 
 // ---- the guard ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -360,27 +351,32 @@ mod tests {
     #[test]
     fn off_changes_nothing_at_any_pressure() {
         for pressure in [Pressure::None, Pressure::Elevated, Pressure::Critical] {
-            let p = policy(Mode::Off, pressure);
-            assert_eq!((p.hidden_release, p.warm_splash, p.splash_idle_release), (None, true, None));
+            assert!(!may_release_hidden_main(Mode::Off, pressure));
+            assert_eq!(splash_policy(Mode::Off, pressure), SplashPolicy { warm_splash: true, splash_idle_release: None });
         }
     }
 
     #[test]
-    fn adaptive_keeps_everything_warm_while_memory_is_plentiful() {
-        let p = policy(Mode::Adaptive, Pressure::None);
-        assert!(p.warm_splash);
-        assert_eq!(p.splash_idle_release, None);
-        assert_eq!(p.hidden_release, Some(Duration::from_secs(300)));
+    fn hidden_main_requires_system_pressure_in_both_enabled_tiers() {
+        for mode in [Mode::Adaptive, Mode::Low] {
+            assert!(!may_release_hidden_main(mode, Pressure::None));
+            for pressure in [Pressure::Elevated, Pressure::Critical] {
+                assert!(may_release_hidden_main(mode, pressure));
+            }
+        }
     }
 
     #[test]
-    fn pressure_only_shortens_delays_and_never_lengthens_them() {
+    fn adaptive_keeps_the_splash_warm_while_memory_is_plentiful() {
+        assert_eq!(splash_policy(Mode::Adaptive, Pressure::None), SplashPolicy { warm_splash: true, splash_idle_release: None });
+    }
+
+    #[test]
+    fn pressure_only_shortens_splash_delays() {
         for mode in [Mode::Adaptive, Mode::Low] {
-            let levels = [Pressure::None, Pressure::Elevated, Pressure::Critical].map(|p| policy(mode, p));
+            let levels = [Pressure::None, Pressure::Elevated, Pressure::Critical].map(|p| splash_policy(mode, p));
             for pair in levels.windows(2) {
-                assert!(pair[1].hidden_release <= pair[0].hidden_release);
-                assert!(pair[1].splash_idle_release <= pair[0].splash_idle_release || pair[0].splash_idle_release.is_none());
-                assert!(!pair[1].warm_splash || pair[0].warm_splash);
+                assert!(pair[1].splash_idle_release.unwrap_or(Duration::MAX) <= pair[0].splash_idle_release.unwrap_or(Duration::MAX));
             }
         }
     }
@@ -388,7 +384,7 @@ mod tests {
     #[test]
     fn low_never_warms_the_splash() {
         for pressure in [Pressure::None, Pressure::Elevated, Pressure::Critical] {
-            assert!(!policy(Mode::Low, pressure).warm_splash);
+            assert!(!splash_policy(Mode::Low, pressure).warm_splash);
         }
     }
 
@@ -471,12 +467,5 @@ mod tests {
         assert_eq!(parse_fake_pressure("Elevated"), Some(Pressure::Elevated));
         assert_eq!(parse_fake_pressure("none"), Some(Pressure::None));
         assert_eq!(parse_fake_pressure("?"), None);
-    }
-
-    #[test]
-    fn held_for_counts_from_the_first_sighting() {
-        let base = std::time::Instant::now();
-        assert_eq!(held_for(None, base), Duration::ZERO);
-        assert_eq!(held_for(Some(base), base + Duration::from_secs(7)), Duration::from_secs(7));
     }
 }
