@@ -90,6 +90,7 @@ pub(crate) fn app_data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> taur
     path("app").map_or_else(|| app.path().app_data_dir(), Ok)
 }
 
+/// The invoke dispatcher checks the command before passing the request to its handler (`panel-isolation-tauri-invoke`, `Invoke::message`).
 pub(crate) fn allows_command(command: &str) -> bool {
     matches!(
         command,
@@ -98,6 +99,7 @@ pub(crate) fn allows_command(command: &str) -> bool {
             | "ctx_popup_loaded"
             | "ctx_popup_open"
             | "ctx_popup_ready"
+            | "ctx_popup_selftest"
             | "frontend_slow"
             | "get_current_dpi"
             | "get_dpi_scale_info"
@@ -156,6 +158,7 @@ mod tests {
         assert!(allows_command("panel_state_save"));
         assert!(allows_command("get_proxy_health_check"));
         assert!(allows_command("ctx_popup_ready"));
+        assert!(allows_command("ctx_popup_selftest"));
         assert!(allows_command("launch_splash_selftest"));
         for name in [
             "update_desktop_settings",
