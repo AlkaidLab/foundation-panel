@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import 'vue'
+import { createRenderer, nextTick, ref } from 'vue'
 
 globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
 globalThis.document ??= { documentElement: {} }
@@ -12,7 +12,11 @@ globalThis.window ??= {
   __TAURI_INTERNALS__: { transformCallback: () => 1, invoke: async () => ({}) },
 }
 
-const { emitUsbipErrorReport, formatUsbipFriendlyError, usbipErrorReportCode } = await import('./useUsbTransport.js')
+const { emitUsbipErrorReport, formatUsbipFriendlyError, usbipErrorReportCode, useUsbTransport } = await import('./useUsbTransport.js')
+const { usbipStatusChannel } = await import('./deviceStatusStore.js')
+const { usbip } = await import('../tauri-adapter.js')
+const { useDeviceComponentOperation } = await import('./useDeviceComponentOperation.js')
+const { useVbCableComponent } = await import('./useVbCableComponent.js')
 
 test('usbipErrorReportCode extracts structured codes and subcodes without user text', () => {
   assert.equal(
@@ -59,4 +63,46 @@ test('emitUsbipErrorReport sends only component, code and severity', () => {
   )
   assert.equal(code, 'usbip-setup-015.exit-3010')
   assert.deepEqual(sent, [{ component: 'usbip', code: 'usbip-setup-015.exit-3010', severity: 'error' }])
+})
+
+test('a pending USB/IP cleanup resumes when a VB-CABLE confirmation is cancelled', async (t) => {
+  const originalFetch = usbipStatusChannel.fetch
+  const originalCleanup = usbip.cleanupTransport
+  let cleanupCalls = 0
+  let cleanupStarted
+  const cleanup = new Promise(resolve => { cleanupStarted = resolve })
+  usbipStatusChannel.fetch = async () => ({ success: true, data: {
+    supported: true, cleanup_resume: true, cleanup_resume_op: 'cleanup', externally_managed: false,
+    vhci_residual: true, attached_devices: [],
+  } })
+  usbip.cleanupTransport = async () => {
+    cleanupCalls += 1
+    cleanupStarted()
+    return { success: true, data: { cleanup_resume: false, vhci_residual: false } }
+  }
+
+  let cancel
+  const vb = useVbCableComponent({
+    api: { check: async () => ({ success: true, data: { state: 'disabled', archive_ready: false } }) },
+    text: ref({}), shared: useDeviceComponentOperation(),
+    confirm: () => new Promise((_, reject) => { cancel = reject }), invalidate: () => {},
+  })
+  await vb.check()
+  const confirmation = vb.changeDriver('enable')
+  await nextTick()
+
+  let transport
+  const renderer = createRenderer({
+    patchProp() {}, insert() {}, remove() {}, createElement: () => ({}), createText: () => ({}),
+    createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  const app = renderer.createApp({ setup() { transport = useUsbTransport(); return () => null } })
+  app.mount({})
+  t.after(() => { app.unmount(); usbipStatusChannel.fetch = originalFetch; usbip.cleanupTransport = originalCleanup })
+  await transport.refreshStatus({ force: true })
+  assert.equal(cleanupCalls, 0)
+  cancel(new Error('cancelled'))
+  await confirmation
+  await Promise.race([cleanup, new Promise((_, reject) => setTimeout(() => reject(new Error('cleanup did not resume')), 1000))])
+  assert.equal(cleanupCalls, 1)
 })

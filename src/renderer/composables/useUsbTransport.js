@@ -1,4 +1,4 @@
-import { computed, onActivated, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from './notifyMessage.js'
 import { usbip } from '../tauri-adapter.js'
 import { useI18n } from '../desktop/i18n/index.js'
@@ -347,6 +347,13 @@ export function useUsbTransport(options = {}) {
   })
 
   sharedOperation.onOtherChange(() => refreshStatus({ afterCurrent: true, force: true }))
+  // A pending restart continuation may have been skipped while another
+  // component's confirmation was open. Cancellation does not mark a change.
+  watch(sharedOperation.busyElsewhere, (busy, wasBusy) => {
+    if (wasBusy && !busy && !resumeStarted && (status.cleanup_resume || status.install_resume)) {
+      void refreshStatus({ force: true })
+    }
+  })
   // Entering the page reads the devices again: the shared answer may be minutes old, and the native side answers this from cheap probes.
   onMounted(() => refreshStatus({ force: true }))
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。

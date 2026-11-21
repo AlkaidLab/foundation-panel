@@ -1486,6 +1486,52 @@ export const en_US = {
     }
   },
   "deviceHub": {
+    vbComponent: {
+      "title": "VB-CABLE virtual audio",
+      "device": "Device status",
+      "package": "Installation package",
+      "manage": "Manage component",
+      "check": "Check",
+      "download": "Download package",
+      "install": "Install",
+      "repair": "Repair",
+      "uninstall": "Uninstall",
+      "notChecked": "Not checked",
+      "packageReady": "Package ready and verified",
+      "packageMissing": "No verified package found",
+      "states": {
+        "missing": "Not installed",
+        "installed": "Driver installed",
+        "disabled": "Device disabled",
+        "unavailable": "Device unavailable; check its state first",
+        "pending": "Device removed but driver remains; you can continue the uninstall"
+      },
+      "separateHint": "Download the package first, then select Install. Administrator permission is required to install or uninstall.",
+      "installConfirm": "Install the VB-CABLE Pack43 driver from VB-Audio (x64 Windows only)? Close applications using audio devices first.",
+      "enableConfirm": "Repair and enable the VB-CABLE device disabled in Device Manager?",
+      "uninstallConfirm": "Uninstall the VB-CABLE driver and its devices? Close applications using this audio device first. Restarting the computer after uninstalling is recommended.",
+      "phases": {
+        "check": "Checking device…",
+        "download": "Downloading and verifying package…",
+        "install": "Installing driver…",
+        "enable": "Enabling device…",
+        "uninstall": "Uninstalling driver…"
+      },
+      "downloaded": "Package downloaded. Choose Install to continue.",
+      "installed": "Driver installed.",
+      "enabled": "Device enabled.",
+      "uninstalled": "The uninstall operation has finished. Restarting the computer is recommended.",
+      "restartSuggested": "Windows reports that this operation may require a restart. Save your work and restart when convenient.",
+      "checkFailed": "Check failed:",
+      "downloadFailed": "Download failed:",
+      "installFailed": "Installation failed:",
+      "enableFailed": "Enable failed:",
+      "uninstallFailed": "Uninstall failed:",
+      "operationTimeout": "The operation exceeded three minutes and may still be running. Check again later and avoid starting another operation.",
+      "operationBusy": "Another VB-CABLE driver operation is still running. Try again later.",
+      "deviceBusy": "Windows is still using the VB-CABLE driver and cannot uninstall it. Close applications using this device and try again. A restart may be needed.",
+      "unsupportedArchitecture": "Pack43 can be installed on x64 Windows only. Other installed versions can still be checked and uninstalled."
+    },
     "eyebrow": "MANAGE / DEVICE HUB",
     "title": "Device Hub",
     "intro": "Manage controllers and microphone, the USB/IP transport, and USB passthrough. Streaming settings remain in the Web UI.",
@@ -1600,7 +1646,7 @@ export const en_US = {
       "vbCableOpenDevmgmt": "Open Device Manager",
       "vbCableInstall": "Install VB-CABLE",
       "vbCableEnable": "Enable VB-CABLE",
-      "vbCableInstallConfirm": "The host downloads the VB-CABLE driver from VB-Audio, checks the signature of its setup program and installs it silently with administrator rights. This adds a virtual audio device to Windows. Continue?",
+      "vbCableInstallConfirm": "The VB-CABLE virtual audio driver from VB-Audio will be installed. Continue?",
       "vbCableEnableConfirm": "The host enables the VB-CABLE device that is disabled in Device Manager (pnputil /enable-device). Continue?",
       "vbCableJobs": {
         "downloading": "Downloading VB-CABLE…",
@@ -1610,7 +1656,7 @@ export const en_US = {
       },
       "vbCableErrors": {
         "download": "The download failed. Check the network and try again, or download it manually.",
-        "signature": "The setup program is not validly signed by VB-Audio. Installation was stopped.",
+        "signature": "Verification of the VB-CABLE installation files failed. Installation was stopped.",
         "admin": "Sunshine is not running with administrator rights, so it cannot install or enable drivers.",
         "failed": "That did not work: VB-CABLE is still unavailable. Open Device Manager to look, or install it manually."
       },
