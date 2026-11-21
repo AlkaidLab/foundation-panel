@@ -36,7 +36,7 @@
         </MGroup>
         <NrSessionControls v-if="nrPipeline" :pipeline="nrPipeline" :online="nr.online" :global-enabled="nr.enabled" @changed="pollNr" @error="nrError = $event" />
         <MGroup v-else>
-          <MItem icon="wand_stars" title="DLSS NR" :value="nrOverlayText.states[nrOverlayState(null, nr.online, nr.hasStreams, nr.list.length)]">
+          <MItem icon="wand_stars" title="DLSS NR" :value="nrStatusLabel(nrOverlayText, nrOverlayState(null, nr.online, nr.hasStreams, nr.list.length), nr.enabled)">
             <template #trail><MButton variant="text" size="sm" @click="nr.online ? emit('open-quality') : pollNr()">{{ nr.online ? l.nrOpen : l.refresh }}</MButton></template>
           </MItem>
         </MGroup>
@@ -96,7 +96,7 @@ import { sunshine } from '../../tauri-adapter.js'
 import NrSessionControls from '../NrSessionControls.vue'
 import { useDlssNrReady } from '../../composables/useDlssNrReady.js'
 import { enhancementControlsText, enhancementError } from '../../composables/enhancementControls.js'
-import { nrOverlayText as overlayTexts } from '../../composables/nrOverlayMessages.js'
+import { nrOverlayText as overlayTexts, nrStatusLabel } from '../../composables/nrOverlayMessages.js'
 import { nrOutputLabel, nrOverlayState, nrPipelines } from '../../composables/nrOverlayState.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { bitrateChipMarks, bitrateFromProgress, bitrateSliderProgress, bitrateSliderSpan } from 'foundation-ui/settings/index.js'

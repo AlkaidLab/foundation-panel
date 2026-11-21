@@ -53,7 +53,7 @@ const messages = {
     replaceFile: '更换组件文件',
     installSetup: '安装并配置',
     allowUse: '允许串流使用 ',
-    nrPermissionHint: '全局设置，应用于当前及后续串流。',
+    nrPermissionHint: '当前串流支持 NR 时，开启后从下一帧开始初始化，无需重连。关闭后从下一帧停用。',
     installNr: '安装组件',
     hdrPermissionHint:
       '允许应用使用 SDR 转 HDR 功能；是否启用由应用配置决定，下次连接时生效。',
@@ -142,7 +142,7 @@ const messages = {
     replaceFile: 'Replace component file',
     installSetup: 'Install & set up',
     allowUse: 'Allow streams to use ',
-    nrPermissionHint: 'Global setting for current and future streams.',
+    nrPermissionHint: 'A supported stream starts initializing NR on its next frame without reconnecting. Switching off stops NR on the next frame.',
     installNr: 'Install component',
     hdrPermissionHint:
       'Allows apps to use SDR-to-HDR conversion. Per-app settings take effect on the next connection.',

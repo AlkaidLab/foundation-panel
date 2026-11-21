@@ -115,7 +115,7 @@ import {
   nrPipelines
 } from '../composables/nrOverlayState.js'
 import { shortcutCapture } from '../composables/shortcutCapture.js'
-import { nrOverlayText } from '../composables/nrOverlayMessages.js'
+import { nrOverlayText, nrStatusLabel } from '../composables/nrOverlayMessages.js'
 const { locale } = useI18n()
 const text = computed(() => enhancementControlsText(locale.value)),
   overlayText = computed(() => nrOverlayText(locale.value))
@@ -170,8 +170,10 @@ const pipelines = ref([]),
 const pipeline = computed(() =>
   pipelines.value.find((p) => p.id === selectedId.value)
 )
-const sessionStateText = computed(() =>
-  overlayText.value.states[nrOverlayState(pipeline.value, online.value, hasStreams.value, pipelines.value.length)])
+const sessionStateText = computed(() => {
+  const state = nrOverlayState(pipeline.value, online.value, hasStreams.value, pipelines.value.length)
+  return nrStatusLabel(overlayText.value, state, globalNr.value)
+})
 const shortcutGroups = computed(() => [
   { label: text.value.visibilityKey, inputs: [
     { key: 'overlayShortcut', registered: 'overlayRegistered' },

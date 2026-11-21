@@ -14,6 +14,8 @@ const messages = {
       "blocked": "NR 不可用",
       "unavailable": "主机未连接"
     },
+    "enabledIdle": "设置已保存，下次支持 NR 的串流将尝试开启增强。",
+    "enabledNoPipeline": "当前串流暂无 NR 管线。设置已保存，管线就绪后会自动尝试开启。",
     "scale": "NR 处理比例",
     "intensity": "增强强度",
     "advanced": "高级设置",
@@ -73,6 +75,8 @@ const messages = {
       "blocked": "NR unavailable",
       "unavailable": "Host disconnected"
     },
+    "enabledIdle": "Setting saved. The next supported stream will try to start NR.",
+    "enabledNoPipeline": "No NR pipeline is available for this stream yet. Your setting is saved. NR will initialize when a supported pipeline is ready.",
     "scale": "NR processing scale",
     "intensity": "Enhancement strength",
     "advanced": "Advanced settings",
@@ -121,6 +125,12 @@ const messages = {
 
 export function nrOverlayText(locale) {
   return messages[locale.startsWith("zh") ? "zh" : "en"]
+}
+
+export function nrStatusLabel(text, state, globalEnabled) {
+  if (globalEnabled && state === 'idle') return text.enabledIdle
+  if (globalEnabled && state === 'no_pipeline') return text.enabledNoPipeline
+  return text.states[state]
 }
 
 /** The degraded notice for a pipeline: a known reason gets actionable wording, anything else keeps the fallback plus its raw code. */

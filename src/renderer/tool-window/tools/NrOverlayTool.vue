@@ -20,7 +20,7 @@
             <span>{{ text.enhancement }}</span>
             <button class="switch" role="switch" :aria-checked="globalEnabled" :aria-label="text.enhancement" :class="{ on: globalEnabled }" :disabled="!online || !nrInstalled || busy" @click="toggle"><span /></button>
           </div>
-          <div class="live-state" aria-live="polite"><span class="dot" :class="state" />{{ text.states[state] }}</div>
+          <div class="live-state" aria-live="polite"><span class="dot" :class="state" />{{ nrStatusLabel(text, state, globalEnabled) }}</div>
           <p v-if="state === 'blocked'" class="notice">{{ pipeline?.backend !== 'none' ? text.hdrBusy : text.unsupported }}</p>
           <p v-else-if="state === 'degraded'" class="notice">{{ degradedReason.main }}<small v-if="degradedReason.detail"><br>{{ degradedReason.detail }}</small></p>
           <p v-else-if="['warming_up', 'stopping', 'scaling'].includes(state)" class="notice">{{ text.wait }}</p>
@@ -91,7 +91,7 @@ import { listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { nrShortcutLabel, enhancementControlsText, enhancementError } from '../../composables/enhancementControls.js'
-import { nrDegradedReason, nrOverlayText } from '../../composables/nrOverlayMessages.js'
+import { nrDegradedReason, nrOverlayText, nrStatusLabel } from '../../composables/nrOverlayMessages.js'
 import { nrOverlayState, overlayOpacity, nrProcessingSize, nrPipelines, nrOutputLabel } from '../../composables/nrOverlayState.js'
 
 import { useTouchWindowDrag } from '../../composables/useTouchWindowDrag.js'
