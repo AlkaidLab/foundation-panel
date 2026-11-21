@@ -235,6 +235,9 @@ fn core_notification_content(
     supports_actions: bool,
 ) -> NotificationContent {
     let notification = &state.notification;
+    if notification.action == "nr_active" {
+        return NotificationContent { title: "Sunshine · DLSS NR".into(), body: strings.nr_active.into() };
+    }
     if notification.action == "open_pin" {
         let client_name = state.pairing_client_name.trim();
         let title = if client_name.is_empty() {
