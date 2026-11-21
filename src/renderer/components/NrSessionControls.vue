@@ -127,7 +127,10 @@ const send = (patch, target) => run(() => nrSessionRequest(props.pipeline, targe
 async function setGlobal(enabled) {
   if (busy.value) return
   busy.value = true
-  try { await invoke('set_global_nr_enabled', { enabled }); emit('changed') }
+  try {
+    const savedEnabled = await invoke('set_global_nr_enabled', { enabled })
+    emit('changed', savedEnabled)
+  }
   catch (e) { emit('error', String(e)) }
   finally { busy.value = false }
 }

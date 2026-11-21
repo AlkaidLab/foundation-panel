@@ -11,7 +11,7 @@
         </MGroup>
         <MFooter v-if="needsNrInstall && hasStreams">{{ nrMessages.inUseNotice }}</MFooter>
         <MBanner v-if="nrError" tone="error" icon="error">{{ nrError }}</MBanner>
-        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :show-global="false" @changed="pollOnce" @error="error = $event" />
+        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :show-global="false" @changed="controlsChanged" @error="error = $event" />
         <MFooter v-if="nrInstalled && !needsNrInstall">{{ sessionStateText }}</MFooter>
       </MSection>
 
@@ -61,7 +61,7 @@
         </MGroup>
         <MNotice v-if="selectedId && !pipeline" tone="warn">{{ text.expired }}</MNotice>
         <MBanner v-if="pipeline?.dv_profile && pipeline.dv_state !== 'active'" tone="info" icon="info">{{ pipeline.dv_state === 'waiting' ? overlayText.dvWaiting : overlayText.dvFallback }}</MBanner>
-        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :global-enabled="globalNr" @changed="pollOnce" @error="error = $event" />
+        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :global-enabled="globalNr" @changed="controlsChanged" @error="error = $event" />
         <MButton v-if="pipeline && parts.liveControls" icon="monitor" :disabled="saving" @click="setVisibility(true)">{{ text.open }}</MButton>
       </template>
       <MFooter v-if="parts.liveControls">{{ text.sessionHint }}</MFooter>
@@ -100,6 +100,7 @@ import { displayGamepadShortcut, FIXED_GAMEPAD_SHORTCUTS } from '../composables/
 import NrSessionControls from './NrSessionControls.vue'
 import { noteDlssNrStatus, dlssNrShown } from '../composables/useDlssNrReady.js'
 import { nrComponentChanged, qualityParts } from '../composables/dlssNrReady.js'
+import { createNrStatusPoll } from '../composables/nrStatusPoll.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import {
   DEFAULT_NR_SHORTCUT,
@@ -130,7 +131,6 @@ const { current, open, back } = useSubpage('quality')
 const nrReady = dlssNrShown
 const parts = computed(() => qualityParts(nrReady.value))
 const hasStreams = ref(false), switchingNr = ref(false)
-let switchRevision = 0
 const globalNr = ref(null), nrInstalled = ref(null), hdrInstalled = ref(null)
 const nrMessages = computed(() => ({ ...dlssNrText(locale.value), saveSuccess: text.value.saved, permissionSaveFailed: text.value.permissionSaveFailed }))
 const { status: nrStatus, statusKnown: nrKnown, controlsBusy: nrBusy, operationError: nrError, install, refresh: refreshNr } = useEnhancementManager({
@@ -145,11 +145,15 @@ const canInstallNr = computed(() => online.value && !hasStreams.value && nrKnown
 async function saveGlobalNr(enabled) {
   if (!canSetGlobalNr.value) return
   switchingNr.value = true
-  ++switchRevision
   nrError.value = ''
-  try { globalNr.value = await invoke('set_global_nr_enabled', { enabled }) }
+  try { controlsChanged(await invoke('set_global_nr_enabled', { enabled })) }
   catch (e) { nrError.value = String(e) }
-  finally { ++switchRevision; switchingNr.value = false }
+  finally { switchingNr.value = false }
+}
+function controlsChanged(savedEnabled) {
+  if (disposed) return
+  if (typeof savedEnabled === 'boolean') globalNr.value = savedEnabled
+  void refreshAfterSave()
 }
 async function readComponents() {
   try { const result = await rtxHdr.getStatus(); hdrInstalled.value = result?.success ? result.data.installed : null } catch { hdrInstalled.value = null }
@@ -185,7 +189,6 @@ const shortcutGroups = computed(() => [
   ] }
 ])
 let disposed = false,
-  polling = false,
   timer,
   unlisten = []
 function applyStatus(status) {
@@ -271,18 +274,16 @@ async function selectSession(id) {
     error.value = String(e)
   }
 }
-async function pollOnce() {
-  if (disposed || polling) return
-  polling = true
+const { poll: pollOnce, refresh: refreshAfterSave } = createNrStatusPoll(async current => {
+  if (disposed) return
   try {
-    const revision = switchRevision
     const result = await invoke('nr_live_status')
-    if (!disposed) {
+    if (!disposed && current()) {
       hasStreams.value = result.has_streams === true
-      if (!switchingNr.value && switchRevision === revision) globalNr.value = result.nr_enabled
+      if (!switchingNr.value) globalNr.value = result.nr_enabled
       if (!nrBusy.value && !switchingNr.value && nrComponentChanged(nrKnown.value ? nrStatus.value : null, result)) {
         await refreshNr(true)
-        if (disposed) return
+        if (disposed || !current()) return
       }
       pipelines.value = nrPipelines(result?.pipelines)
       if (selectedId.value !== null && !pipelines.value.some(p => p.id === selectedId.value)) selectedId.value = null
@@ -295,7 +296,7 @@ async function pollOnce() {
         await selectSession(pipelines.value[0].id)
     }
   } catch {
-    if (!disposed) {
+    if (!disposed && current()) {
       online.value = false
       pipelines.value = []
     }
@@ -304,8 +305,7 @@ async function pollOnce() {
     const value = await invoke('nr_overlay_is_visible')
     if (!disposed) visible.value = value
   } catch {}
-  polling = false
-}
+})
 async function poll() {
   await pollOnce()
   if (!disposed) timer = setTimeout(poll, 1200)
