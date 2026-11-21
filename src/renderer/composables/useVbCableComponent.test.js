@@ -33,6 +33,15 @@ test('checking and downloading do not install; installation is an explicit later
   assert.equal(manager.status.value.state, 'installed')
 })
 
+test('a missing device cannot be uninstalled', async () => {
+  const { manager, calls } = fixture({ state: 'missing', archive_ready: true })
+  await manager.check()
+  assert.equal(manager.hasRemovableDriver.value, false)
+  assert.equal(manager.canUninstall.value, false)
+  await manager.changeDriver('uninstall')
+  assert.deepEqual(calls, ['check'])
+})
+
 test('a disabled device can be enabled without downloading or reinstalling', async () => {
   const { manager, calls } = fixture({ state: 'disabled', archive_ready: false })
   await manager.check()
@@ -86,6 +95,7 @@ test('a remaining driver can be uninstalled without allowing installation over i
   await manager.check()
   await manager.changeDriver('install')
   assert.equal(manager.canInstall.value, false)
+  assert.equal(manager.hasRemovableDriver.value, true)
   assert.equal(manager.canUninstall.value, true)
   await manager.changeDriver('uninstall')
   assert.deepEqual(calls, ['check', 'confirm', 'invalidate', 'uninstall', 'invalidate'])

@@ -8,7 +8,8 @@ export function useVbCableComponent({ api, text, shared, confirm, invalidate }) 
   const busy = computed(() => !!phase.value || shared.busyElsewhere.value)
   const canInstall = computed(() => !busy.value && status.value?.state === 'missing' && archiveReady.value)
   const canEnable = computed(() => !busy.value && status.value?.state === 'disabled')
-  const canUninstall = computed(() => !busy.value && ['installed', 'disabled', 'unavailable', 'pending'].includes(status.value?.state))
+  const hasRemovableDriver = computed(() => ['installed', 'disabled', 'unavailable', 'pending'].includes(status.value?.state))
+  const canUninstall = computed(() => !busy.value && hasRemovableDriver.value)
 
   function applyStatus(next) {
     status.value = next
@@ -87,5 +88,5 @@ export function useVbCableComponent({ api, text, shared, confirm, invalidate }) 
     }
   })
 
-  return { status, archiveReady, phase, notice, busy, canInstall, canEnable, canUninstall, check, download, changeDriver }
+  return { status, archiveReady, phase, notice, busy, canInstall, canEnable, hasRemovableDriver, canUninstall, check, download, changeDriver }
 }

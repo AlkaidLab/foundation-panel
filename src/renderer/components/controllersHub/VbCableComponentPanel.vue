@@ -13,9 +13,9 @@
       </MItem>
       <MItem icon="settings" :title="text.manage" :text="text.separateHint" wrap>
         <template #trail>
-          <MButton size="sm" variant="tonal" :loading="phase === 'install'" :disabled="!canInstall" @click="changeDriver('install')">{{ text.install }}</MButton>
+          <MButton size="sm" variant="tonal" :loading="phase === 'install'" :disabled="!canInstall" @click="changeDriver('install')">{{ props.installLabel || text.install }}</MButton>
           <MButton v-if="status?.state === 'disabled'" size="sm" variant="tonal" :loading="phase === 'enable'" :disabled="!canEnable" @click="changeDriver('enable')">{{ text.repair }}</MButton>
-          <MButton size="sm" variant="text" :loading="phase === 'uninstall'" :disabled="!canUninstall" @click="changeDriver('uninstall')">{{ text.uninstall }}</MButton>
+          <MButton v-if="hasRemovableDriver" size="sm" variant="text" :loading="phase === 'uninstall'" :disabled="!canUninstall" @click="changeDriver('uninstall')">{{ status?.state === 'pending' ? text.cleanup : text.uninstall }}</MButton>
         </template>
       </MItem>
     </MGroup>
@@ -34,15 +34,20 @@ import { useVbCableComponent } from '../../composables/useVbCableComponent.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { vbCable } from '../../tauri-adapter.js'
 
+const props = defineProps({ installLabel: { type: String, default: '' } })
 const { t } = useI18n()
 const text = computed(() => t.value.deviceHub.vbComponent)
 const shared = useDeviceComponentOperation()
-const { status, archiveReady, phase, notice, busy, canInstall, canEnable, canUninstall, check, download, changeDriver } = useVbCableComponent({
+const { status, archiveReady, phase, notice, busy, canInstall, canEnable, hasRemovableDriver, canUninstall, check, download, changeDriver } = useVbCableComponent({
   api: vbCable,
   text,
   shared,
   confirm: (action) => {
-    const label = action === 'enable' ? text.value.repair : text.value[action]
+    const label = {
+      install: props.installLabel || text.value.install,
+      enable: text.value.repair,
+      uninstall: status.value?.state === 'pending' ? text.value.cleanup : text.value.uninstall,
+    }[action]
     return ElMessageBox.confirm(text.value[`${action}Confirm`], label,
       { type: 'warning', danger: action === 'uninstall', confirmButtonText: label })
   },

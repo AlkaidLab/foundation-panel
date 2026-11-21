@@ -1219,7 +1219,7 @@ export const zh = {
   deviceHub: {
     vbComponent: {
       title: 'VB-CABLE 虚拟声卡', device: '设备状态', package: '安装包', manage: '管理组件',
-      check: '检查', download: '下载安装包', install: '安装', repair: '修复', uninstall: '卸载',
+      check: '检查', download: '下载安装包', install: '安装', repair: '修复', uninstall: '卸载', cleanup: "清理残留",
       notChecked: '尚未检查', packageReady: '安装包已准备好并通过校验', packageMissing: '未找到已校验的安装包',
       states: { missing: '未安装', installed: '驱动已安装', disabled: '设备已禁用', unavailable: '设备状态异常，请先检查', pending: '设备已移除，但驱动仍存在；可继续卸载残留' },
       separateHint: '下载后需手动选择安装；安装和卸载会请求管理员权限。',
@@ -1309,7 +1309,7 @@ export const zh = {
       },
       "vbCableDownload": "下载",
       "vbCableOpenDevmgmt": "打开设备管理器",
-      "vbCableInstall": "安装 VB-CABLE",
+      "vbCableInstall": "安装虚拟麦克风",
       "vbCableEnable": "启用 VB-CABLE",
       "vbCableInstallConfirm": "将安装由 VB-Audio 提供的 VB-CABLE 虚拟音频驱动。继续吗？",
       "vbCableEnableConfirm": "主机将启用在设备管理器中被禁用的 VB-CABLE 设备（pnputil /enable-device）。继续吗？",

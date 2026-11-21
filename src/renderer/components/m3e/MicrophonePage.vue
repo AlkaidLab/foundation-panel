@@ -34,13 +34,14 @@
         </MItem>
         <!-- VB-CABLE is listed whatever backend is chosen: its state, and the way to get it when the host does not find it -->
         <MItem data-vb-cable :data-vb-state="vbState" icon="cable" :title="text.vbCable" :text="text.vbCableStates[vbState]" wrap>
-          <template #trail>
-            <MButton v-if="vbNeedsEnable" variant="text" size="sm" icon="open_in_new" @click="openDevices">{{ text.vbCableOpenDevmgmt }}</MButton>
-            <MButton variant="tonal" size="sm" icon="settings" @click="emit('manage-components')">{{ t.deviceHub.vbComponent.manage }}</MButton>
+          <template v-if="vbNeedsEnable" #trail>
+            <MButton variant="text" size="sm" icon="open_in_new" @click="openDevices">{{ text.vbCableOpenDevmgmt }}</MButton>
           </template>
         </MItem>
       </MGroup>
     </MSection>
+
+    <VbCableComponentPanel :install-label="text.vbCableInstall" />
 
     <MSection>
       <MStatusPills :items="pills" :label="t.deviceHub.tabs.microphone" />
@@ -74,6 +75,7 @@ import {
   microphoneInputLevel, microphoneTestIsLive, vbCableNeedsEnable, vbCableState,
 } from '../../composables/deviceHubStatus.js'
 import { useI18n } from '../../desktop/i18n/index.js'
+import VbCableComponentPanel from '../controllersHub/VbCableComponentPanel.vue'
 
 const emit = defineEmits(['manage-components', 'back'])
 const { t } = useI18n()
