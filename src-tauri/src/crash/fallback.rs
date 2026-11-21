@@ -53,7 +53,7 @@ impl Marker {
 }
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
+    crate::test_isolation::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
 fn now_secs() -> u64 {

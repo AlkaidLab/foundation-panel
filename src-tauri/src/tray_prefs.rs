@@ -224,7 +224,7 @@ pub fn just_closed_by_icon_press() -> bool {
 static CURRENT: Mutex<Option<TrayPrefs>> = Mutex::new(None);
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
 pub fn parse(text: &str) -> TrayPrefs {

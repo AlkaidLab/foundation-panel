@@ -104,7 +104,7 @@ impl LogCollector {
 /// Where the panel keeps its own log between runs. The viewer reads the
 /// in-memory entries; the file is the support copy and stays UTF-8.
 pub fn panel_log_path() -> PathBuf {
-    dirs::data_local_dir()
+    crate::test_isolation::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Sunshine GUI")
         .join("logs")

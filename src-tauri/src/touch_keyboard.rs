@@ -269,7 +269,7 @@ fn run_transaction(
 
 impl FileJournal {
     fn new() -> io::Result<Self> {
-        let directory = dirs::data_local_dir()
+        let directory = crate::test_isolation::data_local_dir()
             .ok_or_else(|| io::Error::other("user local data directory is unavailable"))?
             .join("Sunshine GUI")
             .join("touch-keyboard");

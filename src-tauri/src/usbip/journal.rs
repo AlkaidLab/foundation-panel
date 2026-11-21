@@ -21,7 +21,7 @@ pub(super) struct Journal {
 }
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
+    crate::test_isolation::data_local_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
 /// Line 1: the marker (`written TAB resumed TAB op`) or empty. Line 2: the last error, one line. Line 3: when it was kept.

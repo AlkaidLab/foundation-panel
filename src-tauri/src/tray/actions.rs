@@ -25,6 +25,9 @@ fn sponsor_site_url(locale: &str) -> &'static str {
 }
 
 pub fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, menu_id: &str) {
+    if crate::test_isolation::active() && menu_id != "open_main_panel" {
+        return;
+    }
     let s = get_tray_strings();
     match menu_id {
         "open_main_panel" => open_main_panel_from_tray(app, "menu"),
