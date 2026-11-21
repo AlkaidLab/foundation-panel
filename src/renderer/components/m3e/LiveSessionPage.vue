@@ -89,15 +89,16 @@
 
 <script setup>
 import { setVisibleInterval, clearVisibleInterval } from '../../composables/pageVisibility.js'
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { MPage, MGroup, MSection, MItem, MSliderItem, MChoiceItem, MValueItem, MChipSet, MStat, MSparkline, MBanner, MButton, MIconButton, MFooter, MEmpty, MDialog, MPageLoading, useNotify } from 'foundation-ui/vue'
 import { invoke } from '@tauri-apps/api/core'
 import { sunshine } from '../../tauri-adapter.js'
 import NrSessionControls from '../NrSessionControls.vue'
+import { useLiveNrSessions } from '../../composables/useLiveNrSessions.js'
 import { useDlssNrReady } from '../../composables/useDlssNrReady.js'
 import { enhancementControlsText, enhancementError } from '../../composables/enhancementControls.js'
 import { nrOverlayText as overlayTexts, nrStatusLabel } from '../../composables/nrOverlayMessages.js'
-import { nrOutputLabel, nrOverlayState, nrPipelines } from '../../composables/nrOverlayState.js'
+import { nrOutputLabel, nrOverlayState } from '../../composables/nrOverlayState.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { bitrateChipMarks, bitrateFromProgress, bitrateSliderProgress, bitrateSliderSpan } from 'foundation-ui/settings/index.js'
 import { BITRATE, BITRATE_PRESETS, DEFAULT_BITRATE, formatBitrate, validBitrate, liveSessions, perfSessionOf, budgetUsage, perfStatus, pipelineSegments, formatMs, formatNumber, formatPercent, formatInteger, formatUptime } from '../../composables/liveSession.js'
@@ -176,26 +177,8 @@ async function loadPerf() {
 const nrText = computed(() => enhancementControlsText(locale.value)), nrOverlayText = computed(() => overlayTexts(locale.value))
 // only for an installed and usable DLSS NR: otherwise nothing of it on this page (the install is on 画质增强)
 const nrReady = useDlssNrReady()
-const nr = reactive({ list: [], selected: null, enabled: null, online: true, hasStreams: false })
-const nrError = ref('')
-const nrPipeline = computed(() => nr.list.find((p) => p.id === nr.selected) || null)
-async function selectNr(id) {
-  try { await invoke('nr_overlay_select_session', { id }); nr.selected = id; nrError.value = '' } catch (e) { nrError.value = String(e) }
-}
-let targetRead = false
-async function pollNr() {
-  if (!nrReady.value) return
-  try {
-    if (!targetRead) { targetRead = true; try { const s = await invoke('nr_overlay_settings'); if (s?.target != null) nr.selected = s.target } catch { /* no saved target */ } }
-    const status = await invoke('nr_live_status')
-    nr.enabled = status.nr_enabled
-    nr.hasStreams = status.has_streams === true
-    nr.list = nrPipelines(status.pipelines)
-    nr.online = true
-    if (nr.selected !== null && !nr.list.some((p) => p.id === nr.selected)) nr.selected = null
-    if (nr.selected === null && nr.list.length === 1) await selectNr(nr.list[0].id)
-  } catch { nr.online = false; nr.list = [] }
-}
+const { nr, nrError, selectNr, pollNr, dispose: disposeNr } = useLiveNrSessions(nrReady, invoke)
+const nrPipeline = computed(() => nr.list.find(p => p.id === nr.selected) || null)
 
 const confirmStop = ref(false), stopping = ref(false)
 async function stopAll() {
@@ -213,7 +196,7 @@ async function refresh(manual = false) {
 }
 let timer = null
 onMounted(() => { refresh(); timer = setVisibleInterval(refresh, 2000, { resume: true }) })
-onUnmounted(() => clearVisibleInterval(timer))
+onUnmounted(() => { disposeNr(); clearVisibleInterval(timer) })
 </script>
 
 <style>
