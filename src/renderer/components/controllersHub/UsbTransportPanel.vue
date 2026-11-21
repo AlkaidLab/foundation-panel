@@ -24,12 +24,13 @@
       <template v-if="canReplaceLegacy" #action><MButton size="sm" variant="danger" :loading="replacing" :disabled="transportBusy || attachedDevices.length > 0" @click="replaceLegacy">{{ t.deviceHub.usb.replaceLegacy }}</MButton></template>
     </MNotice>
     <MNotice v-if="status.cleanup_pending_restart" tone="warn">{{ t.deviceHub.usb.restartPending }}</MNotice>
+    <MNotice v-else-if="status.install_pending_restart" tone="warn">{{ t.deviceHub.usb.installRestartPending }}</MNotice>
     <MNotice v-else-if="status.reboot_recommended" tone="warn">{{ t.deviceHub.usb.rebootRequired }}</MNotice>
-    <MGroup v-if="status.detail || status.last_cleanup_error">
+    <MGroup v-if="status.detail || status.last_install_error || status.last_cleanup_error">
       <MItem action icon="description" :title="t.deviceHub.usb.diagnosticDetails" @click="detailOpen = !detailOpen"><template #trail><MIcon :name="detailOpen ? 'keyboard_arrow_up' : 'keyboard_arrow_down'" /></template></MItem>
-      <MItem v-if="detailOpen" plain :title="''"><pre class="m-pre">{{ [status.detail, status.last_cleanup_error ? t.deviceHub.usb.lastCleanupError + ': ' + status.last_cleanup_error : ''].filter(Boolean).join('\n') }}</pre></MItem>
+      <MItem v-if="detailOpen" plain :title="''"><pre class="m-pre">{{ [status.detail, status.last_install_error ? t.deviceHub.usb.lastInstallError + ': ' + status.last_install_error : '', status.last_cleanup_error ? t.deviceHub.usb.lastCleanupError + ': ' + status.last_cleanup_error : ''].filter(Boolean).join('\n') }}</pre></MItem>
     </MGroup>
-    <MGroup v-if="statusLoaded && status.supported && (status.detail || status.last_cleanup_error || status.vhci_residual || (status.installed && !status.ready))">
+    <MGroup v-if="statusLoaded && status.supported && (status.detail || status.last_install_error || status.last_cleanup_error || status.vhci_residual || (status.installed && !status.ready))">
       <MItem action icon="download" :title="t.deviceHub.usb.exportDiagnostics" :disabled="exporting" @click="exportDiagnostics" />
     </MGroup>
     <MGroup v-if="maintenance && !status.externally_managed && statusLoaded && !statusProbeFailed && status.installed && !needsCleanup">
