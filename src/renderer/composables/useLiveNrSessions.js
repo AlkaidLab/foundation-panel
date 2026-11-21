@@ -6,16 +6,27 @@ export function useLiveNrSessions(ready, invoke) {
   const nrError = ref('')
   let pollRevision = 0, selectionRevision = 0, savedTarget, targetRestored = false
 
-  async function selectNr(id, current = () => true) {
+  let pendingTarget = null, selectionWrite = Promise.resolve()
+  function selectNr(id) {
+    if (id === pendingTarget) return selectionWrite
+    pendingTarget = id
     const revision = ++selectionRevision
-    try {
-      await invoke('nr_overlay_select_session', { id })
-      if (revision !== selectionRevision || !current()) return
-      nr.selected = id
-      nrError.value = ''
-    } catch (error) {
-      if (revision === selectionRevision && current()) nrError.value = String(error)
-    }
+    const current = () => revision === selectionRevision && ready.value && nr.online && nr.list.some(p => p.id === id)
+    // Keep native writes in order. A newer poll may still contain the target.
+    selectionWrite = selectionWrite.then(async () => {
+      try {
+        if (!current()) return
+        await invoke('nr_overlay_select_session', { id })
+        if (!current()) return
+        nr.selected = id
+        nrError.value = ''
+      } catch (error) {
+        if (current()) nrError.value = String(error)
+      } finally {
+        if (revision === selectionRevision) pendingTarget = null
+      }
+    })
+    return selectionWrite
   }
 
   async function pollNr() {
@@ -36,7 +47,7 @@ export function useLiveNrSessions(ready, invoke) {
       nr.list = nrPipelines(status.pipelines)
       nr.online = true
       if (!nr.list.some(p => p.id === nr.selected)) nr.selected = null
-      if (nr.selected === null && nr.list.length === 1) await selectNr(nr.list[0].id, current)
+      if (nr.selected === null && nr.list.length === 1) await selectNr(nr.list[0].id)
     } catch {
       if (!current()) return
       nr.online = false
