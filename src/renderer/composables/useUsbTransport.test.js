@@ -69,6 +69,86 @@ test('emitUsbipErrorReport sends only component, code and severity', () => {
   assert.deepEqual(sent, [{ component: 'usbip', code: 'usbip-setup-015.exit-3010', severity: 'error' }])
 })
 
+test('a status response arriving after unmount cannot start automatic maintenance', async (t) => {
+  const originalFetch = usbipStatusChannel.fetch
+  const originals = { cleanupTransport: usbip.cleanupTransport, installTransport: usbip.installTransport, removeStaleNodes: usbip.removeStaleNodes }
+  let calls = 0
+  for (const name of Object.keys(originals)) usbip[name] = async () => { calls += 1; return { success: true, data: {} } }
+  t.after(() => { usbipStatusChannel.fetch = originalFetch; Object.assign(usbip, originals) })
+  const renderer = createRenderer({
+    patchProp() {}, insert() {}, remove() {}, createElement: () => ({}), createText: () => ({}),
+    createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  for (const pending of [
+    { cleanup_resume: true, cleanup_resume_op: 'cleanup', vhci_residual: true },
+    { cleanup_resume: true, cleanup_resume_op: 'stale', vhci_residual: true, residual_kind: 'stale' },
+    { install_resume: true, vhci_residual: false },
+  ]) {
+    let answer
+    usbipStatusChannel.fetch = () => new Promise(resolve => { answer = resolve })
+    const app = renderer.createApp({ setup() { useUsbTransport(); return () => null } })
+    app.mount({})
+    assert.equal(typeof answer, 'function')
+    app.unmount()
+    answer({ success: true, data: { supported: true, externally_managed: false, attached_devices: [], ...pending } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 0)
+  }
+})
+
+test('automatic maintenance queued before unmount does not start afterwards', async (t) => {
+  const originalFetch = usbipStatusChannel.fetch
+  const originalCleanup = usbip.cleanupTransport
+  const originalQueue = globalThis.queueMicrotask
+  const queued = []
+  let calls = 0
+  usbipStatusChannel.fetch = async () => ({ success: true, data: {
+    supported: true, cleanup_resume: true, cleanup_resume_op: 'cleanup', externally_managed: false,
+    vhci_residual: true, attached_devices: [],
+  } })
+  usbip.cleanupTransport = async () => { calls += 1; return { success: true, data: {} } }
+  globalThis.queueMicrotask = callback => queued.push(callback)
+  t.after(() => { usbipStatusChannel.fetch = originalFetch; usbip.cleanupTransport = originalCleanup; globalThis.queueMicrotask = originalQueue })
+  const renderer = createRenderer({
+    patchProp() {}, insert() {}, remove() {}, createElement: () => ({}), createText: () => ({}),
+    createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  let transport
+  const app = renderer.createApp({ setup() { transport = useUsbTransport(); return () => null } })
+  app.mount({})
+  await transport.refreshStatus({ force: true })
+  assert.equal(queued.length, 1)
+  app.unmount()
+  for (const callback of queued) callback()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 0)
+})
+
+test('automatic maintenance waiting for a refresh stops if its component unmounts', async (t) => {
+  const originalFetch = usbipStatusChannel.fetch
+  const originalCleanup = usbip.cleanupTransport
+  const originalQueue = globalThis.queueMicrotask
+  let calls = 0
+  let queued = 0
+  let app
+  usbipStatusChannel.fetch = async () => ({ success: true, data: {
+    supported: true, cleanup_resume: true, cleanup_resume_op: 'cleanup', externally_managed: false,
+    vhci_residual: true, attached_devices: [],
+  } })
+  usbip.cleanupTransport = async () => { calls += 1; return { success: true, data: {} } }
+  globalThis.queueMicrotask = callback => { queued += 1; callback(); app.unmount() }
+  t.after(() => { usbipStatusChannel.fetch = originalFetch; usbip.cleanupTransport = originalCleanup; globalThis.queueMicrotask = originalQueue })
+  const renderer = createRenderer({
+    patchProp() {}, insert() {}, remove() {}, createElement: () => ({}), createText: () => ({}),
+    createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  app = renderer.createApp({ setup() { useUsbTransport(); return () => null } })
+  app.mount({})
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(queued, 1)
+  assert.equal(calls, 0)
+})
+
 test('automatic USB/IP cleanup retries after another driver operation releases the guard', async (t) => {
   const originalFetch = usbipStatusChannel.fetch
   const originalCleanup = usbip.cleanupTransport

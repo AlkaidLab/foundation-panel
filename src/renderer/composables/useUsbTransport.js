@@ -157,6 +157,7 @@ export function useUsbTransport(options = {}) {
     statusLoading.value = true
     try {
       const result = await usbipStatusChannel.fetch({ force })
+      if (disposed) return
       if (result?.success) {
         statusProbeFailed.value = false
         applyStatus(result.data)
@@ -164,11 +165,13 @@ export function useUsbTransport(options = {}) {
         applyProbeFailure(result?.message || '')
       }
     } catch (error) {
+      if (disposed) return
       applyProbeFailure(String(error || ''))
     } finally {
       statusLoaded.value = true
       statusLoading.value = false
     }
+    if (disposed) return
     // Windows restarted since a cleanup waited for it and the leftover is still there: continue the same operation (one prompt for
     // administrator rights). The one chance is spent only when the operation can start now; while another one holds the transport
     // the next refresh asks again.
@@ -177,22 +180,25 @@ export function useUsbTransport(options = {}) {
       resumeStarted = true
       if (!resumeAnnounced) ElMessage.info(t.value.deviceHub.usb.resumeCleanup)
       resumeAnnounced = true
-      queueMicrotask(() => (resumeStale ? removeStale({ auto: true }) : cleanupResidual({ auto: true })))
+      queueMicrotask(() => {
+        if (!disposed) void (resumeStale ? removeStale({ auto: true }) : cleanupResidual({ auto: true }))
+      })
     } else if (status.install_resume && !resumeStarted && !statusProbeFailed.value && !transportBusy.value && !status.externally_managed && !status.vhci_residual) {
       resumeStarted = true
       if (!resumeAnnounced) ElMessage.info(t.value.deviceHub.usb.resumeInstall)
       resumeAnnounced = true
-      queueMicrotask(() => installTransport({ auto: true }))
+      queueMicrotask(() => { if (!disposed) void installTransport({ auto: true }) })
     }
   }
 
   async function refreshStatus(options = {}) {
+    if (disposed) return
     const afterCurrent = options?.afterCurrent === true
     const force = options?.force === true
     const activeRefresh = statusRefreshPromise
     if (activeRefresh) {
       await activeRefresh
-      if (!afterCurrent) return
+      if (disposed || !afterCurrent) return
     }
 
     const nextRefresh = performStatusRefresh({ force })
@@ -207,6 +213,7 @@ export function useUsbTransport(options = {}) {
   const installTransport = sharedOperation.wrap(async (installOptions = {}) => {
     if (transportBusy.value || status.externally_managed) return
     const auto = installOptions?.auto === true
+    if (auto && disposed) return
     installing.value = true
     if (!auto) {
       try {
@@ -220,6 +227,7 @@ export function useUsbTransport(options = {}) {
     // Do not let an in-flight status refresh apply stale data over the result
     // of the operation that is about to run.
     if (statusRefreshPromise) await statusRefreshPromise
+    if (auto && disposed) { installing.value = false; return }
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
     let result
@@ -251,6 +259,7 @@ export function useUsbTransport(options = {}) {
     if (transportBusy.value || status.externally_managed) return
     const removing = !needsCleanup.value
     const auto = options?.auto === true
+    if (auto && disposed) return
     cleaning.value = true
     // The person confirmed this cleanup before the restart; continuing it asks nothing new.
     if (!auto) {
@@ -263,6 +272,7 @@ export function useUsbTransport(options = {}) {
       } catch { cleaning.value = false; return }
     }
     if (statusRefreshPromise) await statusRefreshPromise
+    if (auto && disposed) { cleaning.value = false; return }
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
     let result
@@ -295,8 +305,10 @@ export function useUsbTransport(options = {}) {
   const removeStale = sharedOperation.wrap(async (options = {}) => {
     if (transportBusy.value || !staleResidual.value) return
     const auto = options?.auto === true
+    if (auto && disposed) return
     cleaning.value = true
     if (statusRefreshPromise) await statusRefreshPromise
+    if (auto && disposed) { cleaning.value = false; return }
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
     let result
