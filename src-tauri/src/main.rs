@@ -316,6 +316,7 @@ fn main() {
             proxy_server::wait_for_proxy_ready,
             native_components::native_component_get_status,
             native_components::hdr_enhanced_select_backend,
+            native_components::set_global_nr_enabled,
             native_components::list_native_components,
             native_components::native_component_import,
             native_components::native_component_remove,

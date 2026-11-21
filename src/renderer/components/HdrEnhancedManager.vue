@@ -5,10 +5,14 @@
     <!-- 画质增强: the noise reduction of the stream in progress (switch and strength), the components behind it; the overlay and its keys are in 高级 -->
     <template v-if="!current">
       <MSection :title="dt.sections.quality.nr">
-        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" @changed="pollOnce" @error="error = $event" />
-        <MGroup v-else>
-          <MItem icon="wand_stars" :title="dt.quality.nr" :text="online ? text.noSession : text.disconnected" plain />
+        <MGroup>
+          <MButton v-if="needsNrInstall" icon="download" :disabled="!canInstallNr" @click="install">{{ text.installNr }}</MButton>
+          <MSwitchItem v-else :model-value="globalNr === true" icon="wand_stars" :title="text.liveTitle" :text="text.nrPermissionHint" :disabled="!canSetGlobalNr" @update:model-value="saveGlobalNr" />
         </MGroup>
+        <MFooter v-if="needsNrInstall && hasStreams">{{ nrMessages.inUseNotice }}</MFooter>
+        <MBanner v-if="nrError" tone="error" icon="error">{{ nrError }}</MBanner>
+        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :show-global="false" @changed="pollOnce" @error="error = $event" />
+        <MFooter v-if="nrInstalled && !needsNrInstall">{{ sessionStateText }}</MFooter>
       </MSection>
 
       <MGroup>
@@ -19,7 +23,7 @@
 
       <MExpander v-model:open="advancedOpen" :title="dt.sections.encoders.advanced">
         <MGroup>
-          <MItem action icon="cast_connected" :title="text.session" :value="pipelines.length ? `${text.stream} #${pipelines[0].id}` : text.noSession" @click="open('session')">
+          <MItem action icon="cast_connected" :title="text.session" :value="pipelines.length ? `${text.stream} #${pipelines[0].id}` : sessionStateText" @click="open('session')">
             <template #trail><MChip v-if="pipelines.length" tone="ok" icon="check_circle">{{ text.connected }}</MChip></template>
           </MItem>
         </MGroup>
@@ -45,7 +49,7 @@
     <!-- Current session -->
     <template v-else-if="current === 'session'">
       <MBanner v-if="!online" tone="warn" icon="warning">{{ text.disconnected }}<template #actions><MButton variant="text" size="sm" @click="pollOnce">{{ text.refresh }}</MButton></template></MBanner>
-      <MEmpty v-else-if="!pipelines.length" icon="cast_connected" :title="text.noSession" />
+      <MEmpty v-else-if="!pipelines.length" icon="cast_connected" :title="sessionStateText" />
       <template v-else>
         <MGroup>
           <MChoiceItem v-if="pipelines.length > 1 || !pipeline" icon="cast_connected" :title="text.choose" :model-value="selectedId ?? ''" :options="pipelines.map((p) => ({ value: p.id, label: `${text.stream} #${p.id} · ${nrOutputLabel(p)}` }))" :disabled="saving" :cancel-label="text.cancel" @update:model-value="(v) => selectSession(Number(v))" />
@@ -57,7 +61,7 @@
         </MGroup>
         <MNotice v-if="selectedId && !pipeline" tone="warn">{{ text.expired }}</MNotice>
         <MBanner v-if="pipeline?.dv_profile && pipeline.dv_state !== 'active'" tone="info" icon="info">{{ pipeline.dv_state === 'waiting' ? overlayText.dvWaiting : overlayText.dvFallback }}</MBanner>
-        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" @changed="pollOnce" @error="error = $event" />
+        <NrSessionControls v-if="pipeline && parts.liveControls" :pipeline="pipeline" :online="online" :global-enabled="globalNr" @changed="pollOnce" @error="error = $event" />
         <MButton v-if="pipeline && parts.liveControls" icon="monitor" :disabled="saving" @click="setVisibility(true)">{{ text.open }}</MButton>
       </template>
       <MFooter v-if="parts.liveControls">{{ text.sessionHint }}</MFooter>
@@ -87,13 +91,15 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useEnhancementManager } from '../composables/useEnhancementManager.js'
+import { dlssNrText } from '../composables/dlssNrMessages.js'
 import { dlssNr, rtxHdr } from '../tauri-adapter.js'
 import { listen } from '@tauri-apps/api/event'
 import { MExpander, displayTreeTexts, MIcon, MChip, MPage, MGroup, MSection, MItem, MSwitchItem, MSliderItem, MChoiceItem, MBanner, MNotice, MEmpty, MFooter, MButton, MIconButton, useSubpage } from 'foundation-ui/vue'
 import { displayGamepadShortcut, FIXED_GAMEPAD_SHORTCUTS } from '../composables/controllerButtons.js'
 import NrSessionControls from './NrSessionControls.vue'
 import { noteDlssNrStatus, dlssNrShown } from '../composables/useDlssNrReady.js'
-import { qualityParts } from '../composables/dlssNrReady.js'
+import { nrComponentChanged, qualityParts } from '../composables/dlssNrReady.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import {
   DEFAULT_NR_SHORTCUT,
@@ -123,14 +129,32 @@ const { current, open, back } = useSubpage('quality')
 // the live NR controls (and the overlay that carries them) only for an installed and usable DLSS NR; readComponents reads the status and hands it in, the install flow stays on this page
 const nrReady = dlssNrShown
 const parts = computed(() => qualityParts(nrReady.value))
-// the two runtimes are installed on the component status page (not here): this page only reads whether they are there
-const installed = ref({ nr: null, hdr: null })
-async function readComponents() {
-  for (const [key, api] of [['nr', dlssNr], ['hdr', rtxHdr]]) {
-    try { const result = await api.getStatus(); installed.value[key] = result?.success ? !!result.data?.installed : null; if (key === 'nr' && result?.success) noteDlssNrStatus(result.data) } catch { installed.value[key] = null }
-  }
+const hasStreams = ref(false), switchingNr = ref(false)
+let switchRevision = 0
+const globalNr = ref(null), nrInstalled = ref(null), hdrInstalled = ref(null)
+const nrMessages = computed(() => ({ ...dlssNrText(locale.value), saveSuccess: text.value.saved, permissionSaveFailed: text.value.permissionSaveFailed }))
+const { status: nrStatus, statusKnown: nrKnown, controlsBusy: nrBusy, operationError: nrError, install, refresh: refreshNr } = useEnhancementManager({
+  api: dlssNr, messages: nrMessages, runtimeName: 'nvngx_dlssnr.dll',
+  onStatus(status) { nrInstalled.value = status.installed; noteDlssNrStatus(status) },
+})
+const needsNrInstall = computed(() => nrInstalled.value === false || (nrKnown.value && nrStatus.value.installed && !nrStatus.value.runtime_present))
+const canSetGlobalNr = computed(() => online.value && nrKnown.value && nrInstalled.value === true &&
+  globalNr.value !== null && !switchingNr.value && !nrBusy.value && !nrStatus.value.maintenance &&
+  (globalNr.value || nrStatus.value.state !== 'repair_required'))
+const canInstallNr = computed(() => online.value && !hasStreams.value && nrKnown.value && !nrBusy.value && nrStatus.value.host_supported && nrStatus.value.adapter_present && !nrStatus.value.maintenance && !nrStatus.value.in_use)
+async function saveGlobalNr(enabled) {
+  if (!canSetGlobalNr.value) return
+  switchingNr.value = true
+  ++switchRevision
+  nrError.value = ''
+  try { globalNr.value = await invoke('set_global_nr_enabled', { enabled }) }
+  catch (e) { nrError.value = String(e) }
+  finally { ++switchRevision; switchingNr.value = false }
 }
-const missing = computed(() => [['nr', 'DLSS NR'], ['hdr', 'RTX HDR']].filter(([key]) => installed.value[key] === false).map(([, name]) => name))
+async function readComponents() {
+  try { const result = await rtxHdr.getStatus(); hdrInstalled.value = result?.success ? result.data.installed : null } catch { hdrInstalled.value = null }
+}
+const missing = computed(() => [[nrInstalled.value, 'DLSS NR'], [hdrInstalled.value, 'RTX HDR']].filter(([installed]) => installed === false).map(([, name]) => name))
 const settings = ref({ nrShortcut: '', overlayShortcut: '', nrGamepad: '', overlayGamepad: '', opacity: 62 }),
   registration = ref({})
 const draftOpacity = ref(62),
@@ -146,6 +170,8 @@ const pipelines = ref([]),
 const pipeline = computed(() =>
   pipelines.value.find((p) => p.id === selectedId.value)
 )
+const sessionStateText = computed(() =>
+  overlayText.value.states[nrOverlayState(pipeline.value, online.value, hasStreams.value, pipelines.value.length)])
 const shortcutGroups = computed(() => [
   { label: text.value.visibilityKey, inputs: [
     { key: 'overlayShortcut', registered: 'overlayRegistered' },
@@ -247,9 +273,17 @@ async function pollOnce() {
   if (disposed || polling) return
   polling = true
   try {
+    const revision = switchRevision
     const result = await invoke('nr_live_status')
     if (!disposed) {
+      hasStreams.value = result.has_streams === true
+      if (!switchingNr.value && switchRevision === revision) globalNr.value = result.nr_enabled
+      if (!nrBusy.value && !switchingNr.value && nrComponentChanged(nrKnown.value ? nrStatus.value : null, result)) {
+        await refreshNr(true)
+        if (disposed) return
+      }
       pipelines.value = nrPipelines(result?.pipelines)
+      if (selectedId.value !== null && !pipelines.value.some(p => p.id === selectedId.value)) selectedId.value = null
       online.value = true
       if (
         loaded.value &&
