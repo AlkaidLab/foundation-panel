@@ -66,14 +66,62 @@ jobs:
           python3 scripts/ci/changed-files.py > files.txt
           python3 scripts/ci/classify-changes.py --event "$EVENT" --output "$GITHUB_OUTPUT" < files.txt
 
-  # The renderer is platform independent: build it and run its tests once here, then hand the
-  # dist to the Windows jobs, whose Tauri build script only needs the files (tauri.conf.json
-  # frontendDist). The locked image is restored from the GHA layer cache instead of being
-  # rebuilt from the Dockerfile every run (panel-docker-gha-cache, panel-build-push-action).
-  renderer:
-    name: Renderer tests and dist
+  # Tauri's build script reads a frontend dist during the Rust compile. Build it once on Linux
+  # and hand the files to the Windows jobs. This job stays small so the Rust jobs do not wait
+  # for the development image; the frontend build with the pinned settings data is the check
+  # below, and the release job builds its own production dist.
+  renderer-dist:
+    name: Renderer dist
     needs: changes
     if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+
+      # The npm cache is saved only from main so pull requests cannot evict it through
+      # per-ref entries (panel-github-cache, panel-actions-cache).
+      - name: Restore the npm cache
+        id: npm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: panel-npm-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: panel-npm-v1-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build the renderer
+        run: npm run build:renderer
+
+      - name: Save the npm cache
+        if: github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.npm
+          key: panel-npm-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Upload the renderer dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-renderer-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 3
+
+  # The frontend check with the pinned tools: the locked image is restored from the GHA layer
+  # cache instead of being rebuilt from the Dockerfile every run (panel-docker-gha-cache,
+  # panel-build-push-action). This job does not gate the Windows Rust jobs.
+  renderer-tests:
+    name: Renderer tests (Dev Container)
+    needs: changes
+    if: needs.changes.outputs.renderer == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -94,17 +142,9 @@ jobs:
           cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=panel-dev-image' || '' }}
 
       - name: Build, check and test with the shared entry points
-        env:
-          RENDERER_CHECK: ${{ needs.changes.outputs.renderer }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/panel-cache/tmp"
-          if [ "$RENDERER_CHECK" = "true" ]; then
-            steps='just setup && just doctor && just build && just test'
-          else
-            # A Rust change still needs the dist; the renderer tests themselves are unaffected.
-            steps='just setup && just doctor && just build'
-          fi
           docker run --platform=linux/amd64 --rm --init \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/panel" \
             --mount "type=bind,source=$RUNNER_TEMP/panel-cache,target=/workspaces/.cache" \
@@ -112,15 +152,7 @@ jobs:
             --env CARGO_BUILD_JOBS=2 \
             --env CARGO_HOME=/workspaces/.cache/cargo \
             foundation-panel-dev:ci \
-            sh -eu -c "$steps"
-
-      - name: Upload the renderer dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: panel-renderer-dist
-          path: dist
-          if-no-files-found: error
-          retention-days: 3
+            sh -eu -c 'just setup && just doctor && just build && just test'
 
   # The test binary is built once in the ci-test profile and both the whole suite and the USB-IP
   # fixtures run from it. src-tauri's release profile (fat LTO, one codegen unit) is for the
@@ -129,7 +161,7 @@ jobs:
   # its 10 GB scope and branch rules are panel-github-cache.
   windows-backend:
     name: Windows Rust tests
-    needs: [changes, renderer]
+    needs: [changes, renderer-dist]
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     timeout-minutes: 35
@@ -201,7 +233,7 @@ jobs:
   # parallel with the tests, instead of running a second full compile on the test runner.
   windows-config:
     name: Windows configuration checks
-    needs: [changes, renderer]
+    needs: [changes, renderer-dist]
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
@@ -279,7 +311,7 @@ jobs:
         run: cargo test --locked --profile ci-test --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
 
       - name: Check the debug plugin configuration compiles
-        run: cargo check --locked --bins --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
+        run: cargo check --locked --workspace --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
 
   # Tags and a manual run that asks for a release keep the shipped configuration: fat LTO and
   # one codegen unit in src-tauri's release profile. It runs beside the tests, so the critical
@@ -490,7 +522,8 @@ jobs:
     name: ci-gate
     needs:
       - changes
-      - renderer
+      - renderer-dist
+      - renderer-tests
       - windows-backend
       - windows-config
       - windows-native-plugins
