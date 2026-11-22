@@ -53,7 +53,7 @@ const messages = {
     replaceFile: '更换组件文件',
     installSetup: '安装并配置',
     allowUse: '允许串流使用 ',
-    nrPermissionHint: '开启后，当前支持 NR 的串流会从下一帧开始初始化，无需重连；关闭后当前串流会从下一帧停止处理，后续串流也会沿用此设置。',
+    nrPermissionHint: '控制当前和后续串流的 DLSS NR。',
     installNr: '安装组件',
     hdrPermissionHint:
       '允许应用使用 SDR 转 HDR 功能；是否启用由应用配置决定，下次连接时生效。',
@@ -142,7 +142,7 @@ const messages = {
     replaceFile: 'Replace component file',
     installSetup: 'Install & set up',
     allowUse: 'Allow streams to use ',
-    nrPermissionHint: 'A supported active stream starts NR on its next frame without reconnecting. Turning it off stops processing on the next frame, and future streams follow the saved setting.',
+    nrPermissionHint: 'Control DLSS NR for current and future streams.',
     installNr: 'Install component',
     hdrPermissionHint:
       'Allows apps to use SDR-to-HDR conversion. Per-app settings take effect on the next connection.',
