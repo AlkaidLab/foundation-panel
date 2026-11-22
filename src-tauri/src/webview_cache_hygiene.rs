@@ -10,7 +10,8 @@
 //! is locked. A marker beside EBWebView records the panel executable that produced the cache; a
 //! different executable means "clear". The marker is only rewritten when every present cache
 //! directory was removed, so a leftover browser process that locks a directory defers the marker
-//! and the sweep retries on the next start.
+//! and the sweep retries on the next start. The previous marker is dropped as soon as the epoch
+//! differs, so a rollback to the old executable cannot skip a cache that a failed sweep left.
 
 use log::{info, warn};
 use std::fs;
@@ -51,7 +52,8 @@ pub fn webview_user_data_root(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 /// Clears the HTTP/code caches under "<root>/EBWebView/Default" when the epoch differs from the
-/// marker beside EBWebView.
+/// marker beside EBWebView. The old marker is dropped up front, so it can only survive this call
+/// (and with it the previous epoch) when a failure was recorded.
 pub fn sweep_stale_http_cache(root: &Path, epoch: &str) -> SweepResult {
     let marker = root.join(MARKER_FILE);
     if fs::read_to_string(&marker).is_ok_and(|written| written == epoch) {
@@ -60,13 +62,16 @@ pub fn sweep_stale_http_cache(root: &Path, epoch: &str) -> SweepResult {
     let profile = root.join("EBWebView").join("Default");
     let mut cleared = Vec::new();
     let mut failures = Vec::new();
+    if let Err(error) = fs::remove_file(&marker) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            failures.push(format!("{}: {error}", marker.display()));
+        }
+    }
     for name in CACHE_SUBDIRS {
         let dir = profile.join(name);
-        if !dir.is_dir() {
-            continue;
-        }
         match fs::remove_dir_all(&dir) {
             Ok(()) => cleared.push(name.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => failures.push(format!("{name}: {error}")),
         }
     }
@@ -161,6 +166,24 @@ mod tests {
         let holder = fs::OpenOptions::new().create(true).write(true).share_mode(0).open(&stuck).expect("open without sharing");
         let result = sweep_stale_http_cache(&root, "epoch-a");
         assert!(result.failures.iter().any(|failure| failure.starts_with("Cache:")));
+        assert_eq!(marker_of(&root), None);
+        drop(holder);
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_sweep_deletes_the_previous_marker_so_a_rollback_retries() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().expect("tempdir").keep();
+        fs::write(root.join(MARKER_FILE), "epoch-a").expect("marker");
+        let dir = root.join("EBWebView").join("Default").join("Cache");
+        fs::create_dir_all(&dir).expect("cache dir");
+        let stuck = dir.join("locked-file");
+        let holder = fs::OpenOptions::new().create(true).write(true).share_mode(0).open(&stuck).expect("open without sharing");
+        let result = sweep_stale_http_cache(&root, "epoch-b");
+        assert!(result.failures.iter().any(|failure| failure.starts_with("Cache:")));
+        // the previous epoch died with its marker: sweeping "epoch-a" again must not skip
         assert_eq!(marker_of(&root), None);
         drop(holder);
         fs::remove_dir_all(&root).expect("cleanup");
