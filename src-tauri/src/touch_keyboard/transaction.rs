@@ -114,8 +114,8 @@ fn notification_target(enabled: bool) -> u32 {
 /// Maps the durable registry preference to the runtime notification value.
 /// An absent registry value is the untouched Windows default ("Never"); a
 /// value outside 0..=2 cannot be mapped and leaves the runtime unchanged.
-fn derived_notification(entry: &Entry) -> Option<u32> {
-    let Some(value) = entry.original.as_ref() else {
+fn derived_notification(value: Option<&RawValue>) -> Option<u32> {
+    let Some(value) = value else {
         return Some(0);
     };
     let raw = match (value.kind, value.bytes.as_slice().try_into()) {
@@ -477,7 +477,9 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
                     // the runtime value from the durable registry preference.
                     let target = notification_target(parsed.snapshot.enabled);
                     if current == Some(target) {
-                        match derived_notification(&parsed.snapshot.values[0]) {
+                        let current_registry_value =
+                            self.registry.read(&parsed.snapshot.values[0].name)?;
+                        match derived_notification(current_registry_value.as_ref()) {
                             Some(derived) => self.publish_verified(session_id, derived)?,
                             None => log::warn!("cannot derive the touch keyboard notification; leaving it unchanged"),
                         }
