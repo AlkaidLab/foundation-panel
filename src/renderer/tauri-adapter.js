@@ -92,6 +92,7 @@ export const vdd = {
 // ─── Virtual Mouse ───────────────────────────────────────
 
 export const vmouse = {
+  getSupport: () => wrapResult('get_vmouse_support'),
   getStatus: () => wrapResult('get_vmouse_status'),
   install: () => wrapResult('install_vmouse_driver'),
   uninstall: () => wrapResult('uninstall_vmouse_driver'),

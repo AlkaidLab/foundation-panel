@@ -335,6 +335,7 @@ fn main() {
             utils::restart_as_admin,
             utils::is_running_as_admin,
             vdd::uninstall_vdd_driver,
+            vmouse::get_vmouse_support,
             vmouse::get_vmouse_status,
             vmouse::install_vmouse_driver,
             vmouse::uninstall_vmouse_driver,
