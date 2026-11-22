@@ -114,6 +114,7 @@ pub(crate) fn allows_command(command: &str) -> bool {
             | "get_tray_locale"
             | "get_vdd_status"
             | "get_vigem_status"
+            | "get_vmouse_support"
             | "get_vmouse_status"
             | "launch_splash_frame"
             | "launch_splash_painted"
