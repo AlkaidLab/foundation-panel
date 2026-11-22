@@ -358,6 +358,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
       - name: Setup with the contributor entry point
         run: just setup
+      - name: Build frontend assets for Tauri tests
+        run: npm run build:renderer
       - name: USB-IP ownership registry and layout fixtures (Debug)
         shell: powershell
         env:
@@ -410,6 +412,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
       - name: Setup with the contributor entry point
         run: just setup
+      - name: Build frontend assets for Tauri tests
+        run: npm run build:renderer
       - name: Inject development version
         shell: bash
         run: |
