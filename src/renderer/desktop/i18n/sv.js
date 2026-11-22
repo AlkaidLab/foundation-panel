@@ -270,6 +270,7 @@ export const sv = {
     textContextEnabledDesc: "Upptäck fokuserade redigerbara kontroller under strömning för att stödja skärmtangentbordet och positioneringen. Inaktivera denna valfria observerare om den påverkar systemets prestanda. Vanlig fjärrtangentbordsinmatning är oförändrad.",
     clipboardSyncEnabled: "Synkronisering av urklipp",
     clipboardSyncEnabledDesc: "Synkroniserar Windows urklipp med strömningsklienten. Stäng av detta om det krockar med en annan urklippshanterare, till exempel WeChat Input Method.",
+    saveError: "Det gick inte att spara inställningarna",
     logLevel: "Loggnivå",
     logLevelDesc: "Ställ in loggningsgraden",
     logLevels: {

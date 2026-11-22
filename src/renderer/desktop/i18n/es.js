@@ -270,6 +270,7 @@ export const es = {
     textContextEnabledDesc: "Detecte controles editables enfocados durante la transmisión para admitir el teclado en pantalla y el posicionamiento del cursor. Deshabilite este observador opcional si afecta el rendimiento del sistema. La entrada ordinaria del teclado remoto no se modifica.",
     clipboardSyncEnabled: "Sincronización del portapapeles",
     clipboardSyncEnabledDesc: "Sincroniza el portapapeles de Windows con el cliente de transmisión. Desactívala si entra en conflicto con otro gestor del portapapeles, como el método de entrada de WeChat.",
+    saveError: "No se pudo guardar la configuración",
     logLevel: "Nivel de registro",
     logLevelDesc: "Establecer la detalle del registro",
     logLevels: {

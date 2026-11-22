@@ -270,6 +270,7 @@ export const de = {
     textContextEnabledDesc: "Erkennen Sie fokussierte bearbeitbare Steuerelemente während des Streamings, um die Positionierung der Bildschirmtastatur und der Einfügemarke zu unterstützen. Deaktivieren Sie diesen optionalen Beobachter, wenn er die Systemleistung beeinträchtigt. Die normale Remote-Tastatureingabe bleibt unverändert.",
     clipboardSyncEnabled: "Synchronisierung der Zwischenablage",
     clipboardSyncEnabledDesc: "Synchronisiert die Windows-Zwischenablage mit dem Streaming-Client. Deaktivieren Sie diese Option, wenn sie mit einem anderen Zwischenablage-Manager wie der WeChat-Eingabemethode in Konflikt steht.",
+    saveError: "Einstellungen konnten nicht gespeichert werden",
     logLevel: "Protokollebene",
     logLevelDesc: "Legen Sie die Ausführlichkeit der Protokollierung fest",
     logLevels: {

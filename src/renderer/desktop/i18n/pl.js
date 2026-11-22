@@ -270,6 +270,7 @@ export const pl = {
     textContextEnabledDesc: "Podczas przesyłania strumieniowego wykrywaj edytowalne elementy sterujące, aby obsługiwać klawiaturę ekranową i pozycjonowanie kursora. Wyłącz tego opcjonalnego obserwatora, jeśli wpływa on na wydajność systemu. Zwykłe wprowadzanie z klawiatury zdalnej pozostaje niezmienione.",
     clipboardSyncEnabled: "Synchronizacja schowka",
     clipboardSyncEnabledDesc: "Synchronizuje schowek systemu Windows z klientem przesyłania strumieniowego. Wyłącz ją, jeśli koliduje z innym menedżerem schowka, na przykład metodą wprowadzania WeChat.",
+    saveError: "Nie udało się zapisać ustawień",
     logLevel: "Poziom dziennika",
     logLevelDesc: "Ustaw szczegółowość rejestrowania",
     logLevels: {

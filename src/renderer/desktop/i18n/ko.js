@@ -270,6 +270,7 @@ export const ko = {
     textContextEnabledDesc: "화면 키보드 및 캐럿 위치 지정을 지원하기 위해 스트리밍 중에 집중된 편집 가능한 컨트롤을 감지합니다. 시스템 성능에 영향을 미치는 경우 이 선택적 관찰자를 비활성화합니다. 일반 원격 키보드 입력은 변경되지 않습니다.",
     clipboardSyncEnabled: "클립보드 동기화",
     clipboardSyncEnabledDesc: "Windows 클립보드를 스트리밍 클라이언트와 동기화합니다. WeChat 입력기와 같은 다른 클립보드 관리자와 충돌하면 끄세요.",
+    saveError: "설정을 저장하지 못했습니다.",
     logLevel: "로그 수준",
     logLevelDesc: "로깅의 자세한 정도 설정",
     logLevels: {

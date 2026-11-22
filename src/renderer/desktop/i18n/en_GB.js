@@ -265,6 +265,7 @@ export const en_GB = {
     "textContextEnabledDesc": "Detect focused editable controls during streaming to support the on-screen keyboard and caret positioning. Disable this optional observer if it affects system performance. Ordinary remote keyboard input is unchanged.",
     "clipboardSyncEnabled": "Clipboard sync",
     "clipboardSyncEnabledDesc": "Sync the Windows clipboard with the streaming client. Turn this off if it conflicts with another clipboard manager, such as WeChat Input Method.",
+    "saveError": "Failed to save settings",
     "logLevel": "Log Level",
     "logLevelDesc": "Set the verbosity of logging",
     "logLevels": {

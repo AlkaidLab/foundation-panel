@@ -270,6 +270,7 @@ export const fr = {
     textContextEnabledDesc: "Détectez les commandes modifiables ciblées pendant la diffusion pour prendre en charge le positionnement du clavier et du curseur à l'écran. Désactivez cet observateur facultatif s’il affecte les performances du système. La saisie au clavier à distance ordinaire est inchangée.",
     clipboardSyncEnabled: "Synchronisation du presse-papiers",
     clipboardSyncEnabledDesc: "Synchronise le presse-papiers Windows avec le client de diffusion. Désactivez cette option si elle entre en conflit avec un autre gestionnaire de presse-papiers, comme la méthode de saisie WeChat.",
+    saveError: "Échec de l'enregistrement des paramètres",
     logLevel: "Niveau de journalisation",
     logLevelDesc: "Définir la verbosité de la journalisation",
     logLevels: {

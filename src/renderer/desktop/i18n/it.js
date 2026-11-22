@@ -270,6 +270,7 @@ export const it = {
     textContextEnabledDesc: "Rileva controlli modificabili mirati durante lo streaming per supportare la tastiera su schermo e il posizionamento del cursore. Disabilitare questo osservatore opzionale se influisce sulle prestazioni del sistema. Il normale input da tastiera remota è invariato.",
     clipboardSyncEnabled: "Sincronizzazione degli appunti",
     clipboardSyncEnabledDesc: "Sincronizza gli appunti di Windows con il client di streaming. Disattivala se entra in conflitto con un altro gestore degli appunti, ad esempio il metodo di input WeChat.",
+    saveError: "Impossibile salvare le impostazioni",
     logLevel: "Livello di registro",
     logLevelDesc: "Imposta la verbosità della registrazione",
     logLevels: {

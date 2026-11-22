@@ -270,6 +270,7 @@ export const pt = {
     textContextEnabledDesc: "Detecte controles editáveis focados durante a transmissão para oferecer suporte ao teclado na tela e ao posicionamento do cursor. Desative este observador opcional se ele afetar o desempenho do sistema. A entrada normal do teclado remoto permanece inalterada.",
     clipboardSyncEnabled: "Sincronização da área de transferência",
     clipboardSyncEnabledDesc: "Sincroniza a área de transferência do Windows com o cliente de transmissão. Desative se houver conflito com outro gestor da área de transferência, como o método de introdução do WeChat.",
+    saveError: "Falha ao salvar as configurações",
     logLevel: "Nível de registro",
     logLevelDesc: "Definir o detalhamento do registro",
     logLevels: {

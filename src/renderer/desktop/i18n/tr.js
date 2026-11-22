@@ -270,6 +270,7 @@ export const tr = {
     textContextEnabledDesc: "Ekran klavyesini ve düzeltme işareti konumlandırmasını desteklemek için akış sırasında odaklanmış düzenlenebilir kontrolleri algılayın. Sistem performansını etkiliyorsa bu isteğe bağlı gözlemciyi devre dışı bırakın. Sıradan uzaktan klavye girişi değişmedi.",
     clipboardSyncEnabled: "Pano senkronizasyonu",
     clipboardSyncEnabledDesc: "Windows panosunu akış istemcisiyle senkronize eder. WeChat Giriş Yöntemi gibi başka bir pano yöneticisiyle çakışıyorsa bunu kapatın.",
+    saveError: "Ayarlar kaydedilemedi",
     logLevel: "Günlük Düzeyi",
     logLevelDesc: "Günlüğe kaydetmenin ayrıntı düzeyini ayarlama",
     logLevels: {

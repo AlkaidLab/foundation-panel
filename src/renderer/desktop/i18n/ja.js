@@ -270,6 +270,7 @@ export const ja = {
     textContextEnabledDesc: "ストリーミング中にフォーカスされた編集可能なコントロールを検出して、画面上のキーボードとキャレットの位置をサポートします。システムのパフォーマンスに影響を与える場合は、このオプションのオブザーバーを無効にします。通常のリモート キーボード入力は変更されません。",
     clipboardSyncEnabled: "クリップボード同期",
     clipboardSyncEnabledDesc: "Windows のクリップボードをストリーミング クライアントと同期します。WeChat 入力方式など、別のクリップボード管理ツールと競合する場合はオフにしてください。",
+    saveError: "設定の保存に失敗しました",
     logLevel: "ログレベル",
     logLevelDesc: "ロギングの詳細度を設定する",
     logLevels: {
