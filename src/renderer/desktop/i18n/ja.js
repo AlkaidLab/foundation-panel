@@ -268,6 +268,9 @@ export const ja = {
     devModeDesc: "デバッグ情報と開発者ツールを表示する",
     textContextEnabled: "Windows テキスト フォーカスとオンスクリーン キーボード アシスタンス",
     textContextEnabledDesc: "ストリーミング中にフォーカスされた編集可能なコントロールを検出して、画面上のキーボードとキャレットの位置をサポートします。システムのパフォーマンスに影響を与える場合は、このオプションのオブザーバーを無効にします。通常のリモート キーボード入力は変更されません。",
+    clipboardSyncEnabled: "クリップボード同期",
+    clipboardSyncEnabledDesc: "Windows のクリップボードをストリーミング クライアントと同期します。WeChat 入力方式など、別のクリップボード管理ツールと競合する場合はオフにしてください。",
+    saveError: "設定の保存に失敗しました",
     logLevel: "ログレベル",
     logLevelDesc: "ロギングの詳細度を設定する",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const ja = {
     syncFeatures: "同期機能",
     connected: "接続済み",
     notConnected: "接続されていません",
+    off: "オフ",
     viewStatus: "ステータスの表示",
     maintenance: "メンテナンス",
     coverCache: "カバーと一時ファイル",
@@ -2097,7 +2101,14 @@ export const ja = {
     serviceDisabled: "クリップボード同期はホスト設定によって強制的に無効になります (clipboard_sync = false)",
     connecting: "クリップボード同期は Sunshine サービスに接続しています",
     disconnected: "クリップボードの同期が切断され、バックグラウンドで再試行されています",
-    inactive: "クリップボード同期がアクティブではありません"
+    inactive: "クリップボード同期がアクティブではありません",
+    disabledByUser: "クリップボード同期はパネル設定で無効です",
+    diag: {
+      localSetting: "パネル設定",
+      localOn: "オン",
+      localOff: "オフ",
+      localUnknown: "読み取れません",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Foundation Virtual Display ドライバーをアンインストールしてもよろしいですか?これには管理者権限が必要です。",

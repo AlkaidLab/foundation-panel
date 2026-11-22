@@ -36,9 +36,12 @@
         <MGroup>
           <MItem icon="content_paste" :title="t.sidebar.clipboardSync">
             <template #trail>
-              <MChip :tone="clipboardSyncEnabled ? 'ok' : clipboardSyncState === 'degraded' ? 'warn' : 'neutral'" :icon="clipboardSyncEnabled ? 'check_circle' : clipboardSyncState === 'degraded' ? 'warning' : ''">{{ clipboardSyncEnabled ? t.sidebar.connected : clipboardSyncState === 'degraded' ? t.sidebar.degraded : t.sidebar.notConnected }}</MChip>
+              <MChip :tone="clipboardSyncWorking ? 'ok' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warn' : 'neutral'" :icon="clipboardSyncWorking ? 'check_circle' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warning' : ''">{{ clipboardSyncWorking ? t.sidebar.connected : clipboardSyncDisabled ? t.sidebar.off : clipboardSyncState === 'off' ? t.sidebar.off : clipboardSyncState === 'degraded' ? t.sidebar.degraded : t.sidebar.notConnected }}</MChip>
               <MButton variant="outlined" size="sm" @click="actions.showClipboardSyncStatus">{{ t.sidebar.viewStatus }}</MButton>
             </template>
+          </MItem>
+          <MItem icon="content_paste" :title="t.settings.clipboardSyncEnabled" :text="t.settings.clipboardSyncEnabledDesc">
+            <template #trail><MSwitch :model-value="Boolean(desktopSettings.clipboardSyncEnabled)" :label="t.settings.clipboardSyncEnabled" :disabled="clipboardSyncSettingBusy" @update:model-value="setClipboardSyncSetting" /></template>
           </MItem>
         </MGroup>
       </MSection>
@@ -88,7 +91,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, useNotify, aboutTexts, coachTexts, guideTexts, homeTexts, remoteTexts, useGuideCard, doctorTexts, MFeedbackRow } from 'foundation-ui/vue'
+import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, MSwitch, useNotify, aboutTexts, coachTexts, guideTexts, homeTexts, remoteTexts, useGuideCard, doctorTexts, MFeedbackRow } from 'foundation-ui/vue'
 import { SPONSORS } from '../config/sponsors.js'
 import ShortcutsSheet from './m3e/ShortcutsSheet.vue'
 import { usePanelPart } from '../composables/panelParts.js'
@@ -99,6 +102,7 @@ import PanelOptions from './m3e/PanelOptions.vue'
 import { ROUTES } from '../composables/useRouter.js'
 import { useUpdateCheckTime } from '../composables/useUpdateCheckTime.js'
 import { useUpdateSource } from '../composables/useUpdateSource.js'
+import { desktopSettings, saveDesktopSettings } from '../desktop/composables/useDesktopSettings.js'
 import { MIRRORCHYAN_CDK_URL, UPDATE_SOURCES, cdkView, updateSourceTexts } from 'foundation-ui/update'
 const props = defineProps({
   page: { type: String, required: true },
@@ -120,6 +124,20 @@ const props = defineProps({
 const emit = defineEmits(['theme-change', 'locale-change', 'channel-change', 'webui-navigate', 'open-guide', 'open-remote', 'open-about', 'open-doctor'])
 const { t } = useI18n()
 const notify = useNotify()
+const clipboardSyncWorking = computed(() => Boolean(desktopSettings.value.clipboardSyncEnabled) && props.clipboardSyncEnabled)
+const clipboardSyncDisabled = computed(() => desktopSettings.value.clipboardSyncEnabled === false)
+const clipboardSyncSettingBusy = ref(false)
+const setClipboardSyncSetting = async (enabled) => {
+  if (clipboardSyncSettingBusy.value) return
+  clipboardSyncSettingBusy.value = true
+  try {
+    await saveDesktopSettings({ ...desktopSettings.value, clipboardSyncEnabled: Boolean(enabled) })
+  } catch {
+    notify.snack(t.value.settings.saveError)
+  } finally {
+    clipboardSyncSettingBusy.value = false
+  }
+}
 const openDesktop = () => openBigScreenWithNotice((m) => notify.snack(m), t.value.sidebar.openBigScreenFailed)
 // The guided first run can be opened again from here; its texts come with the package (zh and en)
 const guide = computed(() => guideTexts(props.locale))

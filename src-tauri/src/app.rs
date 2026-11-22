@@ -81,7 +81,9 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     update::init_update_preferences(&app_handle)?;
     if !crate::test_isolation::active() {
         crate::install_integrity::start(app_handle.clone());
-        crate::clipboard::auto_start();
+        if desktop_settings.clipboard_sync_enabled {
+            crate::clipboard::auto_start();
+        }
         #[cfg(target_os = "windows")]
         crate::text_context::start(desktop_settings.text_context_enabled);
     }

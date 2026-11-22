@@ -268,6 +268,9 @@ export const ko = {
     devModeDesc: "디버그 정보 및 개발자 도구 표시",
     textContextEnabled: "Windows 텍스트 포커스 및 화면 키보드 지원",
     textContextEnabledDesc: "화면 키보드 및 캐럿 위치 지정을 지원하기 위해 스트리밍 중에 집중된 편집 가능한 컨트롤을 감지합니다. 시스템 성능에 영향을 미치는 경우 이 선택적 관찰자를 비활성화합니다. 일반 원격 키보드 입력은 변경되지 않습니다.",
+    clipboardSyncEnabled: "클립보드 동기화",
+    clipboardSyncEnabledDesc: "Windows 클립보드를 스트리밍 클라이언트와 동기화합니다. WeChat 입력기와 같은 다른 클립보드 관리자와 충돌하면 끄세요.",
+    saveError: "설정을 저장하지 못했습니다.",
     logLevel: "로그 수준",
     logLevelDesc: "로깅의 자세한 정도 설정",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const ko = {
     syncFeatures: "동기화 기능",
     connected: "연결됨",
     notConnected: "연결되지 않음",
+    off: "꺼짐",
     viewStatus: "상태 보기",
     maintenance: "유지보수",
     coverCache: "표지 및 임시 파일",
@@ -2096,7 +2100,14 @@ export const ko = {
     serviceDisabled: "클립보드 동기화가 호스트 구성에 의해 강제로 비활성화되었습니다(clipboard_sync = false).",
     connecting: "클립보드 동기화가 Sunshine 서비스에 연결 중입니다.",
     disconnected: "클립보드 동기화가 연결 해제되었으며 백그라운드에서 다시 시도 중입니다.",
-    inactive: "클립보드 동기화가 활성화되지 않았습니다."
+    inactive: "클립보드 동기화가 활성화되지 않았습니다.",
+    disabledByUser: "클립보드 동기화가 패널 설정에서 꺼져 있습니다",
+    diag: {
+      localSetting: "패널 설정",
+      localOn: "켜짐",
+      localOff: "꺼짐",
+      localUnknown: "읽을 수 없음",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Foundation Virtual Display 드라이버를 제거하시겠습니까? 이를 위해서는 관리자 권한이 필요합니다.",

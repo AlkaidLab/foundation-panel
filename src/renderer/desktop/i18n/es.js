@@ -268,6 +268,9 @@ export const es = {
     devModeDesc: "Mostrar información de depuración y herramientas de desarrollador.",
     textContextEnabled: "Windows enfoque de texto y asistencia de teclado en pantalla",
     textContextEnabledDesc: "Detecte controles editables enfocados durante la transmisión para admitir el teclado en pantalla y el posicionamiento del cursor. Deshabilite este observador opcional si afecta el rendimiento del sistema. La entrada ordinaria del teclado remoto no se modifica.",
+    clipboardSyncEnabled: "Sincronización del portapapeles",
+    clipboardSyncEnabledDesc: "Sincroniza el portapapeles de Windows con el cliente de transmisión. Desactívala si entra en conflicto con otro gestor del portapapeles, como el método de entrada de WeChat.",
+    saveError: "No se pudo guardar la configuración",
     logLevel: "Nivel de registro",
     logLevelDesc: "Establecer la detalle del registro",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const es = {
     syncFeatures: "Funciones de sincronización",
     connected: "Conectado",
     notConnected: "No conectado",
+    off: "Desactivado",
     viewStatus: "Ver estado",
     maintenance: "Mantenimiento",
     coverCache: "Portadas y archivos temporales",
@@ -2096,7 +2100,14 @@ export const es = {
     serviceDisabled: "La sincronización del portapapeles está deshabilitada a la fuerza por la configuración del host (clipboard_sync = false)",
     connecting: "La sincronización del portapapeles se está conectando al servicio Sunshine",
     disconnected: "La sincronización del portapapeles está desconectada y se vuelve a intentar en segundo plano.",
-    inactive: "La sincronización del portapapeles no está activa"
+    inactive: "La sincronización del portapapeles no está activa",
+    disabledByUser: "La sincronización del portapapeles está desactivada en la configuración del panel",
+    diag: {
+      localSetting: "Configuración del panel",
+      localOn: "Activada",
+      localOff: "Desactivada",
+      localUnknown: "No se pudo leer",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "¿Está seguro de que desea desinstalar el controlador Foundation Virtual Display? Esto requiere privilegios de administrador.",

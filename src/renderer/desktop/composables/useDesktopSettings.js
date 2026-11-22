@@ -14,6 +14,7 @@ export const defaultDesktopSettings = {
   devMode: false,
   logLevel: 'info',
   textContextEnabled: true,
+  clipboardSyncEnabled: true,
   // a change of the monitor's scale gives the window its size in DIPs back (src-tauri windows/lifecycle/display.rs); no switch on a page yet: set in the settings file
   keepWindowSizeOnDpiChange: false,
 }

@@ -268,6 +268,9 @@ export const cs = {
     devModeDesc: "Zobrazit informace o ladění a vývojářské nástroje",
     textContextEnabled: "Windows zaměření textu a pomoc s klávesnicí na obrazovce",
     textContextEnabledDesc: "Detekce zaměřených upravitelných ovládacích prvků během streamování pro podporu klávesnice na obrazovce a umístění stříšky. Deaktivujte tento volitelný pozorovatel, pokud ovlivňuje výkon systému. Běžný dálkový vstup z klávesnice se nezmění.",
+    clipboardSyncEnabled: "Synchronizace schránky",
+    clipboardSyncEnabledDesc: "Synchronizuje schránku Windows s klientem streamování. Vypněte ji, pokud koliduje s jiným správcem schránky, například se vstupní metodou WeChat.",
+    saveError: "Uložení nastavení se nezdařilo",
     logLevel: "Úroveň protokolu",
     logLevelDesc: "Nastavte podrobnost protokolování",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const cs = {
     syncFeatures: "Funkce synchronizace",
     connected: "Připojeno",
     notConnected: "Nepřipojeno",
+    off: "Vypnuto",
     viewStatus: "Zobrazit stav",
     maintenance: "Údržba",
     coverCache: "Obaly a dočasné soubory",
@@ -2096,7 +2100,14 @@ export const cs = {
     serviceDisabled: "Synchronizace schránky je vynuceně vypnuta konfigurací hostitele (clipboard_sync = false)",
     connecting: "Synchronizace schránky se připojuje ke službě Sunshine",
     disconnected: "Synchronizace schránky je odpojená a na pozadí se to zkouší znovu",
-    inactive: "Synchronizace schránky není aktivní"
+    inactive: "Synchronizace schránky není aktivní",
+    disabledByUser: "Synchronizace schránky je vypnutá v nastavení panelu",
+    diag: {
+      localSetting: "Nastavení panelu",
+      localOn: "Zapnuto",
+      localOff: "Vypnuto",
+      localUnknown: "Nelze načíst",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Opravdu chcete odinstalovat ovladač Foundation Virtual Display? To vyžaduje oprávnění správce.",

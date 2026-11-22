@@ -268,6 +268,9 @@ export const fr = {
     devModeDesc: "Afficher les informations de débogage et les outils de développement",
     textContextEnabled: "Windows mise au point du texte et assistance au clavier à l'écran",
     textContextEnabledDesc: "Détectez les commandes modifiables ciblées pendant la diffusion pour prendre en charge le positionnement du clavier et du curseur à l'écran. Désactivez cet observateur facultatif s’il affecte les performances du système. La saisie au clavier à distance ordinaire est inchangée.",
+    clipboardSyncEnabled: "Synchronisation du presse-papiers",
+    clipboardSyncEnabledDesc: "Synchronise le presse-papiers Windows avec le client de diffusion. Désactivez cette option si elle entre en conflit avec un autre gestionnaire de presse-papiers, comme la méthode de saisie WeChat.",
+    saveError: "Échec de l'enregistrement des paramètres",
     logLevel: "Niveau de journalisation",
     logLevelDesc: "Définir la verbosité de la journalisation",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const fr = {
     syncFeatures: "Fonctionnalités de synchronisation",
     connected: "Connecté",
     notConnected: "Non connecté",
+    off: "Désactivé",
     viewStatus: "Afficher l'état",
     maintenance: "Entretien",
     coverCache: "Couvertures et fichiers temporaires",
@@ -2096,7 +2100,14 @@ export const fr = {
     serviceDisabled: "La synchronisation du presse-papiers est désactivée de force par la configuration de l'hôte (clipboard_sync = false)",
     connecting: "La synchronisation du Presse-papiers se connecte au service Sunshine",
     disconnected: "La synchronisation du Presse-papiers est déconnectée et nouvelle tentative en arrière-plan",
-    inactive: "La synchronisation du presse-papiers n'est pas active"
+    inactive: "La synchronisation du presse-papiers n'est pas active",
+    disabledByUser: "La synchronisation du presse-papiers est désactivée dans les paramètres du panneau",
+    diag: {
+      localSetting: "Paramètre du panneau",
+      localOn: "Activée",
+      localOff: "Désactivée",
+      localUnknown: "Impossible à lire",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Êtes-vous sûr de vouloir désinstaller le pilote Foundation Virtual Display ? Cela nécessite des privilèges d'administrateur.",

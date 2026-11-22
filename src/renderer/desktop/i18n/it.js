@@ -268,6 +268,9 @@ export const it = {
     devModeDesc: "Mostra informazioni di debug e strumenti per sviluppatori",
     textContextEnabled: "Windows Messa a fuoco del testo e assistenza tramite tastiera su schermo",
     textContextEnabledDesc: "Rileva controlli modificabili mirati durante lo streaming per supportare la tastiera su schermo e il posizionamento del cursore. Disabilitare questo osservatore opzionale se influisce sulle prestazioni del sistema. Il normale input da tastiera remota è invariato.",
+    clipboardSyncEnabled: "Sincronizzazione degli appunti",
+    clipboardSyncEnabledDesc: "Sincronizza gli appunti di Windows con il client di streaming. Disattivala se entra in conflitto con un altro gestore degli appunti, ad esempio il metodo di input WeChat.",
+    saveError: "Impossibile salvare le impostazioni",
     logLevel: "Livello di registro",
     logLevelDesc: "Imposta la verbosità della registrazione",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const it = {
     syncFeatures: "Sincronizza funzionalità",
     connected: "Connesso",
     notConnected: "Non connesso",
+    off: "Disattivato",
     viewStatus: "Visualizza stato",
     maintenance: "Manutenzione",
     coverCache: "Copertine e file temporanei",
@@ -2096,7 +2100,14 @@ export const it = {
     serviceDisabled: "La sincronizzazione degli appunti è disabilitata forzatamente dalla configurazione dell'host (clipboard_sync = false)",
     connecting: "La sincronizzazione degli appunti si sta connettendo al servizio Sunshine",
     disconnected: "La sincronizzazione degli appunti è disconnessa e si sta tentando di nuovo in background",
-    inactive: "La sincronizzazione degli appunti non è attiva"
+    inactive: "La sincronizzazione degli appunti non è attiva",
+    disabledByUser: "La sincronizzazione degli appunti è disattivata nelle impostazioni del pannello",
+    diag: {
+      localSetting: "Impostazione del pannello",
+      localOn: "Attiva",
+      localOff: "Disattiva",
+      localUnknown: "Impossibile leggere",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Sei sicuro di voler disinstallare il driver Foundation Virtual Display? Ciò richiede privilegi di amministratore.",

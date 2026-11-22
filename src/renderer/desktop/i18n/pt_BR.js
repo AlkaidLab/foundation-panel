@@ -268,6 +268,9 @@ export const pt_BR = {
     devModeDesc: "Mostrar informações de depuração e ferramentas de desenvolvedor",
     textContextEnabled: "Windows foco de texto e assistência de teclado na tela",
     textContextEnabledDesc: "Detecte controles editáveis focados durante a transmissão para oferecer suporte ao teclado na tela e ao posicionamento do cursor. Desative este observador opcional se ele afetar o desempenho do sistema. A entrada normal do teclado remoto permanece inalterada.",
+    clipboardSyncEnabled: "Sincronização da área de transferência",
+    clipboardSyncEnabledDesc: "Sincroniza a área de transferência do Windows com o cliente de transmissão. Desative se houver conflito com outro gerenciador da área de transferência, como o método de entrada do WeChat.",
+    saveError: "Falha ao salvar as configurações",
     logLevel: "Nível de registro",
     logLevelDesc: "Definir o detalhamento do registro",
     logLevels: {
@@ -1105,6 +1108,7 @@ export const pt_BR = {
     syncFeatures: "Recursos de sincronização",
     connected: "Conectado",
     notConnected: "Não conectado",
+    off: "Desativada",
     viewStatus: "Ver status",
     maintenance: "Manutenção",
     coverCache: "Capas e arquivos temporários",
@@ -2096,7 +2100,14 @@ export const pt_BR = {
     serviceDisabled: "A sincronização da área de transferência é desativada à força pela configuração do host (clipboard_sync = false)",
     connecting: "A sincronização da área de transferência está se conectando ao serviço Sunshine",
     disconnected: "A sincronização da área de transferência está desconectada e tentando novamente em segundo plano",
-    inactive: "A sincronização da área de transferência não está ativa"
+    inactive: "A sincronização da área de transferência não está ativa",
+    disabledByUser: "A sincronização da área de transferência está desativada nas configurações do painel",
+    diag: {
+      localSetting: "Configuração do painel",
+      localOn: "Ativada",
+      localOff: "Desativada",
+      localUnknown: "Não foi possível ler",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Tem certeza de que deseja desinstalar o driver Foundation Virtual Display? Isso requer privilégios de administrador.",
