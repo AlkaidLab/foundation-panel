@@ -232,23 +232,31 @@ unsafe fn take_last_bounding_rect(array: *mut SAFEARRAY) -> Option<WireRect> {
     result
 }
 
-fn inspect_caret(element: &IUIAutomationElement) -> Option<WireRect> {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaretState {
+    active: bool,
+    rect: Option<WireRect>,
+}
+
+fn inspect_caret(element: &IUIAutomationElement) -> CaretState {
     let pattern =
         unsafe { element.GetCachedPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }.ok();
     if let Some(pattern) = pattern {
         let mut active = BOOL::default();
         if let Ok(range) = unsafe { pattern.GetCaretRange(&mut active) } {
             if !active.as_bool() {
-                return None;
+                return CaretState::default();
             }
-            if let Ok(bounds) = unsafe { range.GetBoundingRectangles() } {
-                if let Some(rect) = unsafe { take_last_bounding_rect(bounds) } {
-                    return Some(rect);
-                }
-            }
+            let rect = unsafe { range.GetBoundingRectangles() }
+                .ok()
+                .and_then(|bounds| unsafe { take_last_bounding_rect(bounds) });
+            return CaretState { active: true, rect };
         }
     }
-    caret_from_win32()
+    caret_from_win32().map_or_else(CaretState::default, |rect| CaretState {
+        active: true,
+        rect: Some(rect),
+    })
 }
 
 /// Win32 caret fallback: editors with self-drawn UI that skip UIA text
@@ -295,7 +303,8 @@ fn is_confirmed_editor(
     control_type: i32,
     value_read_only: Option<bool>,
     has_text_edit_pattern: bool,
-    has_caret: bool,
+    caret_active: bool,
+    caret_has_rect: bool,
 ) -> bool {
     // A definite read-only result always wins. Chromium can expose
     // TextEditPattern on a read-only Document, so the pattern alone cannot
@@ -310,8 +319,12 @@ fn is_confirmed_editor(
 
     // TextEditPattern restores support for providers that do not report the
     // standard Edit control type. A live caret supplies the second piece of
-    // evidence needed to avoid treating a static Document as an editor.
-    has_text_edit_pattern && has_caret
+    // evidence needed to avoid treating a static Document as an editor. A
+    // Document additionally needs a usable caret rectangle because browser
+    // caret browsing can expose an active caret without editability.
+    has_text_edit_pattern
+        && caret_active
+        && (control_type != UIA_DocumentControlTypeId.0 || caret_has_rect)
 }
 
 fn inspect_focused_element(
@@ -347,19 +360,22 @@ fn inspect_focused_element(
     .is_ok();
     let should_inspect_caret = has_text_edit_pattern
         || (control_type == UIA_EditControlTypeId.0 && value_read_only == Some(false));
-    let caret_rect = should_inspect_caret.then(|| inspect_caret(&element)).flatten();
+    let caret = should_inspect_caret
+        .then(|| inspect_caret(&element))
+        .unwrap_or_default();
     let editable = is_confirmed_editor(
         control_type,
         value_read_only,
         has_text_edit_pattern,
-        caret_rect.is_some(),
+        caret.active,
+        caret.rect.is_some(),
     );
     let signature = FocusSignature {
         control_type,
         rect,
         password,
         editable,
-        caret_rect,
+        caret_rect: caret.rect,
     };
     let observation = Observation {
         version: 1,
@@ -373,7 +389,7 @@ fn inspect_focused_element(
         pane_visible: false,
         auto_show: false,
         element_rect: Some(rect),
-        caret_rect,
+        caret_rect: caret.rect,
     };
     Some((signature, observation))
 }
@@ -706,17 +722,25 @@ mod tests {
 
     #[test]
     fn value_and_text_edit_evidence_confirm_editors() {
-        for (control_type, read_only, text_edit, caret, expected) in [
-            (UIA_EditControlTypeId.0, Some(false), false, false, true),
-            (UIA_EditControlTypeId.0, Some(true), true, true, false),
-            (UIA_EditControlTypeId.0, None, false, true, false),
-            (UIA_TextControlTypeId.0, None, true, true, true),
-            (UIA_DocumentControlTypeId.0, Some(true), true, true, false),
-            (UIA_DocumentControlTypeId.0, None, true, false, false),
-            (UIA_DocumentControlTypeId.0, None, false, false, false),
+        for (control_type, read_only, text_edit, caret_active, caret_rect, expected) in [
+            (UIA_EditControlTypeId.0, Some(false), false, false, false, true),
+            (UIA_EditControlTypeId.0, Some(true), true, true, true, false),
+            (UIA_EditControlTypeId.0, None, false, true, true, false),
+            (UIA_TextControlTypeId.0, None, true, true, false, true),
+            (UIA_DocumentControlTypeId.0, Some(true), true, true, true, false),
+            (UIA_DocumentControlTypeId.0, None, true, false, false, false),
+            (UIA_DocumentControlTypeId.0, None, true, true, false, false),
+            (UIA_DocumentControlTypeId.0, None, true, true, true, true),
+            (UIA_DocumentControlTypeId.0, None, false, false, false, false),
         ] {
             assert_eq!(
-                is_confirmed_editor(control_type, read_only, text_edit, caret),
+                is_confirmed_editor(
+                    control_type,
+                    read_only,
+                    text_edit,
+                    caret_active,
+                    caret_rect,
+                ),
                 expected
             );
         }
