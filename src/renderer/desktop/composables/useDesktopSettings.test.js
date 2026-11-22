@@ -37,7 +37,7 @@ globalThis.window = {
   __TAURI_INTERNALS__: tauriInternals,
 }
 
-const { DESKTOP_SETTINGS_KEY, desktopSettings, loadDesktopSettings, saveDesktopSettings } = await import('./useDesktopSettings.js')
+const { DESKTOP_SETTINGS_KEY, desktopSettings, failureReason, loadDesktopSettings, saveDesktopSettings } = await import('./useDesktopSettings.js')
 
 test('saveDesktopSettings keeps previous state and storage intact when backend rejects', async () => {
   await loadDesktopSettings()
@@ -56,4 +56,11 @@ test('saveDesktopSettings keeps previous state and storage intact when backend r
   await saveDesktopSettings({ ...desktopSettings.value, autoStart: false })
   assert.equal(desktopSettings.value.autoStart, false)
   assert.equal(JSON.parse(store.get(DESKTOP_SETTINGS_KEY)).autoStart, false)
+})
+
+test('the reason of a failed command is kept when the command rejects with a bare string', () => {
+  assert.equal(failureReason('Access is denied. (os error 5)'), 'Access is denied. (os error 5)')
+  assert.equal(failureReason(new Error('registry write failed')), 'registry write failed')
+  assert.equal(failureReason(undefined), '')
+  assert.equal(failureReason({}), '')
 })
