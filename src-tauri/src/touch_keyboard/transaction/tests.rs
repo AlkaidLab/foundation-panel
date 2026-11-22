@@ -716,10 +716,12 @@ fn failed_publication_with_uninitialized_state_rolls_back_and_retries() {
     let original = shared.borrow().values.clone();
     let mut tx = transaction(&shared);
     assert!(tx.reconcile(Some(false), 11).is_err());
-    let data = shared.borrow();
-    assert_eq!(data.values, original);
-    assert_eq!(data.notification_value, 2);
-    assert!(data.journal.is_none());
+    {
+        let data = shared.borrow();
+        assert_eq!(data.values, original);
+        assert_eq!(data.notification_value, 2);
+        assert!(data.journal.is_none());
+    }
     shared.borrow_mut().notification_fail_after_publish = false;
     tx.reconcile(Some(false), 11).unwrap();
     tx.reconcile(None, 11).unwrap();

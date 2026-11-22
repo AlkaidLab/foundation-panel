@@ -331,7 +331,7 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
             logon_time,
             enabled,
             values,
-            notification_original: Some(notification_original),
+            notification_original,
         };
         let snapshot_line = line(&snapshot)?;
         if snapshot_line.len() as u64 > MAX_JOURNAL_BYTES {
@@ -379,7 +379,7 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
 
     fn publish_verified(&mut self, session_id: u32, value: u32) -> io::Result<()> {
         self.notification.publish(session_id, value)?;
-        if self.notification.read(session_id)? != value {
+        if self.notification.read(session_id)? != Some(value) {
             return Err(io::Error::other(
                 "touch keyboard notification readback mismatch",
             ));
