@@ -30,9 +30,53 @@ pub async fn usbip_list_remote(
 #[tauri::command]
 pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
-    let response = run_elevated(ElevatedRequest::Install).await?;
+    #[cfg(target_os = "windows")]
+    let mut kept = {
+        let mut kept = super::journal::read();
+        if let Some(marker) = kept.marker.as_mut() {
+            if !marker.restarted_since(super::journal::boot_secs()) {
+                let error = if marker.op == super::nodes::MarkerOp::Install {
+                    "USBIP-SETUP-015: a Windows restart is pending before USB/IP can finish installing".to_string()
+                } else {
+                    "USBIP-SETUP-015: a Windows restart is pending from an earlier USB/IP cleanup; restart Windows first".to_string()
+                };
+                kept.last_install_error = error.clone();
+                kept.install_error_at = super::journal::now_secs();
+                super::journal::write(&kept);
+                return Err(error);
+            }
+            if marker.op == super::nodes::MarkerOp::Install {
+                marker.resumed += 1;
+            }
+        }
+        kept
+    };
+    let outcome = run_elevated(ElevatedRequest::Install).await;
     super::status::forget_kept();
+    #[cfg(target_os = "windows")]
+    {
+        match &outcome {
+            Ok(_) => {
+                kept.last_install_error.clear();
+                kept.install_error_at = 0;
+                if matches!(kept.marker.as_ref().map(|m| m.op), Some(super::nodes::MarkerOp::Install)) {
+                    kept.marker = None;
+                }
+            }
+            Err(error) => {
+                kept.last_install_error = error.clone();
+                kept.install_error_at = super::journal::now_secs();
+                if super::install::install_error_has_pending_restart(error) {
+                    mark_restart_pending(&mut kept, super::nodes::MarkerOp::Install);
+                }
+            }
+        }
+        super::journal::write(&kept);
+    }
+    let response = outcome?;
     let reboot_recommended = keep_restart_answer(&response.message);
     let mut status = super::status::usbip_get_status().await?;
     status.reboot_recommended |= reboot_recommended;
@@ -47,6 +91,8 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     run_cleanup(ElevatedRequest::Cleanup, super::nodes::MarkerOp::Cleanup).await
 }
@@ -55,6 +101,8 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
 #[tauri::command]
 pub async fn usbip_remove_stale_nodes() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     run_cleanup(ElevatedRequest::RemoveStale, super::nodes::MarkerOp::RemoveStale).await
 }
@@ -141,6 +189,8 @@ async fn run_cleanup(
 #[tauri::command]
 pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     let _guard = OPERATION_LOCK.lock().await;
+    #[cfg(target_os = "windows")]
+    super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
     let before = super::status::usbip_get_status().await?;
     if !before.replaceable {
@@ -152,8 +202,24 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
                 .to_string(),
         );
     }
-    let response = run_elevated(ElevatedRequest::ReplaceLegacy).await?;
+    let outcome = run_elevated(ElevatedRequest::ReplaceLegacy).await;
     super::status::forget_kept();
+    #[cfg(target_os = "windows")]
+    {
+        let mut kept = super::journal::read();
+        match &outcome {
+            Ok(_) => {
+                kept.last_install_error.clear();
+                kept.install_error_at = 0;
+            }
+            Err(error) => {
+                kept.last_install_error = error.clone();
+                kept.install_error_at = super::journal::now_secs();
+            }
+        }
+        super::journal::write(&kept);
+    }
+    let response = outcome?;
     let reboot_recommended = keep_restart_answer(&response.message);
     let mut status = super::status::usbip_get_status().await?;
     status.reboot_recommended |= reboot_recommended;

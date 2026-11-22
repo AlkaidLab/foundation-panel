@@ -92,6 +92,7 @@ export const vdd = {
 // ─── Virtual Mouse ───────────────────────────────────────
 
 export const vmouse = {
+  getSupport: () => wrapResult('get_vmouse_support'),
   getStatus: () => wrapResult('get_vmouse_status'),
   install: () => wrapResult('install_vmouse_driver'),
   uninstall: () => wrapResult('uninstall_vmouse_driver'),
@@ -123,8 +124,15 @@ export const controllerHub = {
 // the audio endpoints of the host and the VB-CABLE state (GET /api/audio/devices)
 export const audioDevices = {
   get: () => wrapResult('get_audio_devices'),
-  // 'install' (download, verify, silent setup) or 'enable' (pnputil); ask the person first
-  startVbCableJob: (action) => wrapResult('start_vb_cable_job', { action }),
+}
+
+// Component operations are separate: downloading never installs a driver.
+export const vbCable = {
+  check: () => wrapResult('vb_cable_check'),
+  download: () => wrapResult('vb_cable_download'),
+  install: () => wrapResult('vb_cable_install'),
+  enable: () => wrapResult('vb_cable_enable'),
+  uninstall: () => wrapResult('vb_cable_uninstall'),
 }
 
 export const virtualMicrophone = {

@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { isTauriRuntime, tauriInvoke } from './useTauri'
+import { isTauriRuntime, tauriInvoke } from './useTauri.js'
 
 export const DESKTOP_SETTINGS_KEY = 'sunshine-desktop-settings'
 export const DESKTOP_SETTINGS_UPDATED = 'desktop-settings-updated'
@@ -39,6 +39,11 @@ function persistLocal(settings) {
   }
 }
 
+/** The reason of a failed command: a Tauri command that returns Err(String) rejects with the bare string, not an Error. */
+export function failureReason(error) {
+  return String(error?.message || (typeof error === 'string' ? error : '')).trim()
+}
+
 function loadLocal() {
   try {
     const saved = localStorage.getItem(DESKTOP_SETTINGS_KEY)
@@ -70,15 +75,14 @@ export async function saveDesktopSettings(nextSettings) {
     return { settings: desktopSettings.value, status: desktopSettingsStatus.value }
   }
 
+  const previous = { ...desktopSettings.value }
   let response = null
   try {
     response = await tauriInvoke('save_desktop_settings', { settings: normalized })
     desktopSettings.value = normalize(response.settings)
     desktopSettingsStatus.value = response.status || null
   } catch (e) {
-    desktopSettings.value = normalized
-    persistLocal(desktopSettings.value)
-    window.dispatchEvent(new CustomEvent(DESKTOP_SETTINGS_UPDATED, { detail: desktopSettings.value }))
+    desktopSettings.value = previous
     throw e
   }
   persistLocal(desktopSettings.value)

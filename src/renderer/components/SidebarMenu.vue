@@ -235,7 +235,7 @@ registerModeHandler((mode) => setTheme(mode))
 onMounted(() => { void useAppearance().init() })
 // the overview has its own (lighter) frost over the wallpaper; every other page the stronger one
 watch(() => router.currentRoute.value, (route) => useAppearance().setScope(route === ROUTES.HOME ? 'home' : 'other'), { immediate: true })
-const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized)
+const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized, { onDoubleTap: toggleMaximize })
 const {
   openUrl, cleanupCovers, restartAsAdmin, checkForUpdates, openGamepadTest, openStylusInputProbe,
   showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled, clipboardSyncStateWord,
@@ -597,6 +597,7 @@ const onFramePin = (event) => {
 }
 let unlistenConnect = null
 let unlistenFeedback = null
+let unlistenShowMessage = null
 let stopCrashWatch = null
 onMounted(async () => {
   pairing.start()
@@ -606,12 +607,16 @@ onMounted(async () => {
   try {
     const { listen } = await import('@tauri-apps/api/event')
     unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    unlistenShowMessage = await listen('show-message', (event) => {
+      const msg = String(event?.payload?.message || '').trim()
+      if (msg) useNotify().snack(msg)
+    })
     if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
     // the answer (feedback sent, or let go) is what stops the question: a program that ends before it asks again at the next start
     stopCrashWatch = watch(() => devReport.decision, (now, was) => { if (was === 'crash' && !now) invoke('crash_recovered_answered').catch(() => {}) })
   } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); stopCrashWatch?.(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); if (unlistenShowMessage) unlistenShowMessage(); stopCrashWatch?.(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {
@@ -897,7 +902,7 @@ defineExpose({
 
 <style lang="less">
 .panel-shell { position: relative; height: 100vh; height: 100dvh; min-height: 0; overflow: clip; }
-.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; }
+.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; touch-action: none; }
 .panel-caption__brand { align-self: center; padding-inline-start: 16px; pointer-events: none; }
 .panel-more-version { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px 16px 12px; }
 .panel-more-version .m-capver { margin-inline-start: 0; }

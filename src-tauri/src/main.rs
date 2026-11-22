@@ -83,6 +83,7 @@ mod usbip;
 mod utils;
 mod vdd;
 mod vdd_calibration;
+mod vb_cable;
 #[cfg(target_os = "windows")]
 mod vdd_ioctl;
 mod vigem;
@@ -151,6 +152,12 @@ fn configure_loopback_proxy_bypass() {
 }
 
 fn main() {
+    // The read-only probe also serves an isolated Panel, before any GUI or profile setup.
+    #[cfg(target_os = "windows")]
+    if let Some(code) = vb_cable::probe::handle_command() {
+        std::process::exit(code);
+    }
+
     if let Err(error) = test_isolation::configure() {
         eprintln!("Unable to initialize test isolation: {error}");
         std::process::exit(2);
@@ -183,6 +190,11 @@ fn main() {
 
         #[cfg(target_os = "windows")]
         if let Some(exit_code) = usbip::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = vb_cable::try_handle_elevated_command() {
             std::process::exit(exit_code);
         }
 
@@ -310,6 +322,7 @@ fn main() {
             proxy_server::wait_for_proxy_ready,
             native_components::native_component_get_status,
             native_components::hdr_enhanced_select_backend,
+            native_components::set_global_nr_enabled,
             native_components::list_native_components,
             native_components::native_component_import,
             native_components::native_component_remove,
@@ -322,6 +335,7 @@ fn main() {
             utils::restart_as_admin,
             utils::is_running_as_admin,
             vdd::uninstall_vdd_driver,
+            vmouse::get_vmouse_support,
             vmouse::get_vmouse_status,
             vmouse::install_vmouse_driver,
             vmouse::uninstall_vmouse_driver,
@@ -330,7 +344,11 @@ fn main() {
             controller_hub::save_controller_hub_config,
             controller_hub::get_virtual_microphone_status,
             controller_hub::get_audio_devices,
-            controller_hub::start_vb_cable_job,
+            vb_cable::vb_cable_check,
+            vb_cable::vb_cable_download,
+            vb_cable::vb_cable_install,
+            vb_cable::vb_cable_enable,
+            vb_cable::vb_cable_uninstall,
             controller_hub::test_virtual_microphone,
             controller_hub::save_microphone_backend,
             vigem::get_vigem_status,

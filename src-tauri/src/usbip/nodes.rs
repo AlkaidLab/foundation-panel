@@ -281,6 +281,7 @@ pub(super) struct RestartMarker {
 pub(super) enum MarkerOp {
     Cleanup,
     RemoveStale,
+    Install,
 }
 
 impl MarkerOp {
@@ -288,6 +289,7 @@ impl MarkerOp {
         match self {
             Self::Cleanup => "cleanup",
             Self::RemoveStale => "stale",
+            Self::Install => "install",
         }
     }
 
@@ -321,6 +323,7 @@ impl RestartMarker {
         // a marker from before the operation was recorded is the whole cleanup, as it was then
         let op = match parts.next() {
             Some("stale") => MarkerOp::RemoveStale,
+            Some("install") => MarkerOp::Install,
             _ => MarkerOp::Cleanup,
         };
         Some(Self { written, resumed, op })
@@ -646,6 +649,7 @@ mod tests {
         // a marker from before the operation was recorded is the whole cleanup
         assert_eq!(RestartMarker::decode("5\t0").map(|m| m.op), Some(MarkerOp::Cleanup));
         assert_eq!(RestartMarker::decode("5\t0\tstale").map(|m| m.op), Some(MarkerOp::RemoveStale));
+        assert_eq!(RestartMarker::decode("5\t0\tinstall").map(|m| m.op), Some(MarkerOp::Install));
         assert!(error_has_pending_restart(&cleanup_error(
             CleanupReason::InUse,
             &[format!("node=ROOT\\USB\\0001 {PENDING_DETAIL}")]

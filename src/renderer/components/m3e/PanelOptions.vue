@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, unref, watch } from 'vue'
 import { useNotify, MButton, MDialog, MExpertItem, MFooter, MGroup, MIcon, MIconButton, MItem, MPathItem, MSection, MSeg, MSheet, MSnackbar, MSwitchItem, MSwitch, useAppearance } from 'foundation-ui/vue'
 import { useI18n } from '../../desktop/i18n/index.js'
-import { defaultDesktopSettings, desktopSettings, loadDesktopSettings, saveDesktopSettings } from '../../desktop/composables/useDesktopSettings.js'
+import { defaultDesktopSettings, desktopSettings, failureReason, loadDesktopSettings, saveDesktopSettings } from '../../desktop/composables/useDesktopSettings.js'
 import { bigScreenSettings, defaultBigScreenSettings, setBigScreenSetting } from '../../desktop/composables/useBigScreenSettings.js'
 import { useLaunchHelpers } from '../../desktop/composables/useLaunchHelpers.js'
 import { useDesktopPet } from '../../composables/useDesktopPet.js'
@@ -48,7 +48,7 @@ onMounted(async () => {
 })
 
 async function set(key, value) {
-  try { await saveDesktopSettings({ ...settings.value, [key]: value }) } catch (e) { notice.value = `${st.value.updateError || ''} ${e?.message || ''}`.trim() }
+  try { await saveDesktopSettings({ ...settings.value, [key]: value }) } catch (e) { notice.value = `${st.value.saveError || st.value.updateError || ''} ${failureReason(e)}`.trim() }
 }
 const startup = computed(() => [['autoStart', st.value.autoStart, st.value.autoStartDesc], ['startMinimized', st.value.startMinimized, st.value.startMinimizedDesc], ['autoStartSunshine', st.value.autoStartSunshine, st.value.autoStartSunshineDesc]])
 const notifications = computed(() => [['notifications', st.value.desktopNotifications, st.value.desktopNotificationsDesc], ['connectionNotify', st.value.connectionNotify, st.value.connectionNotifyDesc], ['updateNotify', st.value.updateNotify, st.value.updateNotifyDesc]])
