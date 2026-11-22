@@ -39,6 +39,11 @@ function persistLocal(settings) {
   }
 }
 
+/** The reason of a failed command: a Tauri command that returns Err(String) rejects with the bare string, not an Error. */
+export function failureReason(error) {
+  return String(error?.message || (typeof error === 'string' ? error : '')).trim()
+}
+
 function loadLocal() {
   try {
     const saved = localStorage.getItem(DESKTOP_SETTINGS_KEY)
