@@ -708,6 +708,28 @@ fn externally_published_value_is_preserved_when_original_was_uninitialized() {
 }
 
 #[test]
+fn externally_changed_registry_value_drives_uninitialized_notification_restore() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(1));
+    shared.borrow_mut().notification_unpublished = true;
+    let mut tx = transaction(&shared);
+    tx.reconcile(Some(false), 11).unwrap();
+    shared
+        .borrow_mut()
+        .values
+        .insert(KEYS[0].name.into(), dword(2));
+
+    tx.reconcile(None, 11).unwrap();
+
+    let data = shared.borrow();
+    assert_eq!(data.values.get(KEYS[0].name), Some(&dword(2)));
+    assert_eq!(data.notification_value, 2);
+    let sequence: Vec<u32> = data.notifications.iter().map(|(value, _)| *value).collect();
+    assert_eq!(sequence, [0, 2]);
+    assert!(data.journal.is_none());
+}
+
+#[test]
 fn failed_publication_with_uninitialized_state_rolls_back_and_retries() {
     let shared = fixture();
     shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(2));
