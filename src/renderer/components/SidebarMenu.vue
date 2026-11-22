@@ -340,7 +340,11 @@ const checkFromTile = async () => {
   tileFailed.value = false
   try { tileFailed.value = !(await handleCheckForUpdates()) } catch { tileFailed.value = true } finally { tileChecking.value = false }
 }
-const openUpdateFromTile = () => {
+// an answer of the one checker (from the tile, from 面板设置, from the updater) ends a failure the tile kept
+watch(updateInfo, (info) => { if (info) tileFailed.value = false })
+// 更新 opens the sheet only when there is a whole answer to show (a window made again can remember a waiting version before the updater has answered): without one the one checker is asked first
+const openUpdateFromTile = async () => {
+  if (!updateInfo.value) { await checkFromTile(); if (!updateInfo.value) return }
   remember(noticeAfterTile(noticeState.value, updateTile(helpUpdate.value, helpTileTexts(locale.value))))
   showUpdateDialog.value = true
 }

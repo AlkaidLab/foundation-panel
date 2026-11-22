@@ -52,3 +52,10 @@ test('the second line of 关于 carries the update state only while one waits', 
   assert.equal(aboutLine('v2026.1122.101010', { state: 'available' }, T), '2026.1122 · 有新版本')
   assert.equal(aboutLine('v2026.1122.101010', { state: 'latest' }, T), '2026.1122')
 })
+
+test('the tile\'s failure ends with any answer of the checker, and 更新 without a whole answer asks the checker first', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../components/SidebarMenu.vue', import.meta.url), 'utf8')
+  assert.match(src, /watch\(updateInfo, \(info\) => \{ if \(info\) tileFailed\.value = false \}\)/)
+  assert.match(src, /const openUpdateFromTile = async \(\) => \{\n  if \(!updateInfo\.value\) \{ await checkFromTile\(\); if \(!updateInfo\.value\) return \}/)
+})
