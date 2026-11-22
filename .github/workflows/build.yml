@@ -16,6 +16,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: 'true'
+  # Source: panel-sccache-gha and panel-sccache-action. Pull requests and tags
+  # read the shared compiler cache but cannot create per-ref entries.
+  SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
   RUSTC_WRAPPER: sccache
 
 concurrency:
@@ -47,7 +50,11 @@ jobs:
 
   build-windows:
     name: Build Windows (x64)
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
+    env:
+      PANEL_DEPENDENCY_DIR: ${{ github.workspace }}/.panel-deps
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.panel-deps/target
 
     steps:
       # Several tests match source text with \n in their patterns: check the sources out with LF on Windows too.
@@ -58,6 +65,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Source: panel-github-cache and panel-actions-cache. One entry contains
+      # the target, registry and git dependencies; only main saves it.
+      - name: Restore Windows build cache
+        id: windows-build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .panel-deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: panel-windows-v1-${{ github.sha }}
+          restore-keys: |
+            panel-windows-v1-
+
       # dev-env-mise-action: version and install; dev-env-msvc-action: environment activation.
       - name: Select locked tools
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db  # v3.6.3
@@ -66,9 +87,6 @@ jobs:
       - name: Activate MSVC developer environment
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
 
-      # Cache compiler outputs without restoring Cargo's target directory. This
-      # avoids the stale Tauri proc-macro fingerprints previously seen with a
-      # target-directory cache while still reusing unchanged dependency builds.
       - name: Setup Rust compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
@@ -140,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: usbip-debug-probe
-          path: src-tauri/target/x86_64-pc-windows-msvc/debug/**/sunshine_gui-*.exe
+          path: .panel-deps/target/x86_64-pc-windows-msvc/debug/**/sunshine_gui-*.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -191,7 +209,7 @@ jobs:
           $outDir = "artifacts"
           New-Item -ItemType Directory -Force -Path $outDir
 
-          $targetDir = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $targetDir = ".panel-deps/target/x86_64-pc-windows-msvc/release"
           Copy-Item "$targetDir/sunshine-gui.exe" "$outDir/"
           Copy-Item "$targetDir/alkaidlab-plugin-stylus.dll" "$outDir/"
 
@@ -247,6 +265,175 @@ jobs:
           path: symbols/*
           retention-days: 90
           if-no-files-found: error
+
+      # Only trusted main runs publish a new cache entry. PR and tag runs use
+      # sccache in read-only mode and restore this cache without writing.
+      - name: Save Windows build cache
+        if: github.ref == 'refs/heads/main' && steps.windows-build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .panel-deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: panel-windows-v1-${{ github.sha }}
+
+  # Pull-request checks are independent after checkout and tool activation.
+  # Keeping each check intact but running the three expensive groups on
+  # separate runners removes the former frontend -> USB/IP -> backend chain.
+  windows-frontend:
+    name: Windows frontend and debug build
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    env:
+      PANEL_DEPENDENCY_DIR: ${{ github.workspace }}/.panel-deps
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.panel-deps/target
+    steps:
+      - name: Keep LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Restore Windows build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .panel-deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: panel-windows-v1-${{ github.sha }}
+          restore-keys: panel-windows-v1-
+      - name: Select locked tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.11.9
+      - name: Activate MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - name: Setup Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Setup with the contributor entry point
+        run: just setup
+      - name: Inject development version
+        shell: bash
+        run: |
+          sed -i '0,/^version = ".*"/s//version = "0.0.0-dev"/' native-plugins/stylus/Cargo.toml
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          cargo update --workspace --manifest-path native-plugins/Cargo.toml
+      - name: Build frontend
+        run: just build
+      - name: Test environment diagnostics
+        run: node --test scripts/dev-env.test.mjs
+      - name: Test renderer logic
+        run: npm run test:renderer
+
+  windows-usbip:
+    name: Windows USB-IP fixtures
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    env:
+      PANEL_DEPENDENCY_DIR: ${{ github.workspace }}/.panel-deps
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.panel-deps/target
+    steps:
+      - name: Keep LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Restore Windows build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .panel-deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: panel-windows-v1-${{ github.sha }}
+          restore-keys: panel-windows-v1-
+      - name: Select locked tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.11.9
+      - name: Activate MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - name: Setup Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Setup with the contributor entry point
+        run: just setup
+      - name: USB-IP ownership registry and layout fixtures (Debug)
+        shell: powershell
+        env:
+          RUSTC_WRAPPER: ''
+        run: |
+          $contract = Get-Content -Raw src-tauri/component-compatibility.json | ConvertFrom-Json
+          $file = Join-Path $env:RUNNER_TEMP 'usbip-legacy-fixture.exe'
+          Invoke-WebRequest -UseBasicParsing $contract.usbip.installer_url -OutFile $file
+          if ((Get-FileHash -Algorithm SHA256 $file).Hash -ne $contract.usbip.installer_sha256) { throw 'Legacy fixture hash mismatch' }
+          $env:USBIP_LEGACY_FIXTURE_INSTALLER = $file
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc usbip:: -- --nocapture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Save read-only transport test binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: usbip-debug-probe
+          path: .panel-deps/target/x86_64-pc-windows-msvc/debug/**/sunshine_gui-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-backend:
+    name: Build Windows (x64)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    env:
+      PANEL_DEPENDENCY_DIR: ${{ github.workspace }}/.panel-deps
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.panel-deps/target
+    steps:
+      - name: Keep LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Restore Windows build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .panel-deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: panel-windows-v1-${{ github.sha }}
+          restore-keys: panel-windows-v1-
+      - name: Select locked tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.11.9
+      - name: Activate MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - name: Setup Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Setup with the contributor entry point
+        run: just setup
+      - name: Inject development version
+        shell: bash
+        run: |
+          sed -i '0,/^version = ".*"/s//version = "0.0.0-dev"/' native-plugins/stylus/Cargo.toml
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          cargo update --workspace --manifest-path native-plugins/Cargo.toml
+      - name: Build native tool plugins
+        shell: pwsh
+        run: ./scripts/build-native-plugins.ps1 -Configuration Release -Target x86_64-pc-windows-msvc
+      - name: Test native tool plugin crates
+        run: cargo test --release --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
+      # Environment-dependent on hosted runners (system code page, timing, catalog signatures); they run on the release hosts.
+      - name: Test Tauri backend
+        run: >-
+          cargo test --release --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --
+          --skip host_version::tests::gbk_console_output_is_decoded_and_is_never_a_version
+          --skip text_encoding::tests::decodes_console_gbk
+          --skip sunshine::tray_protocol_tests::tray_status_times_out_when_core_never_sends_headers
+          --skip sunshine::tray_protocol_tests::tray_status_times_out_when_core_stalls_the_body
+          --skip tray::events::tests::event_stream_handshake_times_out_after_tcp_connect
+          --skip usbip::signature::tests::a_signed_system_file_reads_as_signed
+          --skip usbip::signature::tests::an_unsigned_script_and_a_missing_file_are_not_called_signed
+      - name: Check the release configuration compiles
+        run: cargo check --manifest-path src-tauri/Cargo.toml --release --bins --target x86_64-pc-windows-msvc
 
   release:
     name: Create Release
