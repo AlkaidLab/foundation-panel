@@ -12,7 +12,7 @@ use std::time::Instant;
 use log::{info, warn};
 use serde::Serialize;
 use tokio::sync::Notify;
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -24,11 +24,13 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
-    IUIAutomationTextPattern2, IUIAutomationValuePattern, SetWinEventHook,
+    IUIAutomationTextEditPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
+    SetWinEventHook,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
     UIA_HasKeyboardFocusPropertyId, UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId,
-    UIA_IsPasswordPropertyId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId,
-    UIA_ValuePatternId, UnhookWinEvent,
+    UIA_DocumentControlTypeId, UIA_IsPasswordPropertyId, UIA_TextControlTypeId,
+    UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
+    UnhookWinEvent,
 };
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -37,7 +39,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage,
     WINEVENT_OUTOFCONTEXT,
 };
-use windows::core::{BOOL, GUID};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+use windows::core::{BOOL, GUID, PCWSTR};
 
 use crate::sunshine::{create_https_client, get_local_sunshine_url};
 
@@ -50,6 +53,9 @@ const PANE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const EDITOR_CARET_POLL: Duration = Duration::from_millis(200);
 // Focus-event bursts (menu traversal, Alt+Tab) collapse into one snapshot.
 const RESCAN_DEBOUNCE: Duration = Duration::from_millis(40);
+// The stop event interrupts this wait immediately, so an idle observer does
+// not need a periodic wake-up just to notice stream shutdown.
+const OBSERVER_IDLE_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 mod agent;
 pub use agent::{reconcile_streaming_state, set_enabled, start, stop};
 
@@ -61,7 +67,7 @@ fn observer_wait(
     last_pane_check: Instant,
     rescan_at: Option<Instant>,
 ) -> Duration {
-    let mut wait = Duration::from_millis(500);
+    let mut wait = OBSERVER_IDLE_WAIT;
     if editor_focused {
         wait = wait.min(EDITOR_CARET_POLL.saturating_sub(now.duration_since(last_snapshot)));
         if pane_available {
@@ -71,7 +77,7 @@ fn observer_wait(
     if let Some(at) = rescan_at {
         wait = wait.min(RESCAN_DEBOUNCE.saturating_sub(now.duration_since(at)));
     }
-    wait.clamp(Duration::from_millis(5), Duration::from_millis(500))
+    wait.clamp(Duration::from_millis(5), OBSERVER_IDLE_WAIT)
 }
 
 fn agent_id() -> &'static str {
@@ -285,10 +291,27 @@ fn caret_from_win32() -> Option<WireRect> {
     }
 }
 
-fn is_confirmed_editor(is_edit_control: bool, value_read_only: Option<bool>) -> bool {
-    // TextEditPattern can exist on a read-only Chromium Document. Missing or
-    // failed ValuePattern reads remain unknown, never evidence of editability.
-    is_edit_control && value_read_only == Some(false)
+fn is_confirmed_editor(
+    control_type: i32,
+    value_read_only: Option<bool>,
+    has_text_edit_pattern: bool,
+    has_caret: bool,
+) -> bool {
+    // A definite read-only result always wins. Chromium can expose
+    // TextEditPattern on a read-only Document, so the pattern alone cannot
+    // activate the keyboard.
+    if value_read_only == Some(true) {
+        return false;
+    }
+
+    if control_type == UIA_EditControlTypeId.0 && value_read_only == Some(false) {
+        return true;
+    }
+
+    // TextEditPattern restores support for providers that do not report the
+    // standard Edit control type. A live caret supplies the second piece of
+    // evidence needed to avoid treating a static Document as an editor.
+    has_text_edit_pattern && has_caret
 }
 
 fn inspect_focused_element(
@@ -318,8 +341,19 @@ fn inspect_focused_element(
             .ok()
             .and_then(|pattern| unsafe { pattern.CachedIsReadOnly() }.ok())
             .map(|value| value.as_bool());
-    let editable = is_confirmed_editor(control_type == UIA_EditControlTypeId.0, value_read_only);
-    let caret_rect = editable.then(|| inspect_caret(&element)).flatten();
+    let has_text_edit_pattern = unsafe {
+        element.GetCachedPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
+    }
+    .is_ok();
+    let should_inspect_caret = has_text_edit_pattern
+        || (control_type == UIA_EditControlTypeId.0 && value_read_only == Some(false));
+    let caret_rect = should_inspect_caret.then(|| inspect_caret(&element)).flatten();
+    let editable = is_confirmed_editor(
+        control_type,
+        value_read_only,
+        has_text_edit_pattern,
+        caret_rect.is_some(),
+    );
     let signature = FocusSignature {
         control_type,
         rect,
@@ -401,7 +435,41 @@ impl Drop for FocusHook {
     }
 }
 
-fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shared>) {
+struct StopSignal {
+    requested: AtomicBool,
+    handle: isize,
+}
+
+impl StopSignal {
+    fn new() -> Option<Arc<Self>> {
+        let handle = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.ok()?;
+        Some(Arc::new(Self {
+            requested: AtomicBool::new(false),
+            handle: handle.0 as isize,
+        }))
+    }
+
+    fn handle(&self) -> HANDLE {
+        HANDLE(self.handle as _)
+    }
+
+    fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        let _ = unsafe { SetEvent(self.handle()) };
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for StopSignal {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle()) };
+    }
+}
+
+fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shared>) {
     let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     if !initialized {
         warn!("text context observer could not initialize COM");
@@ -415,7 +483,7 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
         unsafe { CoCreateInstance(&FRAMEWORK_INPUT_PANE, None, CLSCTX_INPROC_SERVER).ok() };
     let automation: Option<IUIAutomation> =
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
-    let cancelled = stop.load(Ordering::Acquire)
+    let cancelled = stop.is_requested()
         || !shared.ready(generation, pane.is_some(), automation.is_some());
     if cancelled {
         return;
@@ -437,6 +505,7 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
             let _ = request.AddProperty(UIA_IsPasswordPropertyId);
             let _ = request.AddProperty(UIA_ValueIsReadOnlyPropertyId);
             let _ = request.AddPattern(UIA_ValuePatternId);
+            let _ = request.AddPattern(UIA_TextEditPatternId);
             let _ = request.AddPattern(UIA_TextPattern2Id);
         }
         Some(request)
@@ -475,8 +544,9 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
     let mut last_snapshot = Instant::now();
     let mut last_pane_check = Instant::now();
     RESCAN_AT.with(|slot| slot.set(Some(Instant::now() - RESCAN_DEBOUNCE)));
+    let stop_handles = [stop.handle()];
 
-    while !stop.load(Ordering::Acquire) {
+    while !stop.is_requested() {
         pump_messages();
         let now = Instant::now();
 
@@ -575,7 +645,7 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
         );
         unsafe {
             MsgWaitForMultipleObjectsEx(
-                None,
+                Some(&stop_handles),
                 wait.as_millis() as u32,
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
@@ -614,11 +684,11 @@ mod tests {
         let now = start + Duration::from_secs(60);
         assert_eq!(
             observer_wait(now, false, true, start, start, None),
-            Duration::from_millis(500)
+            OBSERVER_IDLE_WAIT
         );
         assert_eq!(
             observer_wait(now, false, false, start, start, None),
-            Duration::from_millis(500)
+            OBSERVER_IDLE_WAIT
         );
         assert_eq!(
             observer_wait(now, true, false, now, start, None),
@@ -635,16 +705,20 @@ mod tests {
     }
 
     #[test]
-    fn only_explicitly_writable_edit_is_confirmed() {
-        for (is_edit, read_only, expected) in [
-            (true, Some(false), true),
-            (true, Some(true), false),
-            (true, None, false),
-            (false, Some(true), false), // Chrome read-only Document
-            (false, Some(false), false),
-            (false, None, false),
+    fn value_and_text_edit_evidence_confirm_editors() {
+        for (control_type, read_only, text_edit, caret, expected) in [
+            (UIA_EditControlTypeId.0, Some(false), false, false, true),
+            (UIA_EditControlTypeId.0, Some(true), true, true, false),
+            (UIA_EditControlTypeId.0, None, false, true, false),
+            (UIA_TextControlTypeId.0, None, true, true, true),
+            (UIA_DocumentControlTypeId.0, Some(true), true, true, false),
+            (UIA_DocumentControlTypeId.0, None, true, false, false),
+            (UIA_DocumentControlTypeId.0, None, false, false, false),
         ] {
-            assert_eq!(is_confirmed_editor(is_edit, read_only), expected);
+            assert_eq!(
+                is_confirmed_editor(control_type, read_only, text_edit, caret),
+                expected
+            );
         }
     }
 
