@@ -42,6 +42,7 @@ const { DESKTOP_SETTINGS_KEY, desktopSettings, failureReason, loadDesktopSetting
 test('saveDesktopSettings keeps previous state and storage intact when backend rejects', async () => {
   await loadDesktopSettings()
   assert.equal(desktopSettings.value.autoStart, true)
+  assert.equal(desktopSettings.value.clipboardSyncEnabled, true)
   const storedBefore = store.get(DESKTOP_SETTINGS_KEY)
 
   shouldFail = true

@@ -268,6 +268,8 @@ export const sv = {
     devModeDesc: "Visa felsökningsinformation och utvecklarverktyg",
     textContextEnabled: "Windows textfokus och tangentbordshjälp på skärmen",
     textContextEnabledDesc: "Upptäck fokuserade redigerbara kontroller under strömning för att stödja skärmtangentbordet och positioneringen. Inaktivera denna valfria observerare om den påverkar systemets prestanda. Vanlig fjärrtangentbordsinmatning är oförändrad.",
+    clipboardSyncEnabled: "Synkronisering av urklipp",
+    clipboardSyncEnabledDesc: "Synkroniserar Windows urklipp med strömningsklienten. Stäng av detta om det krockar med en annan urklippshanterare, till exempel WeChat Input Method.",
     logLevel: "Loggnivå",
     logLevelDesc: "Ställ in loggningsgraden",
     logLevels: {
@@ -1105,6 +1107,7 @@ export const sv = {
     syncFeatures: "Synkroniseringsfunktioner",
     connected: "Ansluten",
     notConnected: "Ej ansluten",
+    off: "Av",
     viewStatus: "Visa status",
     maintenance: "Underhåll",
     coverCache: "Omslag och tillfälliga filer",
@@ -2096,7 +2099,14 @@ export const sv = {
     serviceDisabled: "Urklippssynkroniseringen är påtvingat avstängd av värdens konfiguration (clipboard_sync = false)",
     connecting: "Urklippssynkroniseringen ansluter till Sunshine-tjänsten",
     disconnected: "Urklippssynkroniseringen är frånkopplad och försöker igen i bakgrunden",
-    inactive: "Urklippssynkroniseringen är inte aktiv"
+    inactive: "Urklippssynkroniseringen är inte aktiv",
+    disabledByUser: "Synkronisering av urklipp är avstängd i panelinställningarna",
+    diag: {
+      localSetting: "Panelinställning",
+      localOn: "På",
+      localOff: "Av",
+      localUnknown: "Kunde inte läsas",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Är du säker på att du vill avinstallera drivrutinen Foundation Virtual Display? Detta kräver administratörsbehörighet.",

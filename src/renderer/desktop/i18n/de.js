@@ -268,6 +268,8 @@ export const de = {
     devModeDesc: "Debuginformationen und Entwicklertools anzeigen",
     textContextEnabled: "Windows Textfokus und Bildschirmtastaturunterstützung",
     textContextEnabledDesc: "Erkennen Sie fokussierte bearbeitbare Steuerelemente während des Streamings, um die Positionierung der Bildschirmtastatur und der Einfügemarke zu unterstützen. Deaktivieren Sie diesen optionalen Beobachter, wenn er die Systemleistung beeinträchtigt. Die normale Remote-Tastatureingabe bleibt unverändert.",
+    clipboardSyncEnabled: "Synchronisierung der Zwischenablage",
+    clipboardSyncEnabledDesc: "Synchronisiert die Windows-Zwischenablage mit dem Streaming-Client. Deaktivieren Sie diese Option, wenn sie mit einem anderen Zwischenablage-Manager wie der WeChat-Eingabemethode in Konflikt steht.",
     logLevel: "Protokollebene",
     logLevelDesc: "Legen Sie die Ausführlichkeit der Protokollierung fest",
     logLevels: {
@@ -1105,6 +1107,7 @@ export const de = {
     syncFeatures: "Synchronisierungsfunktionen",
     connected: "Verbunden",
     notConnected: "Nicht verbunden",
+    off: "Aus",
     viewStatus: "Status anzeigen",
     maintenance: "Wartung",
     coverCache: "Cover und temporäre Dateien",
@@ -2096,7 +2099,14 @@ export const de = {
     serviceDisabled: "Die Synchronisierung der Zwischenablage wird durch die Hostkonfiguration zwangsweise deaktiviert (clipboard_sync = false).",
     connecting: "Die Synchronisierung der Zwischenablage stellt eine Verbindung zum Dienst Sunshine her",
     disconnected: "Die Synchronisierung der Zwischenablage ist unterbrochen und wird im Hintergrund erneut versucht",
-    inactive: "Die Synchronisierung der Zwischenablage ist nicht aktiv"
+    inactive: "Die Synchronisierung der Zwischenablage ist nicht aktiv",
+    disabledByUser: "Die Synchronisierung der Zwischenablage ist in den Panel-Einstellungen deaktiviert",
+    diag: {
+      localSetting: "Panel-Einstellung",
+      localOn: "Ein",
+      localOff: "Aus",
+      localUnknown: "Nicht lesbar",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Sind Sie sicher, dass Sie den Foundation Virtual Display-Treiber deinstallieren möchten? Dies erfordert Administratorrechte.",

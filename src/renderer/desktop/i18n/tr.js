@@ -268,6 +268,8 @@ export const tr = {
     devModeDesc: "Hata ayıklama bilgilerini ve geliştirici araçlarını göster",
     textContextEnabled: "Windows metin odağı ve ekran klavyesi yardımı",
     textContextEnabledDesc: "Ekran klavyesini ve düzeltme işareti konumlandırmasını desteklemek için akış sırasında odaklanmış düzenlenebilir kontrolleri algılayın. Sistem performansını etkiliyorsa bu isteğe bağlı gözlemciyi devre dışı bırakın. Sıradan uzaktan klavye girişi değişmedi.",
+    clipboardSyncEnabled: "Pano senkronizasyonu",
+    clipboardSyncEnabledDesc: "Windows panosunu akış istemcisiyle senkronize eder. WeChat Giriş Yöntemi gibi başka bir pano yöneticisiyle çakışıyorsa bunu kapatın.",
     logLevel: "Günlük Düzeyi",
     logLevelDesc: "Günlüğe kaydetmenin ayrıntı düzeyini ayarlama",
     logLevels: {
@@ -1105,6 +1107,7 @@ export const tr = {
     syncFeatures: "Senkronizasyon Özellikleri",
     connected: "Bağlı",
     notConnected: "Bağlı Değil",
+    off: "Kapalı",
     viewStatus: "Durumu Görüntüle",
     maintenance: "Bakım",
     coverCache: "Kapaklar ve Geçici Dosyalar",
@@ -2096,7 +2099,14 @@ export const tr = {
     serviceDisabled: "Pano eşitlemesi, ana bilgisayar yapılandırmasıyla zorla devre dışı bırakıldı (clipboard_sync = false)",
     connecting: "Pano eşitlemesi Sunshine hizmetine bağlanıyor",
     disconnected: "Pano eşitlemesi bağlantısı kesildi ve arka planda yeniden deneniyor",
-    inactive: "Pano eşitlemesi etkin değil"
+    inactive: "Pano eşitlemesi etkin değil",
+    disabledByUser: "Pano senkronizasyonu Panel ayarlarında kapalı",
+    diag: {
+      localSetting: "Panel ayarı",
+      localOn: "Açık",
+      localOff: "Kapalı",
+      localUnknown: "Okunamadı",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Foundation Virtual Display sürücüsünü kaldırmak istediğinizden emin misiniz? Bu, yönetici ayrıcalıkları gerektirir.",

@@ -268,6 +268,8 @@ export const pl = {
     devModeDesc: "Pokaż informacje debugowania i narzędzia programistyczne",
     textContextEnabled: "Windows skupienie tekstu i pomoc klawiatury ekranowej",
     textContextEnabledDesc: "Podczas przesyłania strumieniowego wykrywaj edytowalne elementy sterujące, aby obsługiwać klawiaturę ekranową i pozycjonowanie kursora. Wyłącz tego opcjonalnego obserwatora, jeśli wpływa on na wydajność systemu. Zwykłe wprowadzanie z klawiatury zdalnej pozostaje niezmienione.",
+    clipboardSyncEnabled: "Synchronizacja schowka",
+    clipboardSyncEnabledDesc: "Synchronizuje schowek systemu Windows z klientem przesyłania strumieniowego. Wyłącz ją, jeśli koliduje z innym menedżerem schowka, na przykład metodą wprowadzania WeChat.",
     logLevel: "Poziom dziennika",
     logLevelDesc: "Ustaw szczegółowość rejestrowania",
     logLevels: {
@@ -1105,6 +1107,7 @@ export const pl = {
     syncFeatures: "Funkcje synchronizacji",
     connected: "Połączono",
     notConnected: "Brak połączenia",
+    off: "Wyłączona",
     viewStatus: "Wyświetl stan",
     maintenance: "Konserwacja",
     coverCache: "Okładki i pliki tymczasowe",
@@ -2096,7 +2099,14 @@ export const pl = {
     serviceDisabled: "Synchronizacja schowka jest wymuszona wyłączona przez konfigurację hosta (clipboard_sync = false)",
     connecting: "Synchronizacja schowka łączy się z usługą Sunshine",
     disconnected: "Synchronizacja schowka jest rozłączona i ponawia próby w tle",
-    inactive: "Synchronizacja schowka nie jest aktywna"
+    inactive: "Synchronizacja schowka nie jest aktywna",
+    disabledByUser: "Synchronizacja schowka jest wyłączona w ustawieniach panelu",
+    diag: {
+      localSetting: "Ustawienie panelu",
+      localOn: "Włączona",
+      localOff: "Wyłączona",
+      localUnknown: "Nie można odczytać",
+    },
   },
   systemTools: {
     vddUninstallConfirm: "Czy na pewno chcesz odinstalować sterownik Foundation Virtual Display? Wymaga to uprawnień administratora.",

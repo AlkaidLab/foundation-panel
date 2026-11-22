@@ -263,6 +263,8 @@ export const en_GB = {
     "devModeDesc": "Show debug information and developer tools",
     "textContextEnabled": "Windows text focus and on-screen keyboard assistance",
     "textContextEnabledDesc": "Detect focused editable controls during streaming to support the on-screen keyboard and caret positioning. Disable this optional observer if it affects system performance. Ordinary remote keyboard input is unchanged.",
+    "clipboardSyncEnabled": "Clipboard sync",
+    "clipboardSyncEnabledDesc": "Sync the Windows clipboard with the streaming client. Turn this off if it conflicts with another clipboard manager, such as WeChat Input Method.",
     "logLevel": "Log Level",
     "logLevelDesc": "Set the verbosity of logging",
     "logLevels": {
@@ -1100,6 +1102,7 @@ export const en_GB = {
     "syncFeatures": "Sync Features",
     "connected": "Connected",
     "notConnected": "Not Connected",
+    "off": "Off",
     "viewStatus": "View Status",
     "maintenance": "Maintenance",
     "coverCache": "Covers & Temporary Files",
@@ -2091,7 +2094,14 @@ export const en_GB = {
     "serviceDisabled": "Clipboard sync is force-disabled by host config (clipboard_sync = false)",
     "connecting": "Clipboard sync is connecting to the Sunshine service",
     "disconnected": "Clipboard sync is disconnected and retrying in the background",
-    "inactive": "Clipboard sync is not active"
+    "inactive": "Clipboard sync is not active",
+    "disabledByUser": "Clipboard sync is disabled in Panel settings",
+    "diag": {
+      "localSetting": "Panel setting",
+      "localOn": "On",
+      "localOff": "Off",
+      "localUnknown": "Could not be read",
+    },
   },
   "systemTools": {
     "vddUninstallConfirm": "Are you sure you want to uninstall the Foundation Virtual Display driver? This requires admin privileges.",
