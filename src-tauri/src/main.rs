@@ -37,6 +37,7 @@ mod logger;
 mod mem_adaptive;
 mod mem_adaptive_core;
 mod view_state;
+mod webview_cache_hygiene;
 mod webview_env;
 mod webview_env_core;
 mod menu_place;
@@ -501,6 +502,7 @@ fn main() {
             // 初始化日志系统（需要在 setup 中获取 app handle）
             logger::init_logger();
             client_fingerprint_rules::start();
+            webview_cache_hygiene::clear_stale_cache_at_startup(app.handle());
             stall_watch::start(app.handle().clone());
             info!("🚀 Sunshine Control Panel 启动中...");
 
