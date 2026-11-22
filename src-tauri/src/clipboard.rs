@@ -1601,7 +1601,14 @@ pub fn start() -> Result<(), String> {
     let busy = Arc::new(AtomicI64::new(0));
 
     // Spawn watcher thread (blocking; the crate's start_watch() is sync).
-    let (shutdown_tx, watcher_handle) = spawn_watcher_thread(&st.echo, &busy)?;
+    let (shutdown_tx, watcher_handle) = match spawn_watcher_thread(&st.echo, &busy) {
+        Ok(handles) => handles,
+        Err(e) => {
+            // The run never came up: report disconnected instead of leaving a stuck CONNECTING state.
+            set_transport_state(TRANSPORT_DISCONNECTED, Some(e.clone()));
+            return Err(e);
+        }
+    };
 
     let sse_alive = Arc::new(AtomicBool::new(false));
     let heartbeat_alive = Arc::new(AtomicBool::new(false));
@@ -1729,7 +1736,6 @@ pub async fn clipboard_sync_status() -> ClipboardStatus {
     // the host's own answer: its setting, whether it has an agent subscribed right now, and a failure to ask is a word, not "allowed"
     let local_enabled =
         crate::desktop_settings::load_desktop_settings_from_disk().clipboard_sync_enabled;
-    let local_agent_active = agent_active();
     let (service_allowed, host_alive_now, session_count, capability_error) = if local_enabled {
         match capability_call().await {
             Ok(answer) => (answer.clipboard_sync, answer.gui_alive, answer.session_count, "none"),
@@ -1739,6 +1745,7 @@ pub async fn clipboard_sync_status() -> ClipboardStatus {
         (None, None, None, "none")
     };
     // read after the call: it can take seconds, and the state, the time and the heartbeat facts may have moved meanwhile
+    let local_agent_active = agent_active();
     let now = health::now_ms();
     let stream_state = transport_state_name(TRANSPORT_STATE.load(Ordering::Acquire));
     let last_connected_at_ms = LAST_CONNECTED_AT_MS.load(Ordering::Acquire);
