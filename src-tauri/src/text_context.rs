@@ -53,9 +53,10 @@ const PANE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const EDITOR_CARET_POLL: Duration = Duration::from_millis(200);
 // Focus-event bursts (menu traversal, Alt+Tab) collapse into one snapshot.
 const RESCAN_DEBOUNCE: Duration = Duration::from_millis(40);
-// The stop event interrupts this wait immediately, so an idle observer does
-// not need a periodic wake-up just to notice stream shutdown.
-const OBSERVER_IDLE_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+// Some applications do not raise UIA focus events. During an active stream,
+// this watchdog refreshes the focused element so those windows can still
+// trigger the remote IME.
+const FOCUS_WATCHDOG_POLL: Duration = Duration::from_secs(2);
 mod agent;
 pub use agent::{reconcile_streaming_state, set_enabled, start, stop};
 
@@ -67,7 +68,7 @@ fn observer_wait(
     last_pane_check: Instant,
     rescan_at: Option<Instant>,
 ) -> Duration {
-    let mut wait = OBSERVER_IDLE_WAIT;
+    let mut wait = FOCUS_WATCHDOG_POLL.saturating_sub(now.duration_since(last_snapshot));
     if editor_focused {
         wait = wait.min(EDITOR_CARET_POLL.saturating_sub(now.duration_since(last_snapshot)));
         if pane_available {
@@ -77,7 +78,7 @@ fn observer_wait(
     if let Some(at) = rescan_at {
         wait = wait.min(RESCAN_DEBOUNCE.saturating_sub(now.duration_since(at)));
     }
-    wait.clamp(Duration::from_millis(5), OBSERVER_IDLE_WAIT)
+    wait.clamp(Duration::from_millis(5), FOCUS_WATCHDOG_POLL)
 }
 
 fn agent_id() -> &'static str {
@@ -527,8 +528,8 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
         Some(request)
     });
 
-    // Focus events drive snapshots; only confirmed editors poll caret geometry.
-    // Idle desktops and full-screen games cost zero cross-process UIA traffic.
+    // Focus events drive snapshots. The watchdog covers providers that emit no
+    // focus events, while confirmed editors keep the faster caret cadence.
     let _hook_focus = FocusHook(unsafe {
         SetWinEventHook(
             EVENT_OBJECT_FOCUS,
@@ -557,7 +558,9 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
     let mut editor_focused = false;
     // A stream can start while an editor already has focus, so request a
     // baseline snapshot even when no focus event is raised.
-    let mut last_snapshot = Instant::now();
+    // Prime the watchdog so the observer establishes a baseline immediately,
+    // including when the stream starts with an already-focused editor.
+    let mut last_snapshot = Instant::now() - FOCUS_WATCHDOG_POLL;
     let mut last_pane_check = Instant::now();
     RESCAN_AT.with(|slot| slot.set(Some(Instant::now() - RESCAN_DEBOUNCE)));
     let stop_handles = [stop.handle()];
@@ -608,6 +611,7 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
             _ => false,
         });
         let need_snapshot = rescan_due
+            || now.duration_since(last_snapshot) >= FOCUS_WATCHDOG_POLL
             || (editor_focused && now.duration_since(last_snapshot) >= EDITOR_CARET_POLL);
 
         if need_snapshot {
@@ -699,12 +703,12 @@ mod tests {
         let start = Instant::now();
         let now = start + Duration::from_secs(60);
         assert_eq!(
-            observer_wait(now, false, true, start, start, None),
-            OBSERVER_IDLE_WAIT
+            observer_wait(now, false, true, now, start, None),
+            FOCUS_WATCHDOG_POLL
         );
         assert_eq!(
-            observer_wait(now, false, false, start, start, None),
-            OBSERVER_IDLE_WAIT
+            observer_wait(now, false, false, now, start, None),
+            FOCUS_WATCHDOG_POLL
         );
         assert_eq!(
             observer_wait(now, true, false, now, start, None),
@@ -715,7 +719,7 @@ mod tests {
             Duration::from_millis(5)
         );
         assert_eq!(
-            observer_wait(now, false, false, start, start, Some(now)),
+            observer_wait(now, false, false, now, start, Some(now)),
             RESCAN_DEBOUNCE
         );
     }
