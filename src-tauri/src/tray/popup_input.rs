@@ -731,9 +731,10 @@ mod tests {
     #[test]
     fn current_bitrate_uses_the_runtime_session_endpoint() {
         let source = include_str!("popup_input.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
         assert!(source.contains("sunshine::change_bitrate(session.client_name, kbps as u32).await?"));
         assert!(source.contains("row.state == \"RUNNING\""));
-        assert!(!source.contains("max_bitrate"));
+        assert!(!production.contains("max_bitrate"));
     }
 
     #[test]
