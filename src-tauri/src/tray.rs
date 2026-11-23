@@ -27,6 +27,8 @@ mod menu;
 mod notifications;
 pub(crate) mod popup_input;
 #[cfg(target_os = "windows")]
+mod touch_menu;
+#[cfg(target_os = "windows")]
 mod vdd_confirmation;
 
 pub use actions::{cleanup_prevent_sleep, handle_tray_menu_event};
@@ -811,6 +813,10 @@ fn build_owned_system_tray<R: Runtime + 'static>(app: &AppHandle<R>) -> tauri::R
     }
     builder.build(app)?;
     popup_input::note_native_attached(native);
+    // A touch long-press on the icon arrives as WM_CONTEXTMENU, which tray-icon does not emit:
+    // translate it into the right-click path the menu window already handles.
+    #[cfg(target_os = "windows")]
+    touch_menu::ensure_installed();
 
     info!("GUI tray created for the current user session");
 
