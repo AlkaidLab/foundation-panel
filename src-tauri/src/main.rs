@@ -65,6 +65,7 @@ mod pin_window;
 #[cfg(target_os = "windows")]
 mod shell_context_menu;
 mod stall_watch;
+mod sparxie_open;
 mod start_guide;
 mod sunshine;
 mod version_compare;
