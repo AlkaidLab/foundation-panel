@@ -1110,6 +1110,8 @@ export const pt_BR = {
     notConnected: "Não conectado",
     off: "Desativada",
     viewStatus: "Ver status",
+    openSetting: "Abrir configuração",
+    hostOff: "Desativado no host",
     maintenance: "Manutenção",
     coverCache: "Capas e arquivos temporários",
     coverCacheDescription: "Remova capas de aplicativos não utilizadas e arquivos de configuração temporários.",

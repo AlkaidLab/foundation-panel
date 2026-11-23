@@ -1110,6 +1110,8 @@ export const fr = {
     notConnected: "Non connecté",
     off: "Désactivé",
     viewStatus: "Afficher l'état",
+    openSetting: "Ouvrir le réglage",
+    hostOff: "Désactivé sur l'hôte",
     maintenance: "Entretien",
     coverCache: "Couvertures et fichiers temporaires",
     coverCacheDescription: "Supprimez les couvertures d'applications inutilisées et les fichiers de configuration temporaires.",

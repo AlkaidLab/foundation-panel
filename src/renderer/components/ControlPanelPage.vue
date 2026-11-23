@@ -36,8 +36,9 @@
         <MGroup>
           <MItem icon="content_paste" :title="t.sidebar.clipboardSync">
             <template #trail>
-              <MChip :tone="clipboardSyncWorking ? 'ok' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warn' : 'neutral'" :icon="clipboardSyncWorking ? 'check_circle' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warning' : ''">{{ clipboardSyncWorking ? t.sidebar.connected : clipboardSyncDisabled ? t.sidebar.off : clipboardSyncState === 'off' ? t.sidebar.off : clipboardSyncState === 'degraded' ? t.sidebar.degraded : t.sidebar.notConnected }}</MChip>
+              <MChip :tone="clipboardSyncWorking ? 'ok' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warn' : 'neutral'" :icon="clipboardSyncWorking ? 'check_circle' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warning' : ''">{{ clipboardSyncWorking ? t.sidebar.connected : clipboardSyncDisabled ? t.sidebar.off : clipboardSyncState === 'off' ? t.sidebar.off : clipboardSyncState === 'degraded' ? t.sidebar.degraded : clipboardSyncState === 'disabled' ? t.sidebar.hostOff : t.sidebar.notConnected }}</MChip>
               <MButton variant="outlined" size="sm" @click="actions.showClipboardSyncStatus">{{ t.sidebar.viewStatus }}</MButton>
+              <MButton variant="text" size="sm" icon="settings" @click="actions.openClipboardSyncSetting">{{ t.sidebar.openSetting }}</MButton>
             </template>
           </MItem>
           <MItem icon="content_paste" :title="t.settings.clipboardSyncEnabled" :text="t.settings.clipboardSyncEnabledDesc">

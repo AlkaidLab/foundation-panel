@@ -1110,6 +1110,8 @@ export const sv = {
     notConnected: "Ej ansluten",
     off: "Av",
     viewStatus: "Visa status",
+    openSetting: "Öppna inställningen",
+    hostOff: "Avstängt på värden",
     maintenance: "Underhåll",
     coverCache: "Omslag och tillfälliga filer",
     coverCacheDescription: "Ta bort oanvända programomslag och tillfälliga konfigurationsfiler.",

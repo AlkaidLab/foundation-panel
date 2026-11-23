@@ -1110,6 +1110,8 @@ export const it = {
     notConnected: "Non connesso",
     off: "Disattivato",
     viewStatus: "Visualizza stato",
+    openSetting: "Apri impostazione",
+    hostOff: "Disattivato nell'host",
     maintenance: "Manutenzione",
     coverCache: "Copertine e file temporanei",
     coverCacheDescription: "Rimuovere le coperture delle applicazioni inutilizzate e i file di configurazione temporanei.",

@@ -1105,6 +1105,8 @@ export const en_GB = {
     "notConnected": "Not Connected",
     "off": "Off",
     "viewStatus": "View Status",
+    "openSetting": "Open setting",
+    "hostOff": "Off in the host",
     "maintenance": "Maintenance",
     "coverCache": "Covers & Temporary Files",
     "coverCacheDescription": "Remove unused application covers and temporary configuration files.",

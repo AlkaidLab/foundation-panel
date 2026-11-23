@@ -1110,6 +1110,8 @@ export const ko = {
     notConnected: "연결되지 않음",
     off: "꺼짐",
     viewStatus: "상태 보기",
+    openSetting: "설정 열기",
+    hostOff: "호스트에서 꺼짐",
     maintenance: "유지보수",
     coverCache: "표지 및 임시 파일",
     coverCacheDescription: "사용하지 않는 응용프로그램 커버와 임시 구성 파일을 제거합니다.",
