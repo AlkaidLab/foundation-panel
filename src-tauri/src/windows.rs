@@ -574,8 +574,9 @@ pub fn open_log_console<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 打开全屏 PIN 输入窗口（见 pin_window.rs）。主面板里的「配对」页仍然保留：`open_main_panel_page(app, "pairing")`。
 pub fn open_pin_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
-    open_main_panel_page(app, "pairing").map_err(Into::into)
+    crate::pin_window::open(app).map_err(Into::into)
 }
 
 pub fn open_main_panel_page<R: Runtime>(app: &AppHandle<R>, page: &str) -> Result<(), String> {
@@ -1249,7 +1250,7 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             }
         }
         tauri::WindowEvent::CloseRequested { .. } => {
-            if matches!(window.label(), MAIN_WINDOW_ID | DESKTOP_WINDOW_ID) {
+            if matches!(window.label(), MAIN_WINDOW_ID | DESKTOP_WINDOW_ID | crate::pin_window::PIN_WINDOW_ID) {
                 closing::close_requested(window);
             }
             match window.label() {
@@ -1281,8 +1282,11 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             }
         }
         tauri::WindowEvent::Destroyed => {
-            if matches!(window.label(), MAIN_WINDOW_ID | DESKTOP_WINDOW_ID) {
+            if matches!(window.label(), MAIN_WINDOW_ID | DESKTOP_WINDOW_ID | crate::pin_window::PIN_WINDOW_ID) {
                 closing::destroyed(window.label());
+            }
+            if window.label() == crate::pin_window::PIN_WINDOW_ID {
+                crate::pin_window::destroyed();
             }
             // 延迟重估，等窗口从 Tauri 注册表移除后再判断是否回到托盘常驻态。
             let app_handle = window.app_handle().clone();
