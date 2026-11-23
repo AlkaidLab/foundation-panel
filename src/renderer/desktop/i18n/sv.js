@@ -6,7 +6,24 @@ export const sv = {
     toolbar: "Verktygsfält",
     toolWindow: "Verktygsfönster"
   },
-  pinEntry: { keyboardHint: "Skriv med tangentbordet · Esc avbryter" },
+  pinEntry: {
+    title: "PIN-parkoppling",
+    hint: "Ange den fyrsiffriga PIN-koden som visas på klienten",
+    named: "”{name}” vill parkopplas",
+    unnamed: "En enhet vill parkopplas",
+    keyboardHint: "Skriv med tangentbordet · Esc avbryter",
+    cancel: "Avbryt",
+    preparing: "Ansluter till värden…",
+    pairing: "Parkopplar…",
+    done: "Parkopplad",
+    wrong: "PIN-koden är fel. Försök igen.",
+    unreachable: "Det går inte att nå värden. Kontrollera att Sunshine körs.",
+    failed: "Parkopplingen lyckades inte. Försök igen.",
+    endedFinished: "Den här parkopplingsförfrågan är avslutad",
+    endedNoRequest: "Ingen parkopplingsförfrågan väntar",
+    endedHostLost: "Värden svarar inte",
+    backspace: "Ta bort"
+  },
   toolActions: {
     adminRequiredTitle: "Administratörsrättigheter krävs",
     cleanupAdminRequired: "Rengöring av temporära filer kräver administratörsbehörighet.\n\nStarta om appen som administratör?",

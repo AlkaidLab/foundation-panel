@@ -6,7 +6,24 @@ export const pl = {
     toolbar: "Pasek narzędzi",
     toolWindow: "Okno narzędzi"
   },
-  pinEntry: { keyboardHint: "Wpisz na klawiaturze · Esc anuluje" },
+  pinEntry: {
+    title: "Parowanie kodem PIN",
+    hint: "Wpisz 4-cyfrowy kod PIN wyświetlony na kliencie",
+    named: "„{name}” prosi o sparowanie",
+    unnamed: "Urządzenie prosi o sparowanie",
+    keyboardHint: "Wpisz na klawiaturze · Esc anuluje",
+    cancel: "Anuluj",
+    preparing: "Łączenie z hostem…",
+    pairing: "Parowanie…",
+    done: "Sparowano",
+    wrong: "Nieprawidłowy kod PIN. Spróbuj ponownie.",
+    unreachable: "Nie można połączyć się z hostem. Sprawdź, czy Sunshine działa.",
+    failed: "Parowanie nie powiodło się. Spróbuj ponownie.",
+    endedFinished: "To żądanie parowania zostało zakończone",
+    endedNoRequest: "Brak oczekujących żądań parowania",
+    endedHostLost: "Host nie odpowiada",
+    backspace: "Usuń"
+  },
   toolActions: {
     adminRequiredTitle: "Wymagane uprawnienia administratora",
     cleanupAdminRequired: "Czyszczenie plików tymczasowych wymaga uprawnień administratora.\n\nUruchomić aplikację ponownie jako administrator?",

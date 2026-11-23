@@ -6,7 +6,24 @@ export const pt_BR = {
     toolbar: "Barra de ferramentas",
     toolWindow: "Janela de ferramentas"
   },
-  pinEntry: { keyboardHint: "Digite com o teclado · Esc para cancelar" },
+  pinEntry: {
+    title: "Emparelhamento por PIN",
+    hint: "Digite o PIN de 4 dígitos exibido no cliente",
+    named: "“{name}” quer emparelhar",
+    unnamed: "Um dispositivo quer emparelhar",
+    keyboardHint: "Digite com o teclado · Esc para cancelar",
+    cancel: "Cancelar",
+    preparing: "Conectando ao host…",
+    pairing: "Emparelhando…",
+    done: "Emparelhado",
+    wrong: "O PIN não está correto. Tente novamente.",
+    unreachable: "Não foi possível conectar ao host. Verifique se o Sunshine está em execução.",
+    failed: "Não foi possível emparelhar. Tente novamente.",
+    endedFinished: "Esta solicitação de emparelhamento foi encerrada",
+    endedNoRequest: "Nenhuma solicitação de emparelhamento aguardando",
+    endedHostLost: "O host não está respondendo",
+    backspace: "Apagar"
+  },
   toolActions: {
     adminRequiredTitle: "Privilégios de administrador necessários",
     cleanupAdminRequired: "A limpeza de arquivos temporários requer privilégios de administrador.\n\nReiniciar o aplicativo como administrador?",

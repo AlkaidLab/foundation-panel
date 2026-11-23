@@ -6,7 +6,24 @@ export const fr = {
     toolbar: "Barre d'outils",
     toolWindow: "Fenêtre Outil"
   },
-  pinEntry: { keyboardHint: "Saisissez au clavier · Échap pour annuler" },
+  pinEntry: {
+    title: "Couplage par PIN",
+    hint: "Saisissez le code PIN à 4 chiffres affiché sur le client",
+    named: "« {name} » demande un couplage",
+    unnamed: "Un appareil demande un couplage",
+    keyboardHint: "Saisissez au clavier · Échap pour annuler",
+    cancel: "Annuler",
+    preparing: "Connexion à l’hôte…",
+    pairing: "Couplage en cours…",
+    done: "Couplé",
+    wrong: "Ce PIN n’est pas correct. Réessayez.",
+    unreachable: "Hôte injoignable. Vérifiez que Sunshine est en cours d’exécution.",
+    failed: "Le couplage a échoué. Réessayez.",
+    endedFinished: "Cette demande de couplage est terminée",
+    endedNoRequest: "Aucune demande de couplage en attente",
+    endedHostLost: "L’hôte ne répond pas",
+    backspace: "Effacer"
+  },
   toolActions: {
     adminRequiredTitle: "Privilèges d'administrateur requis",
     cleanupAdminRequired: "Le nettoyage des fichiers temporaires nécessite des privilèges d'administrateur.\n\nRedémarrer l'application en tant qu'administrateur ?",

@@ -6,7 +6,24 @@ export const it = {
     toolbar: "Barra degli strumenti",
     toolWindow: "Finestra degli strumenti"
   },
-  pinEntry: { keyboardHint: "Digita con la tastiera · Esc per annullare" },
+  pinEntry: {
+    title: "Abbinamento con PIN",
+    hint: "Inserisci il PIN a 4 cifre mostrato sul client",
+    named: "«{name}» richiede l’abbinamento",
+    unnamed: "Un dispositivo richiede l’abbinamento",
+    keyboardHint: "Digita con la tastiera · Esc per annullare",
+    cancel: "Annulla",
+    preparing: "Connessione all’host…",
+    pairing: "Abbinamento in corso…",
+    done: "Abbinato",
+    wrong: "Il PIN non è corretto. Riprova.",
+    unreachable: "Impossibile raggiungere l’host. Verifica che Sunshine sia in esecuzione.",
+    failed: "Abbinamento non riuscito. Riprova.",
+    endedFinished: "Questa richiesta di abbinamento è terminata",
+    endedNoRequest: "Nessuna richiesta di abbinamento in attesa",
+    endedHostLost: "L’host non risponde",
+    backspace: "Elimina"
+  },
   toolActions: {
     adminRequiredTitle: "Privilegi di amministratore richiesti",
     cleanupAdminRequired: "La pulizia dei file temporanei richiede privilegi di amministratore.\n\nRiavviare l'app come amministratore?",

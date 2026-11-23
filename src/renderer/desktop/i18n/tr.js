@@ -6,7 +6,24 @@ export const tr = {
     toolbar: "Araç çubuğu",
     toolWindow: "Araç penceresi"
   },
-  pinEntry: { keyboardHint: "Klavyeyle yazabilirsiniz · Esc ile iptal" },
+  pinEntry: {
+    title: "PIN ile eşleştirme",
+    hint: "İstemcide görünen 4 haneli PIN’i girin",
+    named: "“{name}” eşleştirme istiyor",
+    unnamed: "Bir cihaz eşleştirme istiyor",
+    keyboardHint: "Klavyeyle yazabilirsiniz · Esc ile iptal",
+    cancel: "İptal",
+    preparing: "Ana bilgisayara bağlanılıyor…",
+    pairing: "Eşleştiriliyor…",
+    done: "Eşleştirildi",
+    wrong: "PIN doğru değil. Lütfen yeniden deneyin.",
+    unreachable: "Ana bilgisayara ulaşılamıyor. Sunshine’ın çalıştığından emin olun.",
+    failed: "Eşleştirme başarısız oldu. Lütfen yeniden deneyin.",
+    endedFinished: "Bu eşleştirme isteği sona erdi",
+    endedNoRequest: "Bekleyen eşleştirme isteği yok",
+    endedHostLost: "Ana bilgisayar yanıt vermiyor",
+    backspace: "Sil"
+  },
   toolActions: {
     adminRequiredTitle: "Yönetici Ayrıcalıkları Gerekli",
     cleanupAdminRequired: "Geçici dosyaları temizlemek yönetici ayrıcalıkları gerektirir.\n\nUygulama yönetici olarak yeniden başlatılsın mı?",

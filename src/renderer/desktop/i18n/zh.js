@@ -3,7 +3,24 @@ const USBIP_VERSION = compatibility.usbip.version
 
 export const zh = {
   windowTitles: { toolbar: '工具栏', toolWindow: '工具窗口' },
-  "pinEntry": { "keyboardHint": "可直接用键盘输入 · Esc 取消" },
+  "pinEntry": {
+    "title": "PIN 配对",
+    "hint": "输入客户端上显示的 4 位 PIN",
+    "named": "“{name}”请求配对",
+    "unnamed": "有设备请求配对",
+    "keyboardHint": "可直接用键盘输入 · Esc 取消",
+    "cancel": "取消",
+    "preparing": "正在连接主机…",
+    "pairing": "正在配对…",
+    "done": "配对成功",
+    "wrong": "PIN 不对，请再试一次",
+    "unreachable": "连不上主机，请确认 Sunshine 正在运行",
+    "failed": "配对没有成功，请再试一次",
+    "endedFinished": "这个配对请求已经结束",
+    "endedNoRequest": "现在没有等待配对的请求",
+    "endedHostLost": "主机没有响应",
+    "backspace": "删除"
+  },
   "toolActions": {
     "adminRequiredTitle": "需要管理员权限",
     "cleanupAdminRequired": "清理临时文件需要管理员权限。\n\n是否以管理员身份重启应用？",

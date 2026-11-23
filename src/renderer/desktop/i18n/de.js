@@ -6,7 +6,24 @@ export const de = {
     toolbar: "Symbolleiste",
     toolWindow: "Werkzeugfenster"
   },
-  pinEntry: { keyboardHint: "Mit der Tastatur eingeben · Esc zum Abbrechen" },
+  pinEntry: {
+    title: "PIN-Kopplung",
+    hint: "Geben Sie die 4-stellige PIN ein, die auf dem Client angezeigt wird",
+    named: "„{name}“ möchte sich koppeln",
+    unnamed: "Ein Gerät möchte sich koppeln",
+    keyboardHint: "Mit der Tastatur eingeben · Esc zum Abbrechen",
+    cancel: "Abbrechen",
+    preparing: "Verbindung zum Host wird hergestellt …",
+    pairing: "Kopplung läuft …",
+    done: "Gekoppelt",
+    wrong: "Die PIN ist nicht richtig. Bitte erneut versuchen.",
+    unreachable: "Host nicht erreichbar. Bitte prüfen, ob Sunshine läuft.",
+    failed: "Die Kopplung ist fehlgeschlagen. Bitte erneut versuchen.",
+    endedFinished: "Diese Kopplungsanfrage ist beendet",
+    endedNoRequest: "Es wartet keine Kopplungsanfrage",
+    endedHostLost: "Der Host antwortet nicht",
+    backspace: "Löschen"
+  },
   toolActions: {
     adminRequiredTitle: "Administratorrechte erforderlich",
     cleanupAdminRequired: "Für das Bereinigen temporärer Dateien sind Administratorrechte erforderlich.\n\nApp als Administrator neu starten?",

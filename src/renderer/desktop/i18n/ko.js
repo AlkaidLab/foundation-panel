@@ -6,7 +6,24 @@ export const ko = {
     toolbar: "툴바",
     toolWindow: "도구 창"
   },
-  pinEntry: { keyboardHint: "키보드로 입력할 수 있습니다 · Esc로 취소" },
+  pinEntry: {
+    title: "PIN 페어링",
+    hint: "클라이언트에 표시된 4자리 PIN을 입력하세요",
+    named: "“{name}”이(가) 페어링을 요청합니다",
+    unnamed: "기기가 페어링을 요청합니다",
+    keyboardHint: "키보드로 입력할 수 있습니다 · Esc로 취소",
+    cancel: "취소",
+    preparing: "호스트에 연결하는 중…",
+    pairing: "페어링하는 중…",
+    done: "페어링됨",
+    wrong: "PIN이 올바르지 않습니다. 다시 시도하세요.",
+    unreachable: "호스트에 연결할 수 없습니다. Sunshine이 실행 중인지 확인하세요.",
+    failed: "페어링하지 못했습니다. 다시 시도하세요.",
+    endedFinished: "이 페어링 요청이 종료되었습니다",
+    endedNoRequest: "대기 중인 페어링 요청이 없습니다",
+    endedHostLost: "호스트가 응답하지 않습니다",
+    backspace: "삭제"
+  },
   toolActions: {
     adminRequiredTitle: "관리자 권한 필요",
     cleanupAdminRequired: "임시 파일을 정리하려면 관리자 권한이 필요합니다.\n\n앱을 관리자로 다시 시작하시겠습니까?",

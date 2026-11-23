@@ -6,7 +6,24 @@ export const cs = {
     toolbar: "Panel nástrojů",
     toolWindow: "Okno nástrojů"
   },
-  pinEntry: { keyboardHint: "Zadejte na klávesnici · Esc zruší" },
+  pinEntry: {
+    title: "Párování pomocí PIN",
+    hint: "Zadejte čtyřmístný PIN zobrazený na klientovi",
+    named: "„{name}“ žádá o spárování",
+    unnamed: "Zařízení žádá o spárování",
+    keyboardHint: "Zadejte na klávesnici · Esc zruší",
+    cancel: "Zrušit",
+    preparing: "Připojování k hostiteli…",
+    pairing: "Probíhá párování…",
+    done: "Spárováno",
+    wrong: "PIN není správný. Zkuste to znovu.",
+    unreachable: "Hostitel není dostupný. Zkontrolujte, zda Sunshine běží.",
+    failed: "Párování se nezdařilo. Zkuste to znovu.",
+    endedFinished: "Tato žádost o spárování skončila",
+    endedNoRequest: "Nečeká žádná žádost o spárování",
+    endedHostLost: "Hostitel neodpovídá",
+    backspace: "Smazat"
+  },
   toolActions: {
     adminRequiredTitle: "Jsou vyžadována oprávnění správce",
     cleanupAdminRequired: "Čištění dočasných souborů vyžaduje oprávnění správce.\n\nRestartovat aplikaci jako správce?",

@@ -8,42 +8,9 @@ export const CLOSE_AFTER_ENDED_MS = 1800
 /** The reasons pin_window.rs sends with `pin-pairing-ended` (EndReason::as_str). */
 export const ENDED_REASONS = Object.freeze(['finished', 'no-request', 'host-lost'])
 
-export const MESSAGES = {
-  zh: {
-    title: 'PIN 配对',
-    named: '“{name}”请求配对',
-    unnamed: '有设备请求配对',
-    hint: '输入客户端上显示的 4 位 PIN',
-    cancel: '取消',
-    preparing: '正在连接主机…',
-    pairing: '正在配对…',
-    done: '配对成功',
-    wrong: 'PIN 不对，请再试一次',
-    unreachable: '连不上主机，请确认 Sunshine 正在运行',
-    failed: '配对没有成功，请再试一次',
-    'ended-finished': '这个配对请求已经结束',
-    'ended-no-request': '现在没有等待配对的请求',
-    'ended-host-lost': '主机没有响应',
-    backspace: '删除',
-  },
-  en: {
-    title: 'PIN pairing',
-    named: '“{name}” wants to pair',
-    unnamed: 'A device wants to pair',
-    hint: 'Enter the 4-digit PIN shown on the client',
-    cancel: 'Cancel',
-    preparing: 'Connecting to the host…',
-    pairing: 'Pairing…',
-    done: 'Paired',
-    wrong: 'That PIN is not right. Try again.',
-    unreachable: 'Cannot reach the host. Make sure Sunshine is running.',
-    failed: 'Pairing did not work. Try again.',
-    'ended-finished': 'This pairing request is over',
-    'ended-no-request': 'No pairing request is waiting',
-    'ended-host-lost': 'The host is not responding',
-    backspace: 'Delete',
-  },
-}
+// The texts of the card are the `pinEntry` section of every desktop language file (desktop/i18n/<code>.js); a test keeps them whole in all 20.
+/** The keys of that section, in the order of the files. */
+export const PIN_TEXT_KEYS = Object.freeze(['title', 'hint', 'named', 'unnamed', 'keyboardHint', 'cancel', 'preparing', 'pairing', 'done', 'wrong', 'unreachable', 'failed', 'endedFinished', 'endedNoRequest', 'endedHostLost', 'backspace'])
 
 /** The heading: the client's name when the host reports it. */
 export function headingFor(text, clientName) {
@@ -60,8 +27,9 @@ export function classifyAnswer(data) {
 export const classifyFailure = () => 'unreachable'
 
 /** The message key of an ended pairing; an unknown reason reads as the general one. */
+const ENDED_KEYS = { finished: 'endedFinished', 'no-request': 'endedNoRequest', 'host-lost': 'endedHostLost' }
 export function endedKey(reason) {
-  return `ended-${ENDED_REASONS.includes(reason) ? reason : 'finished'}`
+  return ENDED_KEYS[ENDED_REASONS.includes(reason) ? reason : 'finished']
 }
 
 /** The rows of MPinPad's keypad (foundation-ui vue/pinpad.js PIN_ROWS), kept here so that this file runs in node without the UI library; PinApp checks the pad it mounted against it. */
@@ -106,4 +74,21 @@ export function padEdges(before, now) {
 export function stickDirection(x, y, deadZone = 0.55) {
   if (Math.hypot(x, y) < deadZone) return null
   return Math.abs(x) > Math.abs(y) ? (x > 0 ? 'right' : 'left') : (y > 0 ? 'down' : 'up')
+}
+
+/**
+ * Registers something that is handed back asynchronously (the host's `listen` answers with the function that undoes it) for a component that may be gone by then.
+ * `register()` resolves to the undo function; `keep(undo)` takes it while the component is mounted. When the component was unmounted while `register()` was waiting, nothing
+ * is kept: the undo runs at once. Returns whether the component is still mounted, so the caller does not start anything (a timer) for a component that is gone.
+ * A `register()` that fails (outside the panel there is no host to listen to) leaves nothing to undo and answers by the mounted state alone.
+ */
+export async function keepWhileMounted(register, isMounted, keep) {
+  let undo
+  try { undo = await register() } catch { return isMounted() }
+  if (!isMounted()) {
+    try { if (typeof undo === 'function') undo() } catch { /* it was undone already */ }
+    return false
+  }
+  if (typeof undo === 'function') keep(undo)
+  return true
 }

@@ -6,7 +6,24 @@ export const ja = {
     toolbar: "ツールバー",
     toolWindow: "ツールウィンドウ"
   },
-  pinEntry: { keyboardHint: "キーボードで入力できます · Esc でキャンセル" },
+  pinEntry: {
+    title: "PIN ペアリング",
+    hint: "クライアントに表示されている 4 桁の PIN を入力してください",
+    named: "「{name}」がペアリングを求めています",
+    unnamed: "デバイスがペアリングを求めています",
+    keyboardHint: "キーボードで入力できます · Esc でキャンセル",
+    cancel: "キャンセル",
+    preparing: "ホストに接続しています…",
+    pairing: "ペアリングしています…",
+    done: "ペアリングしました",
+    wrong: "PIN が正しくありません。もう一度お試しください。",
+    unreachable: "ホストに接続できません。Sunshine が起動しているか確認してください。",
+    failed: "ペアリングできませんでした。もう一度お試しください。",
+    endedFinished: "このペアリング要求は終了しました",
+    endedNoRequest: "待機中のペアリング要求はありません",
+    endedHostLost: "ホストが応答しません",
+    backspace: "削除"
+  },
   toolActions: {
     adminRequiredTitle: "必要な管理者権限",
     cleanupAdminRequired: "一時ファイルのクリーニングには管理者権限が必要です。\n\n管理者としてアプリを再起動しますか?",
