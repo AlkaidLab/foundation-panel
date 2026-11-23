@@ -11,12 +11,12 @@
 
 use log::info;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, DefWindowProcW, FindWindowExW, GetWindowThreadProcessId, PostMessageW,
-    SetWindowLongPtrW, GWLP_WNDPROC, WM_CONTEXTMENU, WM_RBUTTONUP,
+    CallWindowProcW, DefWindowProcW, FindWindowExW, GWLP_WNDPROC, GetWindowThreadProcessId,
+    PostMessageW, SetWindowLongPtrW, WM_CONTEXTMENU, WM_RBUTTONUP,
 };
+use windows::core::{PCWSTR, w};
 
 /// The taskbar callback message tray-icon registers for its icons. The constant is private in
 /// the crate but fixed there (6002) and pinned by Cargo.lock; a change upstream needs the same
@@ -28,14 +28,17 @@ static HOOKED: AtomicIsize = AtomicIsize::new(0);
 /// The window procedure that was on the window before the hook.
 static ORIGINAL: AtomicIsize = AtomicIsize::new(0);
 
-/// Installs the WM_CONTEXTMENU hook on the tray message window when it is not hooked yet. Cheap
-/// to call repeatedly: it re-hooks only when tray-icon makes a new window.
+/// Installs the WM_CONTEXTMENU hook on the tray message window when it is not hooked yet. Call it
+/// after each tray-icon build so a newly created message window is covered too.
 pub fn ensure_installed() {
-    let Some(hwnd) = find_tray_message_window() else { return };
+    let Some(hwnd) = find_tray_message_window() else {
+        return;
+    };
     if HOOKED.load(Ordering::Relaxed) == hwnd.0 as isize {
         return;
     }
-    let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, hook_proc as *const () as isize) };
+    let previous =
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, hook_proc as *const () as isize) };
     if previous == 0 {
         return;
     }
@@ -49,7 +52,8 @@ pub fn ensure_installed() {
 fn find_tray_message_window() -> Option<HWND> {
     let mut hwnd = HWND::default();
     for _ in 0..64 {
-        hwnd = unsafe { FindWindowExW(None, Some(hwnd), w!("tray_icon_app"), PCWSTR::null()) }.unwrap_or_default();
+        hwnd = unsafe { FindWindowExW(None, Some(hwnd), w!("tray_icon_app"), PCWSTR::null()) }
+            .unwrap_or_default();
         if hwnd.is_invalid() {
             return None;
         }
@@ -62,13 +66,23 @@ fn find_tray_message_window() -> Option<HWND> {
     None
 }
 
-unsafe extern "system" fn hook_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn hook_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     unsafe {
         if message == WM_CONTEXTMENU {
             // Replay the gesture as the tray callback a real mouse right-click delivers, and
             // stop here: tray-icon has no arm for WM_CONTEXTMENU and the default proc does
             // nothing.
-            let _ = PostMessageW(Some(hwnd), TRAY_CALLBACK_MSG, WPARAM(0), LPARAM(WM_RBUTTONUP as isize));
+            let _ = PostMessageW(
+                Some(hwnd),
+                TRAY_CALLBACK_MSG,
+                WPARAM(0),
+                LPARAM(WM_RBUTTONUP as isize),
+            );
             return LRESULT(0);
         }
         let original = ORIGINAL.load(Ordering::Relaxed);
@@ -87,4 +101,3 @@ unsafe extern "system" fn hook_proc(hwnd: HWND, message: u32, wparam: WPARAM, lp
         )
     }
 }
-
