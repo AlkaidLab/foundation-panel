@@ -229,7 +229,7 @@ test('a pending USB/IP cleanup resumes when a VB-CABLE confirmation is cancelled
 })
 
 // ---- the one-click fix, through the real composable with the host and the driver stood in for ----
-async function mountTransport(t, initial, { storage = null, onErrorEvent, sessions = [{ session_id: 1 }], boot = Math.floor(Date.now() / 1000) - 3600 } = {}) {
+async function mountTransport(t, initial, { storage = null, onErrorEvent, sessions = [{ session_id: 1 }], boot = Math.floor(Date.now() / 1000) - 3600, bootGate = null } = {}) {
   const { sunshine, dualsense } = await import('../tauri-adapter.js')
   const { useDialogs } = await import('foundation-ui/dialog')
   const { useNotify } = await import('foundation-ui/notify')
@@ -239,7 +239,7 @@ async function mountTransport(t, initial, { storage = null, onErrorEvent, sessio
   if (storage) globalThis.localStorage = storage
   const saved = { fetch: usbipStatusChannel.fetch, cleanup: usbip.cleanupTransport, install: usbip.installTransport, replace: usbip.replaceLegacyTransport, restart: usbip.restartWindows, detach: usbip.detach, boot: usbip.bootSecs, signature: usbip.driverSignature, dualsense: dualsense.getStatus, ask: sunshine.askActiveSessions, stop: sunshine.stopAllSessions }
   usbipStatusChannel.fetch = async () => ({ success: true, data: { ...world.status } })
-  sunshine.askActiveSessions = async () => world.sessions
+  sunshine.askActiveSessions = async () => { if (world.sessionsHook) await world.sessionsHook(); return world.sessions }
   sunshine.stopAllSessions = async () => { world.calls.push('stop-stream'); world.sessions = [] }
   usbip.cleanupTransport = async () => { world.calls.push('cleanup'); return world.cleanup ? world.cleanup() : { success: true, data: (world.status = { ...world.status, installed: false, error_code: '', detail: '' }) } }
   usbip.installTransport = async () => { world.calls.push('install'); return world.install ? world.install() : { success: true, data: (world.status = { ...world.status, installed: true, ready: true, error_code: '', detail: '' }) } }
@@ -247,7 +247,7 @@ async function mountTransport(t, initial, { storage = null, onErrorEvent, sessio
   usbip.replaceLegacyTransport = async () => { world.calls.push('replace'); return world.replace ? world.replace() : { success: true, data: (world.status = { ...world.status, externally_managed: false, replaceable: false, version_valid: true, ready: true, error_code: '', detail: '' }) } }
   usbip.detach = async (port) => { world.calls.push(`detach-${port}`); world.status = { ...world.status, attached_devices: world.status.attached_devices.filter((d) => d.port !== port) }; return { success: true } }
   dualsense.getStatus = async () => ({ success: true, data: world.dualsense })
-  usbip.bootSecs = async () => ({ success: true, data: world.boot })
+  usbip.bootSecs = async () => { if (bootGate) await bootGate; return { success: true, data: world.boot } }
   usbip.driverSignature = async () => ({ success: true, data: world.signature })
   t.after(() => {
     usbipStatusChannel.fetch = saved.fetch
@@ -273,7 +273,9 @@ async function mountTransport(t, initial, { storage = null, onErrorEvent, sessio
   let mounted = true
   const unmount = () => { if (mounted) { mounted = false; app.unmount() } }
   t.after(unmount)
-  await transport.refreshStatus({ force: true })
+  // with a boot time that is still on its way the first read waits for it (the single-step continuations are judged after it), so it is not waited for here
+  if (bootGate) void transport.refreshStatus({ force: true })
+  else await transport.refreshStatus({ force: true })
   const until = async (read) => {
     for (let i = 0; i < 400; i += 1) { const value = read(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 5)) }
     throw new Error('timed out')
@@ -281,7 +283,7 @@ async function mountTransport(t, initial, { storage = null, onErrorEvent, sessio
   const dialogs = useDialogs()
   const notify = useNotify()
   const snack = () => notify.state.queue.find((item) => item.id === 'usbip-fix')
-  const answer = async (action) => { const dialog = await until(() => dialogs.state.queue[0]); const asked = { ...dialog }; dialogs.settle(dialog.id, action); return asked }
+  const answer = async (action, before) => { const dialog = await until(() => dialogs.state.queue[0]); const asked = { ...dialog }; before?.(); dialogs.settle(dialog.id, action); return asked }
   return { world, transport, unmount, until, snack, answer, texts: () => useI18n().t.value.deviceHub.usb, notify, dialogs }
 }
 
@@ -619,4 +621,124 @@ test('a release that fails names the failed port after the released ones, keeps 
   assert.deepEqual(world.calls, ['detach-1', 'detach-2'], 'the cleanup and the install did not run')
   assert.match(transport.fixRaw.value, /detach: failed\nport 1: released\nport 2: failed\nUSBIP-UAC-001: administrator authorization was canceled/)
   assert.ok((await until(() => snack()?.timeout > 0 && snack())).message.length > 0)
+})
+
+// ---- the race fixes, with promises the test controls ----
+const dev = (port, name = 'USB Input Device', serial = '') => ({ port, description: name, remote_host: '192.0.2.10', remote_port: 3240, remote_bus_id: `1-${port}`, serial, mode: '' })
+const gate = () => { let open; const promise = new Promise((resolve) => { open = resolve }); return { promise, open } }
+const settle = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('a device swapped behind the same port while the question is open is asked about again; only then is it released', async (t) => {
+  const { world, transport, answer, until } = await mountTransport(t, { attached_devices: [dev(1, 'Pad A', 'A1')] })
+  world.sessions = []
+  const running = transport.fixTransport()
+  const first = await answer('confirm', () => { world.status = { ...world.status, attached_devices: [dev(1, 'Pad B', 'B2')] } })
+  assert.match(first.message, /\(1\)/)
+  const second = await answer('confirm')
+  assert.ok(second.message.length > 0)
+  await running
+  assert.deepEqual(world.calls, ['detach-1', 'cleanup', 'install'], 'released once, after the second answer')
+  await until(() => world.calls.length)
+})
+
+test('a device swapped between the last check and the release is not released: nothing is detached, cleaned or installed', async (t) => {
+  const { world, transport, answer, dialogs, until, snack } = await mountTransport(t, { attached_devices: [dev(1, 'Pad A', 'A1')] })
+  world.sessions = []
+  let looks = 0
+  world.sessionsHook = async () => {
+    looks += 1
+    // the second look is the one after the answer; the status was read just before it, the release reads it again
+    if (looks === 2) world.status = { ...world.status, attached_devices: [dev(1, 'Pad B', 'B2')] }
+  }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await running
+  assert.deepEqual(world.calls, [], 'not even the port was released')
+  assert.equal(dialogs.state.queue.length, 0)
+  const stopped = await until(() => snack()?.timeout > 0 && snack())
+  assert.match(transport.fixRaw.value, /detach: failed\nport 1: changed/)
+  assert.ok(stopped.message.length > 0)
+})
+
+test('the boot time is read first: a single-step continuation cannot run before the one-click flow, which checks the streams', async (t) => {
+  const storage = keeping()
+  const boot = gate()
+  const kept = { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], devices: [], written: Math.floor(Date.now() / 1000) * 1000 - 7_200_000 }
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify(kept))
+  const { world, until } = await mountTransport(t, { installed: false, ready: false, vhci_residual: true, residual_kind: 'broken', cleanup_resume: true, error_code: '', detail: '' }, { storage, sessions: [], bootGate: boot.promise })
+  world.cleanup = () => ({ success: true, data: (world.status = { ...world.status, installed: false, vhci_residual: false, residual_kind: '', cleanup_resume: false, error_code: '', detail: '' }) })
+  await settle(60)
+  assert.deepEqual(world.calls, [], 'the status came back first and nothing started: the boot time is still unknown')
+  assert.ok(storage.getItem('foundation.usbip.fix.resume'), 'and the plan is still there')
+  boot.open()
+  await until(() => world.calls.includes('install'))
+  assert.deepEqual(world.calls.filter((c) => c === 'cleanup'), ['cleanup'], 'the cleanup ran once, as a step of the repair that was confirmed')
+  assert.equal(storage.getItem('foundation.usbip.fix.resume'), null)
+})
+
+test('a page that closes while the look at the streams after the answer is on its way starts nothing', async (t) => {
+  const { world, transport, unmount, answer } = await mountTransport(t)
+  world.sessions = []
+  let looks = 0
+  const late = gate()
+  world.sessionsHook = async () => { looks += 1; if (looks === 2) await late.promise }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await settle()
+  unmount()
+  late.open()
+  await running
+  assert.deepEqual(world.calls, [], 'the empty answer that came back to a closed page did not start the cleanup')
+})
+
+test('the continuation after a restart does not start on a page that closes during its look at the streams', async (t) => {
+  const storage = keeping()
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify({ id: 'not-installed', steps: ['install', 'verify'], devices: [], written: Math.floor(Date.now() / 1000) * 1000 - 7_200_000 }))
+  const late = gate()
+  let hold = false
+  const { world, unmount } = await mountTransport(t, { installed: false, ready: false, error_code: '', detail: '' }, { storage, sessions: [] })
+  // the mount already ran its continuation; a second record is claimed by the next try, which the closed page must not make start anything
+  world.calls.length = 0
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify({ id: 'not-installed', steps: ['install', 'verify'], devices: [], written: Math.floor(Date.now() / 1000) * 1000 - 7_200_000 }))
+  world.sessionsHook = async () => { if (hold) await late.promise }
+  hold = true
+  unmount()
+  late.open()
+  await settle()
+  assert.deepEqual(world.calls, [])
+})
+
+test('a repair that has started goes on to its end when the page closes, and its check still reads the transport', async (t) => {
+  const { world, transport, unmount, answer, until, snack, texts } = await mountTransport(t)
+  world.sessions = []
+  const cleaning = gate()
+  world.cleanup = async () => { await cleaning.promise; return { success: true, data: (world.status = { ...world.status, installed: false, error_code: '', detail: '' }) } }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await until(() => world.calls.includes('cleanup'))
+  unmount()
+  cleaning.open()
+  await running
+  assert.deepEqual(world.calls, ['cleanup', 'install'], 'the install followed the cleanup on the closed page')
+  assert.equal((await until(() => snack()?.timeout > 0 && snack())).message, texts().fixDone)
+})
+
+test('the driver lock taken by another component while the boot time is awaited does not cost the plan: the record stays and the release tries again', async (t) => {
+  const storage = keeping()
+  const { useDeviceComponentOperation } = await import('./useDeviceComponentOperation.js')
+  const other = useDeviceComponentOperation()
+  const lock = gate()
+  const holding = other.wrap(() => lock.promise)()
+  t.after(() => { lock.open(); return holding })
+  const boot = gate()
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify({ id: 'not-installed', steps: ['install', 'verify'], devices: [], written: Math.floor(Date.now() / 1000) * 1000 - 7_200_000 }))
+  const { world, until } = await mountTransport(t, { installed: false, ready: false, error_code: '', detail: '' }, { storage, sessions: [], bootGate: boot.promise })
+  boot.open()
+  await settle(60)
+  assert.deepEqual(world.calls, [], 'blocked by the other component')
+  assert.ok(storage.getItem('foundation.usbip.fix.resume'), 'the record is still there')
+  lock.open()
+  await holding
+  await until(() => world.calls.includes('install'))
+  assert.equal(storage.getItem('foundation.usbip.fix.resume'), null, 'taken once, by the run that owned the lock')
 })

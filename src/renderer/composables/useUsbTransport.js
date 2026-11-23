@@ -6,7 +6,7 @@ import { useI18n } from '../desktop/i18n/index.js'
 import { useDeviceComponentOperation } from './useDeviceComponentOperation.js'
 import { usbipStatusChannel } from './deviceStatusStore.js'
 import { usbipCanReplaceLegacy, usbipResidualIsStale, usbipTransportNeedsCleanup } from './deviceHubStatus.js'
-import { clearFixResume, describeFixResult, fixConfirmText, fixGuideText, fixProgressText, loadFixResume, runUsbipFix, saveFixResume, usbipFixOffered, usbipFixOfferedByStatus, usbipFixRawText } from './usbipFix.js'
+import { claimFixResume, clearFixResume, describeFixResult, deviceIdentity, fixConfirmText, fixGuideText, fixProgressText, loadFixResume, peekFixResume, runUsbipFix, saveFixResume, usbipFixOffered, usbipFixOfferedByStatus, usbipFixRawText } from './usbipFix.js'
 
 // what the last one-click fix answered, as raw text: shared by every panel that shows the transport, kept until the next fix
 const fixRaw = ref('')
@@ -100,7 +100,10 @@ export function useUsbTransport(options = {}) {
       bootMs = Number.isFinite(secs) && secs > 0 ? secs * 1000 : 0
     } catch { bootMs = 0 }
   }
-  const hasFixResume = () => Boolean(loadFixResume(globalThis.localStorage, { bootMs }))
+  // read first, before any status is judged: the single-step continuations below wait for it, so none of them runs ahead of the one-click flow
+  const booting = readBoot()
+  // a kept plan, claimable or not yet, belongs to the one-click flow: the single-step continuations stay out of its way
+  const hasFixResume = () => Boolean(peekFixResume(globalThis.localStorage))
   let statusRefreshPromise = null
 
   function retryBusyResume(error, auto) {
@@ -206,6 +209,9 @@ export function useUsbTransport(options = {}) {
       statusLoaded.value = true
       statusLoading.value = false
     }
+    if (disposed) return 'disposed'
+    // whether a kept repair exists is judged after the boot time is known
+    await booting
     if (disposed) return 'disposed'
     // Windows restarted since a cleanup waited for it and the leftover is still there: continue the same operation (one prompt for
     // administrator rights). The one chance is spent only when the operation can start now; while another one holds the transport
@@ -496,10 +502,18 @@ export function useUsbTransport(options = {}) {
 
   /** What the person reads after the steps: the status as the page shows it, and whether the DualSense native channel agrees. */
   async function verifyRepair() {
+    // a repair that was started carries on when the page is closed: its check reads the transport itself then
+    let current = status
     const read = await refreshStatus({ force: true, afterCurrent: true })
-    if (read !== 'ok') return { ok: false, error: 'USBIP-VERIFY-001: the transport status could not be read after the repair' }
-    if (!status.ready || status.vhci_residual || status.error_code) {
-      return { ok: false, error: `USBIP-VERIFY-001: USB/IP is not ready after the repair${status.detail ? `: ${status.detail}` : ''}` }
+    if (read === 'disposed') {
+      const direct = await usbipStatusChannel.fetch({ force: true })
+      current = direct?.success ? direct.data : null
+    } else if (read !== 'ok') {
+      current = null
+    }
+    if (!current) return { ok: false, error: 'USBIP-VERIFY-001: the transport status could not be read after the repair' }
+    if (!current.ready || current.vhci_residual || current.error_code) {
+      return { ok: false, error: `USBIP-VERIFY-001: USB/IP is not ready after the repair${current.detail ? `: ${current.detail}` : ''}` }
     }
     let state = ''
     try { state = (await dualsense.getStatus())?.data?.state || '' } catch { state = '' }
@@ -517,8 +531,11 @@ export function useUsbTransport(options = {}) {
    */
   const fixTransport = sharedOperation.wrap(async (options = {}) => {
     if (operationBlocked() || fixing.value) return
-    fixing.value = true
     const resume = options?.resume || null
+    // The kept record is taken here, once this run owns the driver lock (compare and delete): a run that could not start leaves it for the next try.
+    if (resume && !claimFixResume(globalThis.localStorage, resume)) return
+    fixing.value = true
+    let mutating = false
     const usb = () => t.value.deviceHub.usb
     const version = compatibility.usbip.version
     let message = null
@@ -537,14 +554,16 @@ export function useUsbTransport(options = {}) {
           const read = await refreshStatus({ force: true, afterCurrent: true })
           if (read === 'disposed') throw new Error('USB/IP status refresh was abandoned: the page was closed')
           if (read !== 'ok') throw new Error(`USB/IP status refresh failed${status.detail ? `: ${status.detail}` : ''}`)
-          if (disposed) throw new Error('USB/IP status refresh was abandoned: the page was closed')
+          if (disposed && !mutating) throw new Error('USB/IP status refresh was abandoned: the page was closed')
           return { ...status, attached_devices: [...(status.attached_devices || [])] }
         },
         sessions: async () => {
-          // a page that was closed cannot say what runs: unknown stops the repair before anything changes
-          if (disposed) return null
+          // a page that was closed before anything changed cannot say what runs: unknown stops the repair; one that has started is carried on
+          if (disposed && !mutating) return null
           try {
             const sessions = await sunshine.askActiveSessions()
+            // the answer comes back to a page that may be gone: it is not used to start anything
+            if (disposed && !mutating) return null
             return Array.isArray(sessions) ? sessions : null
           } catch { return null }
         },
@@ -556,19 +575,28 @@ export function useUsbTransport(options = {}) {
         endStream: async () => {
           try { await sunshine.stopAllSessions(); return { ok: true } } catch (error) { return { ok: false, error: String(error) } }
         },
-        // only the devices the person was told about; a new one makes the question come again before this step (usbipFix.js)
-        detach: async (ports) => {
+        // Only the devices the person was told about, and only while the same device is behind the port: read again just before, and a port that
+        // now holds another device is not released (the plan is checked against the system once more, usbipFix.js).
+        detach: async (devices) => {
           const released = []
-          for (const port of ports) {
+          const fresh = await refreshStatus({ force: true, afterCurrent: true })
+          if (fresh === 'failed') return { ok: false, error: 'USB/IP status refresh failed before the devices were released', raw: '' }
+          const now = new Map((status.attached_devices || []).map((device) => [device.port, deviceIdentity(device)]))
+          for (const device of devices) {
+            if (now.has(device.port) && now.get(device.port) !== device.id) {
+              return { ok: false, error: `USBIP-REPLACE-005: the device on port ${device.port} is not the one that was confirmed; nothing more was released`, raw: [...released, `port ${device.port}: changed`].join('\n') }
+            }
+          }
+          for (const { port } of devices) {
             const result = await usbip.detach(port)
             // the failed port is named beside the released ones, so a cancelled administrator prompt still says which port it was
             if (!result?.success) return { ok: false, error: String(result?.message), raw: [...released, `port ${port}: failed`].join('\n') }
             released.push(`port ${port}: released`)
           }
           usbipStatusChannel.invalidate()
-          // the replacement refuses while the status still lists a device: read it again before the next step
+          // the replacement refuses while the status still lists a device: read it again before the next step ('disposed': nothing to apply it to)
           const read = await refreshStatus({ force: true, afterCurrent: true })
-          if (read !== 'ok') return { ok: false, error: 'USB/IP status refresh failed after the devices were released', raw: released.join('\n') }
+          if (read === 'failed') return { ok: false, error: 'USB/IP status refresh failed after the devices were released', raw: released.join('\n') }
           return { ok: true, raw: released.join('\n') }
         },
         removeStale: () => removeStaleRaw({ confirmed: true, quiet: true }),
@@ -576,6 +604,8 @@ export function useUsbTransport(options = {}) {
         install: () => installRaw({ confirmed: true, quiet: true }),
         replace: () => replaceRaw({ confirmed: true, quiet: true }),
         verify: verifyRepair,
+        alive: () => !disposed,
+        onMutating: () => { mutating = true },
         onReboot: ({ plan }) => saveFixResume(globalThis.localStorage, plan),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: () => Date.now(),
@@ -612,11 +642,13 @@ export function useUsbTransport(options = {}) {
    * when the lock is free); the person confirmed this before the restart.
    */
   async function resumeFixAfterRestart() {
+    if (disposed) return
+    // the boot time first; everything is judged again after it, because the lock or the page may have changed meanwhile
+    await booting
     if (disposed || operationBlocked() || fixing.value) return
-    if (!bootMs) await readBoot()
     const kept = loadFixResume(globalThis.localStorage, { bootMs })
     if (!kept) return
-    clearFixResume(globalThis.localStorage)
+    // taken inside the run, with the lock (fixTransport); a run that does not start leaves the record, and the lock's release tries again
     await fixTransport({ resume: kept })
   }
 
@@ -631,9 +663,7 @@ export function useUsbTransport(options = {}) {
   })
   // Entering the page reads the devices again: the shared answer may be minutes old, and the native side answers this from cheap probes.
   onMounted(async () => {
-    const booting = readBoot()
     await refreshStatus({ force: true })
-    await booting
     await resumeFixAfterRestart()
   })
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。

@@ -3,6 +3,7 @@ import test from 'node:test'
 import 'vue' // loaded before the shim below, as the other tests of this folder do: Vue must not see the fake document
 import { DESKTOP_LOCALES } from '../desktop/i18n/merge.js'
 import {
+  claimFixResume,
   clearFixResume,
   describeFixResult,
   FIX_GUIDE_IDS,
@@ -13,6 +14,7 @@ import {
   guideFor,
   initialFix,
   loadFixResume,
+  peekFixResume,
   planUsbipFix,
   primaryCode,
   reduceFix,
@@ -41,6 +43,8 @@ const { formatUsbipFriendlyError } = await import('./useUsbTransport.js')
 
 const VERSION = '0.9.8.1'
 const base = { supported: true, installed: true, version_valid: true, ready: true, externally_managed: false, replaceable: false, vhci_residual: false, attached_devices: [] }
+/** An attached device as the status lists it: where it sits (the port) and who it is (exporter, bus id, serial, name). */
+const dev = (port, name = 'USB Input Device', serial = '') => ({ port, description: name, remote_host: '192.0.2.10', remote_port: 3240, remote_bus_id: `1-${port}`, serial, mode: '' })
 const mismatch = { ...base, ready: false, error_code: 'USBIP-EXEC-006', detail: 'USBIP-EXEC-006: the shared transport does not match the tested component combination' }
 
 test('the repair is offered for the failures of the transport itself, not for the exporter, bad input, or an install that fails inside another code', () => {
@@ -95,8 +99,10 @@ test('the codes of the Rust side each belong to a row of the inventory', () => {
 })
 
 test('a full usbip-win2 of the person is replaced only when the host allows it, and never planned away behind the person\'s back', () => {
-  const replace = planUsbipFix({ ...base, ready: false, externally_managed: true, replaceable: true, version_valid: false, attached_devices: [{ port: 1 }, { port: 2 }] })
+  const replace = planUsbipFix({ ...base, ready: false, externally_managed: true, replaceable: true, version_valid: false, attached_devices: [dev(2), dev(1)] })
   assert.deepEqual([replace.kind, replace.steps, replace.replacesExternal, replace.attachedCount], ['replace', ['detach', 'replace', 'verify'], true, 2])
+  assert.deepEqual(replace.devices.map((device) => device.port), [1, 2], 'in port order, each with who it is')
+  assert.notEqual(replace.devices[0].id, replace.devices[1].id)
   for (const status of [
     { ...mismatch, externally_managed: true, replaceable: false },
     { ...mismatch, externally_managed: true, replaceable: false, vhci_residual: true },
@@ -108,7 +114,7 @@ test('a full usbip-win2 of the person is replaced only when the host allows it, 
 })
 
 test('attached devices are released first, before anything is cleaned or replaced, and only when a step needs the transport free', () => {
-  const devices = [{ port: 1 }]
+  const devices = [dev(1)]
   assert.deepEqual(planUsbipFix({ ...mismatch, attached_devices: devices }).steps, ['detach', 'cleanup', 'install', 'verify'])
   assert.deepEqual(planUsbipFix({ ...base, ready: false, vhci_residual: true, residual_kind: 'stale', attached_devices: devices }).steps, ['remove-stale', 'verify'], 'a live controller stays: nothing attached is touched')
   assert.deepEqual(planUsbipFix({ ...base, attached_devices: devices }).kind, 'healthy', 'attached devices on a healthy transport are the person\'s own')
@@ -434,7 +440,7 @@ test('every language has the words of the fix, with the placeholders its sentenc
 
 // ---- the steps beyond install and cleanup ----
 test('attached devices are released before the cleanup, and a release that fails stops the repair there', async () => {
-  const withDevices = { ...mismatch, attached_devices: [{ port: 1 }, { port: 2 }] }
+  const withDevices = { ...mismatch, attached_devices: [dev(1), dev(2)] }
   const { deps, calls } = world({ status: withDevices, sessions: [] })
   const state = await runUsbipFix(deps)
   assert.equal(state.outcome, 'done')
@@ -528,18 +534,18 @@ test('a restart keeps the plan; the next run of the panel loads it once, and an 
   assert.equal(loadFixResume(store, { bootMs: 1000, now: 2000 }), null, 'not earlier than the write either')
   assert.equal(loadFixResume(store, { bootMs: 0, now: 2000 }), null, 'without a boot time nothing is claimed')
   const kept = loadFixResume(store, { bootMs: 1500, now: 2000 })
-  assert.deepEqual(kept, { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], ports: [], written: 1000 }, 'a record that is not claimable yet stays, and is claimed once Windows has started after it')
+  assert.deepEqual(kept, { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], devices: [], written: 1000 }, 'a record that is not claimable yet stays, and is claimed once Windows has started after it')
   assert.equal(loadFixResume(store, { bootMs: 1500, now: 1000 + 25 * 60 * 60 * 1000 }), null, 'a day later it is gone')
   assert.equal(loadFixResume(store, { bootMs: 1500, now: 2000 }), null, 'and was dropped')
   clearFixResume(store)
   assert.equal(loadFixResume(store, { bootMs: 1500, now: 2000 }), null)
   assert.equal(loadFixResume({ getItem() { throw new Error('private mode') } }, { bootMs: 2, now: 3 }), null)
-  saveFixResume(store, { id: 'external-incompatible-replaceable', steps: ['detach', 'replace', 'verify'], ports: [2, 1] }, 1000)
-  assert.deepEqual(loadFixResume(store, { bootMs: 1500, now: 2000 }).ports, [2, 1], 'the devices that were confirmed are kept with the steps')
+  saveFixResume(store, { id: 'external-incompatible-replaceable', steps: ['detach', 'replace', 'verify'], devices: [{ port: 2, id: 'b' }, { port: 1, id: 'a' }] }, 1000)
+  assert.deepEqual(loadFixResume(store, { bootMs: 1500, now: 2000 }).devices, [{ port: 2, id: 'b' }, { port: 1, id: 'a' }], 'the devices that were confirmed are kept with the steps')
 })
 
 test('after the restart the rest of the plan runs without a question; anything beyond it, a new stream or a new device included, asks again', async () => {
-  const resume = { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], ports: [] }
+  const resume = { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], devices: [] }
   // Windows finished the cleanup: only the install is left
   const left = world({ status: { ...base, installed: false, ready: false }, sessions: [] })
   const done = await runUsbipFix(left.deps, undefined, { resume })
@@ -564,12 +570,17 @@ test('after the restart the rest of the plan runs without a question; anything b
   assert.equal(other.calls.includes('replace'), false)
   assert.ok(other.calls.includes('confirm'))
   // a device that was not among the confirmed ones asks again
-  const device = world({ status: { ...mismatch, attached_devices: [{ port: 3 }] }, sessions: [], confirm: false })
-  assert.equal((await runUsbipFix(device.deps, undefined, { resume: { ...resume, steps: ['detach', 'cleanup', 'install', 'verify'], ports: [1] } })).outcome, 'cancelled')
+  const withDevice = { ...resume, steps: ['detach', 'cleanup', 'install', 'verify'], devices: planUsbipFix({ ...mismatch, attached_devices: [dev(1)] }).devices }
+  const device = world({ status: { ...mismatch, attached_devices: [dev(3)] }, sessions: [], confirm: false })
+  assert.equal((await runUsbipFix(device.deps, undefined, { resume: withDevice })).outcome, 'cancelled')
   assert.ok(device.calls.includes('confirm'))
-  const same = world({ status: { ...mismatch, attached_devices: [{ port: 1 }] }, sessions: [] })
-  assert.equal((await runUsbipFix(same.deps, undefined, { resume: { ...resume, steps: ['detach', 'cleanup', 'install', 'verify'], ports: [1] } })).outcome, 'done')
+  const same = world({ status: { ...mismatch, attached_devices: [dev(1)] }, sessions: [] })
+  assert.equal((await runUsbipFix(same.deps, undefined, { resume: withDevice })).outcome, 'done')
   assert.equal(same.calls.includes('confirm'), false)
+  // the same port with another device behind it is not the device that was confirmed
+  const swapped = world({ status: { ...mismatch, attached_devices: [dev(1, 'Another gamepad', 'SN-9')] }, sessions: [], confirm: false })
+  assert.equal((await runUsbipFix(swapped.deps, undefined, { resume: withDevice })).outcome, 'cancelled')
+  assert.ok(swapped.calls.includes('confirm'), 'a port that holds another device asks again')
   // a second restart keeps the plan again
   const again = world({ status: { ...base, installed: false, ready: false }, sessions: [], install: { ok: true, data: { ready: false, install_pending_restart: true } } })
   const kept = []
@@ -604,12 +615,12 @@ test('a stream that starts while the question is open is not changed under: the 
 })
 
 test('a device attached while the question is open comes into the question before it is released', async () => {
-  const { deps } = changing({ statuses: [mismatch, { ...mismatch, attached_devices: [{ port: 4 }] }], streams: [[]] })
+  const { deps } = changing({ statuses: [mismatch, { ...mismatch, attached_devices: [dev(4)] }], streams: [[]] })
   const asked = []
   const originalConfirm = deps.confirm
-  deps.confirm = async (question) => { asked.push([question.plan.steps, question.plan.ports]); return originalConfirm(question) }
+  deps.confirm = async (question) => { asked.push([question.plan.steps, question.plan.devices.map((device) => device.port)]); return originalConfirm(question) }
   const released = []
-  deps.detach = async (ports) => { released.push(ports); return { ok: true } }
+  deps.detach = async (devices) => { released.push(devices.map((device) => device.port)); return { ok: true } }
   assert.equal((await runUsbipFix(deps)).outcome, 'done')
   assert.deepEqual(asked, [[['cleanup', 'install', 'verify'], []], [['detach', 'cleanup', 'install', 'verify'], [4]]])
   assert.deepEqual(released, [[4]], 'only the devices that were confirmed are released')
@@ -673,7 +684,7 @@ test('a failure the step already reported is not reported again; one the repair 
 })
 
 test('devices released before a release failed stay in the diagnostics of the failure', async () => {
-  const { deps } = world({ status: { ...mismatch, attached_devices: [{ port: 1 }, { port: 2 }] }, sessions: [], detach: { ok: false, error: 'USBIP-UAC-001: canceled', raw: 'port 1: released' } })
+  const { deps } = world({ status: { ...mismatch, attached_devices: [dev(1), dev(2)] }, sessions: [], detach: { ok: false, error: 'USBIP-UAC-001: canceled', raw: 'port 1: released' } })
   const state = await runUsbipFix(deps)
   assert.equal(state.failedStep, 'detach')
   assert.match(usbipFixRawText(state), /detach: failed\nport 1: released\nUSBIP-UAC-001: canceled/)
@@ -683,4 +694,72 @@ test('the document of the inventory is the one the inventory gives', async () =>
   const { readFileSync } = await import('node:fs')
   const { DOC_PATH, renderInventoryDoc } = await import('../../../scripts/usbip-fix-inventory-doc.mjs')
   assert.equal(readFileSync(DOC_PATH, 'utf8'), renderInventoryDoc(), 'run node scripts/usbip-fix-inventory-doc.mjs')
+})
+
+// ---- the race fixes: what was confirmed is who it was, a restart that arrives meanwhile is kept, a closed page starts nothing ----
+test('a device swapped behind the same port while the question is open comes into the question again, and only the confirmed device is released', async () => {
+  const { deps } = changing({ statuses: [{ ...mismatch, attached_devices: [dev(1, 'Pad A', 'A1')] }, { ...mismatch, attached_devices: [dev(1, 'Pad B', 'B2')] }], streams: [[]] })
+  const asked = []
+  const originalConfirm = deps.confirm
+  deps.confirm = async (question) => { asked.push(question.plan.devices.map((device) => device.id)); return originalConfirm(question) }
+  const released = []
+  deps.detach = async (devices) => { released.push(devices); return { ok: true } }
+  assert.equal((await runUsbipFix(deps)).outcome, 'done')
+  assert.equal(asked.length, 2, 'the same port number is not the same device')
+  assert.match(asked[0][0], /Pad A/)
+  assert.match(asked[1][0], /Pad B/)
+  assert.equal(released.length, 1)
+  assert.match(released[0][0].id, /Pad B/, 'what was released is what the second answer was about')
+})
+
+test('a restart that Windows begins waiting for while the question is open is kept with the steps it finishes', async () => {
+  const { deps } = changing({ statuses: [mismatch, { ...mismatch, cleanup_pending_restart: true }], streams: [[]] })
+  const kept = []
+  deps.onReboot = ({ plan, kind }) => kept.push([plan.id, plan.steps, kind])
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'reboot-cleanup')
+  assert.deepEqual(kept, [['pending-restart-cleanup', ['cleanup', 'verify'], 'cleanup']], 'saved before returning')
+})
+
+test('a page that is gone starts nothing, wherever the answer comes back; one that has started is carried to its end', async () => {
+  // gone before the first step (the check after the answer)
+  const gone = world({ sessions: [] })
+  gone.deps.alive = () => false
+  const stopped = await runUsbipFix(gone.deps)
+  assert.deepEqual([stopped.outcome, stopped.failedStep], ['failed', 'check'])
+  for (const step of ['endStream', 'detach', 'cleanup', 'install', 'replace', 'removeStale']) assert.equal(gone.calls.includes(step), false, step)
+  // gone while the second look at the streams is on its way: the answer ([] here) does not start the cleanup
+  let alive = true
+  let releaseLook
+  const waiting = world({ sessions: [] })
+  const looks = []
+  waiting.deps.sessions = () => { waiting.calls.push('sessions'); looks.push(1); return looks.length === 2 ? new Promise((resolve) => { releaseLook = () => resolve([]) }) : Promise.resolve([]) }
+  waiting.deps.alive = () => alive
+  const running = runUsbipFix(waiting.deps)
+  for (let i = 0; i < 20 && !releaseLook; i += 1) await new Promise((resolve) => setImmediate(resolve))
+  alive = false
+  releaseLook()
+  const result = await running
+  assert.deepEqual([result.outcome, result.failedStep], ['failed', 'check'])
+  assert.equal(waiting.calls.includes('cleanup'), false, 'a page that closed during the look does not clean')
+  // started, then gone: the steps go on to the check
+  let open = true
+  const started = world({ sessions: [] })
+  started.deps.alive = () => open
+  started.deps.cleanup = async () => { started.calls.push('cleanup'); open = false; return { ok: true, data: { vhci_residual: false } } }
+  const finished = await runUsbipFix(started.deps)
+  assert.equal(finished.outcome, 'done')
+  assert.deepEqual(started.calls.filter((c) => ['cleanup', 'install', 'verify'].includes(c)), ['cleanup', 'install', 'verify'])
+})
+
+test('the record of a repair is taken by one owner: compare and delete', () => {
+  const store = memory()
+  saveFixResume(store, { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], devices: [] }, 1000)
+  const mine = loadFixResume(store, { bootMs: 1500, now: 2000 })
+  const theirs = loadFixResume(store, { bootMs: 1500, now: 2000 })
+  assert.equal(claimFixResume(store, mine), true)
+  assert.equal(claimFixResume(store, theirs), false, 'the second panel finds it gone')
+  saveFixResume(store, { id: 'pending-restart-install', steps: ['install', 'verify'], devices: [] }, 1200)
+  assert.equal(claimFixResume(store, mine), false, 'a record written since is not the one that was loaded, and is left alone')
+  assert.ok(peekFixResume(store, 2000), 'and still there')
 })

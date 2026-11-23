@@ -17,6 +17,12 @@ export const STREAM_QUERY_WAIT_MS = 6000
 /** How many times what was confirmed may change under the question before the repair stops asking. */
 export const MAX_CONFIRM_ROUNDS = 3
 
+/**
+ * Who a device is, from what the status gives (the exporter, its bus id, the serial, the name, the mode): a port number is only where it sits,
+ * and a device can be swapped behind it. The status carries no VID:PID of its own; the name and the bus id of the exporter stand for them.
+ */
+export const deviceIdentity = (device = {}) => [device.remote_host, device.remote_port, device.remote_bus_id, device.serial, device.description, device.mode].map((part) => String(part ?? '')).join('|')
+
 const codesOf = (error) => String(error || '').match(/USBIP-[A-Z]+-\d{3}/g) || []
 
 /** The first code of an error, looking through the install wrapper (USBIP-SETUP-007: transport installation failed: <real code>). */
@@ -68,8 +74,8 @@ export function planUsbipFix(status = {}) {
   if (status.supported === false) return make({ kind: 'blocked', id: 'unsupported-os', reason: 'unsupported' })
   if (status.cleanup_pending_restart) return make({ kind: 'reboot', id: 'pending-restart-cleanup', reason: 'cleanup' })
   if (status.install_pending_restart) return make({ kind: 'reboot', id: 'pending-restart-install', reason: 'install' })
-  const ports = (status.attached_devices || []).map((device) => device.port).sort((a, b) => a - b)
-  const attachedCount = ports.length
+  const devices = (status.attached_devices || []).map((device) => ({ port: device.port, id: deviceIdentity(device) })).sort((a, b) => a.port - b.port)
+  const attachedCount = devices.length
   const withDetach = (steps) => (attachedCount ? ['detach', ...steps] : steps)
   const staleOnly = usbipResidualIsStale(status) && status.version_valid !== false && !status.error_code && !badSignature(status)
   if (status.externally_managed) {
@@ -79,7 +85,7 @@ export function planUsbipFix(status = {}) {
     }
     if (staleOnly) return make({ kind: 'remove-stale', id: 'external-stale-controller', steps: ['remove-stale', 'verify'] })
     if (!usbipCanReplaceLegacy(status)) return make({ kind: 'blocked', id: 'external-incompatible-manual', reason: 'external', guide: 'external' })
-    return make({ kind: 'replace', id: 'external-incompatible-replaceable', steps: [...withDetach(['replace']), 'verify'], replacesExternal: true, attachedCount, ports })
+    return make({ kind: 'replace', id: 'external-incompatible-replaceable', steps: [...withDetach(['replace']), 'verify'], replacesExternal: true, attachedCount, devices })
   }
   if (staleOnly) return make({ kind: 'remove-stale', id: 'stale-controller', steps: ['remove-stale', 'verify'] })
   const broken = usbipTransportNeedsCleanup(status) || badSignature(status) || Boolean(status.cleanup_resume)
@@ -93,10 +99,10 @@ export function planUsbipFix(status = {}) {
           : status.cleanup_resume ? 'cleanup-resume'
             : status.installed && status.version_valid === false ? 'old-version'
               : status.installed || status.vhci_residual ? 'residual-broken' : 'not-installed'
-    return make({ kind: 'clean-install', id, steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, ports })
+    return make({ kind: 'clean-install', id, steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, devices })
   }
   if (!status.installed) return make({ kind: 'install', id: status.install_resume ? 'install-resume' : 'not-installed', steps: ['install', 'verify'] })
-  if (TOOL_ERRORS.has(status.error_code)) return make({ kind: 'clean-install', id: 'tool-failed', steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, ports })
+  if (TOOL_ERRORS.has(status.error_code)) return make({ kind: 'clean-install', id: 'tool-failed', steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, devices })
   if (status.reboot_recommended) return make({ kind: 'reboot', id: 'reboot-recommended', reason: 'install' })
   return make({ kind: 'blocked', id: 'unexplained', reason: 'nothing' })
 }
@@ -181,7 +187,7 @@ export function reduceFix(state, event) {
 const rawOf = (status = {}) => [status.detail, status.last_install_error, status.last_cleanup_error].filter(Boolean).join('\n')
 
 /** What the plan asks the person to confirm; when this changes under the question, the question is asked again. */
-const confirmedShape = (plan) => JSON.stringify([plan.kind, plan.steps, plan.ports || [], Boolean(plan.replacesExternal), Boolean(plan.streaming)])
+const confirmedShape = (plan) => JSON.stringify([plan.kind, plan.steps, plan.devices || [], Boolean(plan.replacesExternal), Boolean(plan.streaming)])
 
 /**
  * What a repair that waited for a restart may do without asking: only steps the person confirmed before it, no stream to end (nothing says
@@ -190,7 +196,8 @@ const confirmedShape = (plan) => JSON.stringify([plan.kind, plan.steps, plan.por
 function resumeAllows(plan, resume) {
   if (plan.streaming || plan.steps.includes('end-stream')) return false
   if (!plan.steps.every((step) => step === 'verify' || resume.steps.includes(step))) return false
-  return !plan.steps.includes('detach') || (plan.ports || []).every((port) => (resume.ports || []).includes(port))
+  // the same device on the same port: a port that now holds another device was not confirmed
+  return !plan.steps.includes('detach') || (plan.devices || []).every((device) => (resume.devices || []).some((kept) => kept.port === device.port && kept.id === device.id))
 }
 
 /**
@@ -199,13 +206,15 @@ function resumeAllows(plan, resume) {
  *   sessions()             the live streams, or null when the host cannot be asked (that is not an empty list)
  *   confirm({ plan, streaming })   the one question; resolves true to go on
  *   endStream()            asks the host to end the stream: { ok, error? }
- *   detach(ports) / removeStale() / cleanup() / install() / replace()   the steps of the component page: { ok, data?, error?, raw?, skipped?, reported? }
+ *   detach(devices) / removeStale() / cleanup() / install() / replace()   the steps of the component page: { ok, data?, error?, raw?, skipped?, reported? }
  *   verify()               the check after the steps: { ok, error?, note? }
  *   onReboot({ plan, kind }) called when the plan has to wait for a restart, so it can be kept
+ *   alive()                false once the page that asked for the repair is gone: nothing is started then (a repair that has started goes on)
+ *   onMutating()           called once, just before the first step that changes anything
  *   sleep(ms), now()       injectable clock
  * Phases never overlap: what is confirmed is read again from the system once the person has answered, and when it differs (a stream came, a
  * device was attached) the question is asked again with the new facts; nothing changes under an answer that was given for something else.
- * `options.resume` ({ steps, ports }) continues a repair that waited for a restart: it asks nothing when everything left to do was in the plan
+ * `options.resume` ({ steps, devices }) continues a repair that waited for a restart: it asks nothing when everything left to do was in the plan
  * the person confirmed, and asks as usual otherwise (a new stream, a new device, a replacement).
  * Resolves the finished state. Nothing here throws: a step that throws is a failed step.
  */
@@ -253,12 +262,14 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
     }
     return { plan }
   }
+  // what a restart that was already waiting when the repair began finishes, kept like the steps of a repair that started the wait
+  const waitingSteps = { 'pending-restart-cleanup': ['cleanup', 'verify'], 'pending-restart-install': ['install', 'verify'], 'reboot-recommended': ['verify'] }
+  // what a restart that was already waiting finishes, kept like the steps of a repair that started the wait
+  const keepWaiting = (plan) => deps.onReboot?.({ plan: { ...plan, steps: waitingSteps[plan.id] || ['verify'], devices: [] }, kind: plan.reason })
   const rebootWith = (kind, plan) => {
     deps.onReboot?.({ plan, kind })
     return apply({ type: 'reboot', kind })
   }
-  // what a restart that was already waiting when the repair began finishes, kept like the steps of a repair that started the wait
-  const waitingSteps = { 'pending-restart-cleanup': ['cleanup', 'verify'], 'pending-restart-install': ['install', 'verify'], 'reboot-recommended': ['verify'] }
 
   apply({ type: 'check', resumed: Boolean(options.resume) })
   let seen = await diagnose()
@@ -266,7 +277,7 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
   let plan = seen.plan
   apply({ type: 'plan', plan })
   if (plan.kind === 'reboot') {
-    deps.onReboot?.({ plan: { ...plan, steps: waitingSteps[plan.id] || ['verify'], ports: [] }, kind: plan.reason })
+    keepWaiting(plan)
     return state
   }
   if (state.phase !== 'confirming') return state
@@ -287,7 +298,11 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
         plan = seen.plan
         resume = null
         apply({ type: 'plan', plan })
-        if (plan.kind === 'reboot') return state
+        // Windows began waiting for a restart while the question was open: that plan is kept too
+        if (plan.kind === 'reboot') {
+          keepWaiting(plan)
+          return state
+        }
         if (state.phase !== 'confirming') return state
         continue
       }
@@ -296,7 +311,14 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
   }
   apply({ type: 'confirmed' })
 
+  let mutating = false
   for (const step of plan.steps) {
+    // a page that is gone starts nothing; once a step has changed something the repair is carried to its end
+    if (!mutating && step !== 'verify') {
+      if (deps.alive && !deps.alive()) return fail('check', 'USB/IP repair did not start: the page was closed')
+      mutating = true
+      deps.onMutating?.()
+    }
     if (step === 'end-stream') {
       const stopped = await guarded(() => deps.endStream(), 'the host did not accept the request')
       if (!stopped?.ok) return fail(step, stopped?.error || 'the host did not accept the request')
@@ -325,7 +347,7 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
       apply({ type: 'step-done', step, raw: checked.raw || '' })
       return apply({ type: 'done', note: checked.note || '' })
     }
-    const run = { detach: () => deps.detach(plan.ports || []), 'remove-stale': deps.removeStale, cleanup: deps.cleanup, replace: deps.replace, install: deps.install }[step]
+    const run = { detach: () => deps.detach(plan.devices || []), 'remove-stale': deps.removeStale, cleanup: deps.cleanup, replace: deps.replace, install: deps.install }[step]
     const result = await guarded(() => run(), 'the step did not finish')
     if (result?.skipped) return fail(step, 'USBIP-SETUP-018: another driver operation is in progress')
     if (!result?.ok) return fail(step, result?.error || 'the step did not finish', { raw: result?.raw, reported: Boolean(result?.reported) })
@@ -435,7 +457,7 @@ const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000
 /** Keeps what was confirmed, so the steps left run after Windows restarted. `storage` is localStorage (a read or write that fails keeps nothing). */
 export function saveFixResume(storage, plan, now = Date.now()) {
   try {
-    storage?.setItem(RESUME_KEY, JSON.stringify({ id: plan.id, steps: plan.steps.filter((step) => step !== 'end-stream'), ports: plan.ports || [], written: now }))
+    storage?.setItem(RESUME_KEY, JSON.stringify({ id: plan.id, steps: plan.steps.filter((step) => step !== 'end-stream'), devices: plan.devices || [], written: now }))
   } catch { /* nothing kept: the person presses the button again */ }
 }
 
@@ -443,21 +465,47 @@ export function clearFixResume(storage) {
   try { storage?.removeItem(RESUME_KEY) } catch { /* nothing to clear */ }
 }
 
-/**
- * The kept plan when Windows started after it was written: `bootMs` is when this Windows session began (the native side's boot time; the same
- * clock the cleanup marker uses), so a panel that was only closed and opened again in the same session does not claim it. Without a boot
- * time nothing is claimed. A record older than a day is dropped; one that is not yet claimable stays.
- */
-export function loadFixResume(storage, { bootMs = 0, now = Date.now() } = {}) {
+function readFixResume(storage) {
   let value = null
   try { value = JSON.parse(storage?.getItem(RESUME_KEY) || 'null') } catch { value = null }
   if (!value || !Array.isArray(value.steps) || !Number.isFinite(value.written)) return null
-  if (now - value.written > RESUME_MAX_AGE_MS) {
+  return {
+    id: String(value.id || ''),
+    steps: value.steps.map(String),
+    devices: Array.isArray(value.devices) ? value.devices.map((device) => ({ port: Number(device?.port), id: String(device?.id ?? '') })) : [],
+    written: value.written,
+  }
+}
+
+/** The kept record, whether or not Windows has restarted yet (an expired one is dropped): the one-click flow owns it, so the single-step continuations of the page stay out of its way. */
+export function peekFixResume(storage, now = Date.now()) {
+  const record = readFixResume(storage)
+  if (record && now - record.written > RESUME_MAX_AGE_MS) {
     clearFixResume(storage)
     return null
   }
-  if (!(bootMs > value.written)) return null
-  return { id: String(value.id || ''), steps: value.steps.map(String), ports: Array.isArray(value.ports) ? value.ports.map(Number) : [], written: value.written }
+  return record
+}
+
+/**
+ * The kept plan when Windows started after it was written: `bootMs` is when this Windows session began (the native side's boot time; the same
+ * clock the cleanup marker uses), so a panel that was only closed and opened again in the same session does not claim it. Without a boot
+ * time nothing is claimed. A record older than a day is dropped; one that is not yet claimable stays. Loading does not take it: see claimFixResume.
+ */
+export function loadFixResume(storage, { bootMs = 0, now = Date.now() } = {}) {
+  const record = peekFixResume(storage, now)
+  return record && bootMs > record.written ? record : null
+}
+
+/**
+ * Takes the record for the repair that is about to run: removed only when it is still the record that was loaded (compare and delete), so of
+ * two panels that loaded it one takes it, and a record that was replaced meanwhile is left alone. True when this caller owns it now.
+ */
+export function claimFixResume(storage, record) {
+  const current = readFixResume(storage)
+  if (!current || current.written !== record.written || current.id !== record.id || JSON.stringify(current.steps) !== JSON.stringify(record.steps)) return false
+  clearFixResume(storage)
+  return true
 }
 
 export const FIX_GUIDE_KEYS = {
