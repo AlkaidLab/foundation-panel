@@ -605,3 +605,18 @@ test('a failure that the cleanup reported is not reported a second time; a failu
   await running
   assert.deepEqual(events, ['usbip-clean-008'], 'one event for one failure')
 })
+
+test('a release that fails names the failed port after the released ones, keeps its error, and nothing is cleaned afterwards', async (t) => {
+  const { world, transport, answer, until, snack } = await mountTransport(t, { attached_devices: [{ port: 1 }, { port: 2 }] })
+  world.sessions = []
+  usbip.detach = async (port) => {
+    world.calls.push(`detach-${port}`)
+    return port === 2 ? { success: false, message: 'USBIP-UAC-001: administrator authorization was canceled' } : { success: true }
+  }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await running
+  assert.deepEqual(world.calls, ['detach-1', 'detach-2'], 'the cleanup and the install did not run')
+  assert.match(transport.fixRaw.value, /detach: failed\nport 1: released\nport 2: failed\nUSBIP-UAC-001: administrator authorization was canceled/)
+  assert.ok((await until(() => snack()?.timeout > 0 && snack())).message.length > 0)
+})

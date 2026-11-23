@@ -561,7 +561,8 @@ export function useUsbTransport(options = {}) {
           const released = []
           for (const port of ports) {
             const result = await usbip.detach(port)
-            if (!result?.success) return { ok: false, error: String(result?.message), raw: released.join('\n') }
+            // the failed port is named beside the released ones, so a cancelled administrator prompt still says which port it was
+            if (!result?.success) return { ok: false, error: String(result?.message), raw: [...released, `port ${port}: failed`].join('\n') }
             released.push(`port ${port}: released`)
           }
           usbipStatusChannel.invalidate()
