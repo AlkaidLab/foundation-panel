@@ -10,11 +10,12 @@
 //! unchanged.
 
 use log::info;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU8, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, FindWindowExW, GWLP_WNDPROC, GetWindowThreadProcessId,
-    PostMessageW, SetWindowLongPtrW, WM_CONTEXTMENU, WM_RBUTTONUP,
+    PostMessageW, SetWindowLongPtrW, WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -22,11 +23,26 @@ use windows::core::{PCWSTR, w};
 /// the crate but fixed there (6002) and pinned by Cargo.lock; a change upstream needs the same
 /// change here.
 const TRAY_CALLBACK_MSG: u32 = 6002;
+const TOUCH_IDLE: u8 = 0;
+const TOUCH_WAITING_FOR_REPLAY: u8 = 1;
+const TOUCH_SUPPRESSING_RELEASE: u8 = 2;
+const TOUCH_RELEASE_WINDOW_MS: u64 = 1000;
 
 /// The message window this process has hooked, 0 when none.
 static HOOKED: AtomicIsize = AtomicIsize::new(0);
 /// The window procedure that was on the window before the hook.
 static ORIGINAL: AtomicIsize = AtomicIsize::new(0);
+/// The touch context-menu gesture is waiting for our replay, or suppressing the physical release
+/// that follows it. Mouse clicks never change this state.
+static TOUCH_STATE: AtomicU8 = AtomicU8::new(TOUCH_IDLE);
+static TOUCH_SUPPRESS_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Installs the WM_CONTEXTMENU hook on the tray message window when it is not hooked yet. Call it
 /// after each tray-icon build so a newly created message window is covered too.
@@ -73,16 +89,46 @@ unsafe extern "system" fn hook_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
+        if message == TRAY_CALLBACK_MSG {
+            let callback_kind = lparam.0 as u32;
+            let state = TOUCH_STATE.load(Ordering::Acquire);
+            if state == TOUCH_WAITING_FOR_REPLAY {
+                if callback_kind == WM_RBUTTONUP {
+                    // This is our replay, or a physical right-up that arrived before it. Let one
+                    // right-up through to tray-icon so the menu opens, then guard the release
+                    // that may follow it.
+                    TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
+                } else if callback_kind == WM_LBUTTONUP {
+                    // The touch release can arrive before the queued replay. It is part of the
+                    // context-menu gesture and must not become a second tray click.
+                    return LRESULT(0);
+                }
+            } else if state == TOUCH_SUPPRESSING_RELEASE {
+                if now_millis() > TOUCH_SUPPRESS_UNTIL_MS.load(Ordering::Acquire) {
+                    TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
+                } else if callback_kind == WM_LBUTTONUP || callback_kind == WM_RBUTTONUP {
+                    TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
+                    return LRESULT(0);
+                }
+            }
+        }
         if message == WM_CONTEXTMENU {
-            // Replay the gesture as the tray callback a real mouse right-click delivers, and
-            // stop here: tray-icon has no arm for WM_CONTEXTMENU and the default proc does
-            // nothing.
-            let _ = PostMessageW(
+            // Replay the gesture as the tray callback a real mouse right-click delivers. The
+            // touch release can be delivered before or after this queued message, so the callback
+            // state above consumes that one release and leaves mouse clicks untouched.
+            TOUCH_SUPPRESS_UNTIL_MS
+                .store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
+            TOUCH_STATE.store(TOUCH_WAITING_FOR_REPLAY, Ordering::Release);
+            if PostMessageW(
                 Some(hwnd),
                 TRAY_CALLBACK_MSG,
                 WPARAM(0),
                 LPARAM(WM_RBUTTONUP as isize),
-            );
+            )
+            .is_err()
+            {
+                TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
+            }
             return LRESULT(0);
         }
         let original = ORIGINAL.load(Ordering::Relaxed);
