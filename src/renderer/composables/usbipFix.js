@@ -141,7 +141,7 @@ export async function runUsbipFix(deps, onState = () => {}) {
   try {
     status = await deps.refresh()
   } catch (error) {
-    return fail('check', error)
+    return fail('check', error?.message || error)
   }
   let plan = planUsbipFix(status)
   let sessions = null
@@ -161,15 +161,19 @@ export async function runUsbipFix(deps, onState = () => {}) {
     if (step === 'end-stream') {
       const stopped = await guarded(() => deps.endStream(), 'the host did not accept the request')
       if (!stopped?.ok) return fail(step, stopped?.error || 'the host did not accept the request')
+      // The stream counts as ended only when the host answers with an empty list. An answer that cannot be read (null) is not one: the
+      // wait goes on, and at its limit the fix stops instead of changing the transport under a stream that may still run.
       const started = deps.now()
-      let live = true
-      while (live) {
+      let answered = false
+      for (;;) {
         let answer = null
         try { answer = await deps.sessions() } catch { answer = null }
-        live = Array.isArray(answer) && answer.length > 0
-        if (!live) break
+        if (Array.isArray(answer) && answer.length === 0) break
+        answered = Array.isArray(answer)
         if (deps.now() - started >= STREAM_STOP_WAIT_MS) {
-          return fail(step, 'USBIP-SETUP-006: finish the active Sunshine stream before changing the transport')
+          return fail(step, answered
+            ? 'USBIP-SETUP-006: finish the active Sunshine stream before changing the transport'
+            : 'USBIP-SETUP-006: unable to verify that the Sunshine stream ended: the host did not answer')
         }
         await deps.sleep(STREAM_STOP_POLL_MS)
       }
@@ -212,7 +216,9 @@ export function usbipFixRawText(state, status = {}) {
   const lines = (state.log || []).map((entry) => `${entry.step}: ${entry.ok ? 'ok' : 'failed'}${entry.raw ? `\n${entry.raw}` : ''}`)
   const rest = rawOf(status)
   if (rest) lines.push(rest)
-  return lines.join('\n')
+  // the transport status repeats what a step already said: every line once
+  const seen = new Set()
+  return lines.join('\n').split('\n').filter((line) => !seen.has(line) && seen.add(line)).join('\n')
 }
 
 /**
@@ -232,7 +238,8 @@ export function describeFixResult(state, texts, friendly, version = '') {
     case 'blocked-unsupported': return { tone: 'warning', text: texts.transportUnsupported, action: '' }
     case 'blocked-nothing': return { tone: 'warning', text: texts.fixNothing, action: 'diagnostics' }
     case 'failed': {
-      const reason = state.failedStep === 'end-stream' && !codesOf(state.error).length ? texts.fixStopFailed : friendly(state.error)
+      const coded = codesOf(state.error).length > 0
+      const reason = state.failedStep === 'end-stream' && !coded ? texts.fixStopFailed : state.failedStep === 'check' && !coded ? texts.statusUnavailable : friendly(state.error)
       return { tone: 'error', text: fill(texts.fixFailed, { step: step(state.failedStep), reason }), action: 'diagnostics' }
     }
     default: return { tone: 'info', text: '', action: '' }

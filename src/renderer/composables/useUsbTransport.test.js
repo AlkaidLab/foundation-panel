@@ -258,7 +258,9 @@ async function mountTransport(t, initial) {
   let transport
   const app = renderer.createApp({ setup() { transport = useUsbTransport(); return () => null } })
   app.mount({})
-  t.after(() => app.unmount())
+  let mounted = true
+  const unmount = () => { if (mounted) { mounted = false; app.unmount() } }
+  t.after(unmount)
   await transport.refreshStatus({ force: true })
   const until = async (read) => {
     for (let i = 0; i < 400; i += 1) { const value = read(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 5)) }
@@ -268,7 +270,7 @@ async function mountTransport(t, initial) {
   const notify = useNotify()
   const snack = () => notify.state.queue.find((item) => item.id === 'usbip-fix')
   const answer = async (action) => { const dialog = await until(() => dialogs.state.queue[0]); const asked = { ...dialog }; dialogs.settle(dialog.id, action); return asked }
-  return { world, transport, until, snack, answer, texts: () => useI18n().t.value.deviceHub.usb, notify, dialogs }
+  return { world, transport, unmount, until, snack, answer, texts: () => useI18n().t.value.deviceHub.usb, notify, dialogs }
 }
 
 test('the one-click fix ends the stream, cleans and installs in that order after one question, and reports at the bottom', async (t) => {
@@ -359,4 +361,37 @@ test('an installation the person manages gets no button and no change; the fix o
   await transport.fixTransport()
   assert.equal(dialogs.state.queue.length, 0, 'no question: nothing will be changed')
   assert.ok((await until(() => notify.state.queue.find((item) => item.id === 'usbip-fix' && item.timeout > 0))).message === texts().externalDecision)
+})
+
+test('refreshStatus says how the read went: ok, failed, or disposed', async (t) => {
+  const { transport, unmount } = await mountTransport(t)
+  assert.equal(await transport.refreshStatus({ force: true }), 'ok')
+  usbipStatusChannel.fetch = async () => ({ success: false, message: 'probe down' })
+  assert.equal(await transport.refreshStatus({ force: true }), 'failed')
+  usbipStatusChannel.fetch = async () => { throw new Error('bridge gone') }
+  assert.equal(await transport.refreshStatus({ force: true }), 'failed')
+  unmount()
+  assert.equal(await transport.refreshStatus({ force: true }), 'disposed')
+})
+
+test('the fix does not start from a cached status when the read fails, and says why', async (t) => {
+  const { world, transport, until, snack, texts, dialogs } = await mountTransport(t)
+  usbipStatusChannel.fetch = async () => ({ success: false, message: 'USBIP-EXEC-007: probe down' })
+  await transport.fixTransport()
+  assert.equal(dialogs.state.queue.length, 0, 'no question is asked on a status that was not read')
+  assert.deepEqual(world.calls, [], 'nothing was stopped, cleaned or installed')
+  const failed = await until(() => snack()?.timeout > 0 && snack())
+  assert.ok(failed.message.includes(texts().fixStepCheck))
+  assert.ok(failed.message.includes(texts().errors['USBIP-EXEC-007']), 'the reason is what the probe said, translated')
+  assert.equal(failed.action, texts().diagnosticDetails)
+  assert.match(transport.fixRaw.value, /check: failed\nUSB\/IP status refresh failed/)
+})
+
+test('the fix does not start on a page that was closed', async (t) => {
+  const { world, transport, unmount, dialogs } = await mountTransport(t)
+  unmount()
+  await transport.fixTransport()
+  assert.equal(dialogs.state.queue.length, 0)
+  assert.deepEqual(world.calls, [])
+  assert.match(transport.fixRaw.value, /check: failed\nUSB\/IP status refresh was abandoned/)
 })

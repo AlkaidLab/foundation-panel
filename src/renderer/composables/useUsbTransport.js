@@ -166,25 +166,29 @@ export function useUsbTransport(options = {}) {
     status.detail = detail
   }
 
+  /** Resolves how the read went: 'ok', 'failed' (the host did not answer; the page shows it as unavailable) or 'disposed' (nothing was applied). */
   async function performStatusRefresh({ force = false } = {}) {
     statusLoading.value = true
+    let outcome = 'ok'
     try {
       const result = await usbipStatusChannel.fetch({ force })
-      if (disposed) return
+      if (disposed) return 'disposed'
       if (result?.success) {
         statusProbeFailed.value = false
         applyStatus(result.data)
       } else {
+        outcome = 'failed'
         applyProbeFailure(result?.message || '')
       }
     } catch (error) {
-      if (disposed) return
+      if (disposed) return 'disposed'
+      outcome = 'failed'
       applyProbeFailure(String(error || ''))
     } finally {
       statusLoaded.value = true
       statusLoading.value = false
     }
-    if (disposed) return
+    if (disposed) return 'disposed'
     // Windows restarted since a cleanup waited for it and the leftover is still there: continue the same operation (one prompt for
     // administrator rights). The one chance is spent only when the operation can start now; while another one holds the transport
     // the next refresh asks again.
@@ -202,22 +206,25 @@ export function useUsbTransport(options = {}) {
       resumeAnnounced = true
       queueMicrotask(() => { if (!disposed) void installTransport({ auto: true }) })
     }
+    return outcome
   }
 
+  /** Resolves 'ok', 'failed' or 'disposed': how the read that answers this call went (the one already running, when this call joins it). */
   async function refreshStatus(options = {}) {
-    if (disposed) return
+    if (disposed) return 'disposed'
     const afterCurrent = options?.afterCurrent === true
     const force = options?.force === true
     const activeRefresh = statusRefreshPromise
     if (activeRefresh) {
-      await activeRefresh
-      if (disposed || !afterCurrent) return
+      const joined = await activeRefresh
+      if (disposed) return 'disposed'
+      if (!afterCurrent) return joined
     }
 
     const nextRefresh = performStatusRefresh({ force })
     statusRefreshPromise = nextRefresh
     try {
-      await nextRefresh
+      return await nextRefresh
     } finally {
       if (statusRefreshPromise === nextRefresh) statusRefreshPromise = null
     }
@@ -469,7 +476,10 @@ export function useUsbTransport(options = {}) {
       finished = await runUsbipFix({
         refresh: async () => {
           usbipStatusChannel.invalidate()
-          await refreshStatus({ force: true, afterCurrent: true })
+          // the fix starts only from a status that was just read: a failed or abandoned read is the reason it does not
+          const read = await refreshStatus({ force: true, afterCurrent: true })
+          if (read === 'disposed') throw new Error('USB/IP status refresh was abandoned: the page was closed')
+          if (read !== 'ok') throw new Error(`USB/IP status refresh failed${status.detail ? `: ${status.detail}` : ''}`)
           return { ...status, attached_devices: [...(status.attached_devices || [])] }
         },
         sessions: async () => {

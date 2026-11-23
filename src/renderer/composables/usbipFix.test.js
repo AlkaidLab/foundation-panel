@@ -177,6 +177,44 @@ test('a stream that does not end in time fails the end-stream step with the stre
   assert.ok(STREAM_STOP_WAIT_MS >= 10_000)
 })
 
+/** A host whose answers to "which streams run" are scripted: the first is the plan's read, the next ones follow the stop request. */
+function scriptedSessions(answers) {
+  const { deps, calls } = world({ sessions: [] })
+  const queue = [[{ session_id: 1 }], ...answers]
+  deps.sessions = async () => {
+    calls.push('sessions')
+    const next = queue.length > 1 ? queue.shift() : queue[0]
+    if (next instanceof Error) throw next
+    return next
+  }
+  return { deps, calls }
+}
+
+test('a stream query that cannot be read after the stop request is not "the stream ended": the wait goes on and stops at its limit', async () => {
+  for (const unreadable of [new Error('host unreachable'), null]) {
+    const { deps, calls } = scriptedSessions([unreadable])
+    const state = await runUsbipFix(deps)
+    assert.deepEqual([state.outcome, state.failedStep], ['failed', 'end-stream'])
+    assert.match(state.error, /^USBIP-SETUP-006: unable to verify that the Sunshine stream ended/)
+    assert.equal(calls.includes('cleanup'), false, 'the shared transport is not touched while a stream may still run')
+    assert.equal(calls.includes('install'), false)
+    assert.ok(calls.filter((c) => c === 'sessions').length > 3, 'it asked again, not once')
+  }
+})
+
+test('a stream query that fails for a while and then answers with an empty list lets the fix go on', async () => {
+  const { deps, calls } = scriptedSessions([new Error('timeout'), null, [], []])
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'done')
+  assert.ok(calls.indexOf('cleanup') > calls.lastIndexOf('sessions'), 'the cleanup came after the empty answer')
+})
+
+test('a query that fails and then still shows a stream ends with the stream message, not the unreadable one', async () => {
+  const { deps } = scriptedSessions([new Error('timeout'), [{ session_id: 1 }]])
+  const state = await runUsbipFix(deps)
+  assert.match(state.error, /^USBIP-SETUP-006: finish the active Sunshine stream/)
+})
+
 test('a host that refuses to end the stream fails that step with what it said', async () => {
   const { deps, calls } = world({ endStream: { ok: false, error: 'HTTP 500' } })
   const state = await runUsbipFix(deps)
@@ -275,6 +313,9 @@ test('error mapping: a failed step names the step and gives the translated reaso
     assert.ok(stream.text.includes(texts.fixStopFailed), `${name}: a host answer without a code says the stream could not be ended`)
     const timeout = text({ outcome: 'failed', failedStep: 'end-stream', error: 'USBIP-SETUP-006: finish the active Sunshine stream' })
     assert.ok(timeout.text.includes(texts.errors['USBIP-SETUP-006']), name)
+    const unreadable = text({ outcome: 'failed', failedStep: 'check', error: 'USB/IP status refresh failed: host did not answer' })
+    assert.ok(unreadable.text.includes(texts.statusUnavailable), `${name}: a status that could not be read says so`)
+    assert.ok(unreadable.text.includes(texts.fixStepCheck), name)
     const restart = text({ outcome: 'failed', failedStep: 'cleanup', error: 'USBIP-RESTART-001: no shutdown.exe' })
     assert.ok(restart.text.includes(texts.errors['USBIP-RESTART-001']), name)
   }
