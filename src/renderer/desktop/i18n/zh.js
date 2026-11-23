@@ -1121,6 +1121,8 @@ export const zh = {
     off: '关闭',
     degraded: '连接异常',
     viewStatus: '查看状态',
+    openSetting: '去设置',
+    hostOff: '主机已关闭',
     maintenance: '维护',
     coverCache: '封面与临时文件',
     coverCacheDescription: '清理未使用的应用封面和配置目录的临时文件。',

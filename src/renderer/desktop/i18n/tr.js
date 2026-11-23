@@ -1110,6 +1110,8 @@ export const tr = {
     notConnected: "Bağlı Değil",
     off: "Kapalı",
     viewStatus: "Durumu Görüntüle",
+    openSetting: "Ayarı aç",
+    hostOff: "Ana bilgisayarda kapalı",
     maintenance: "Bakım",
     coverCache: "Kapaklar ve Geçici Dosyalar",
     coverCacheDescription: "Kullanılmayan uygulama kapaklarını ve geçici yapılandırma dosyalarını kaldırın.",

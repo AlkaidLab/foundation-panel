@@ -287,6 +287,8 @@ const handleCheckForUpdates = async (channel = null) => {
 const toolsCtx = {
   t, router, webuiPath: toRef(props, 'webuiPath'), openWebUi, openControllers, openUrl, openGamepadTest,
   openStylusInputProbe, cleanupCovers, restartAsAdmin, showClipboardSyncStatus, handleCheckForUpdates,
+  // the clipboard sync status opens the switch that force-disables the sync (设置 → 输入与外设 → 键盘)
+  openClipboardSyncSetting: () => jumpConfig({ tab: 'input', sub: 'keyboard', focus: 'clipboard_sync' }),
 }
 const toolsMenuItems = computed(() => createUtilityTools(toolsCtx))
 // the component status: one controller for the page and for the home cards the catalogue offers

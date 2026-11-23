@@ -1119,6 +1119,8 @@ export const zh_TW = {
     off: "關閉",
     degraded: '連線異常',
     viewStatus: '檢視狀態',
+    openSetting: '去設定',
+    hostOff: '主機已關閉',
     maintenance: '維護',
     coverCache: '封面與臨時檔案',
     coverCacheDescription: '清理未使用的應用封面和配置目錄的臨時檔案。',

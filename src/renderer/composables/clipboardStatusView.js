@@ -3,6 +3,10 @@
 
 const KNOWN_ERRORS = ['connect_refused', 'timeout', 'tls', 'http_401', 'http_403', 'http_5xx', 'stream_ended', 'credential_missing', 'heartbeat', 'other']
 
+// Where the host's clipboard_sync switch lives (设置 → 输入与外设 → 键盘): the status views open it,
+// so a person reading the status can reach the one setting that force-disables the sync.
+export const CLIPBOARD_SYNC_SETTING_PATH = '/config#tab=input&sub=keyboard&focus=clipboard_sync'
+
 /** The state of the sync as one of: off | disabled | unknown | connecting | degraded | disconnected | connected. */
 export function clipboardSyncState(status) {
   if (!status) return 'unknown'

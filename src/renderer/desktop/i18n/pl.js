@@ -1110,6 +1110,8 @@ export const pl = {
     notConnected: "Brak połączenia",
     off: "Wyłączona",
     viewStatus: "Wyświetl stan",
+    openSetting: "Otwórz ustawienie",
+    hostOff: "Wyłączone na hoście",
     maintenance: "Konserwacja",
     coverCache: "Okładki i pliki tymczasowe",
     coverCacheDescription: "Usuń nieużywane okładki aplikacji i tymczasowe pliki konfiguracyjne.",

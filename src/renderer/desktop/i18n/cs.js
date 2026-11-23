@@ -1110,6 +1110,8 @@ export const cs = {
     notConnected: "Nepřipojeno",
     off: "Vypnuto",
     viewStatus: "Zobrazit stav",
+    openSetting: "Otevřít nastavení",
+    hostOff: "Vypnuto na hostiteli",
     maintenance: "Údržba",
     coverCache: "Obaly a dočasné soubory",
     coverCacheDescription: "Odstraňte nepoužívané kryty aplikací a dočasné konfigurační soubory.",

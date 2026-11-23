@@ -1110,6 +1110,8 @@ export const ja = {
     notConnected: "接続されていません",
     off: "オフ",
     viewStatus: "ステータスの表示",
+    openSetting: "設定を開く",
+    hostOff: "ホストでオフ",
     maintenance: "メンテナンス",
     coverCache: "カバーと一時ファイル",
     coverCacheDescription: "未使用のアプリケーション カバーと一時構成ファイルを削除します。",
