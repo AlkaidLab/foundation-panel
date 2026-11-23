@@ -10,7 +10,7 @@
 //! unchanged.
 
 use log::info;
-use std::sync::atomic::{AtomicIsize, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -36,6 +36,9 @@ static ORIGINAL: AtomicIsize = AtomicIsize::new(0);
 /// that follows it. Mouse clicks never change this state.
 static TOUCH_STATE: AtomicU8 = AtomicU8::new(TOUCH_IDLE);
 static TOUCH_SUPPRESS_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+/// Whether the gesture's own release was consumed while waiting for the replay; if it
+/// was, nothing follows the replay and the next click must reach tray-icon untouched.
+static TOUCH_LEFT_EATEN: AtomicBool = AtomicBool::new(false);
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -94,13 +97,20 @@ unsafe extern "system" fn hook_proc(
             let state = TOUCH_STATE.load(Ordering::Acquire);
             if state == TOUCH_WAITING_FOR_REPLAY {
                 if callback_kind == WM_RBUTTONUP {
-                    // This is our replay, or a physical right-up that arrived before it. Let one
-                    // right-up through to tray-icon so the menu opens, then guard the release
-                    // that may follow it.
-                    TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
+                    if TOUCH_LEFT_EATEN.swap(false, Ordering::AcqRel) {
+                        // The gesture's own release already arrived and was eaten, so nothing
+                        // follows this replay: leave the next click for tray-icon.
+                        TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
+                    } else {
+                        // This is our replay, or a physical right-up that arrived before it. Let
+                        // one right-up through to tray-icon so the menu opens, then guard the
+                        // release that may follow it.
+                        TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
+                    }
                 } else if callback_kind == WM_LBUTTONUP {
                     // The touch release can arrive before the queued replay. It is part of the
                     // context-menu gesture and must not become a second tray click.
+                    TOUCH_LEFT_EATEN.store(true, Ordering::Release);
                     return LRESULT(0);
                 }
             } else if state == TOUCH_SUPPRESSING_RELEASE {
@@ -118,6 +128,7 @@ unsafe extern "system" fn hook_proc(
             // state above consumes that one release and leaves mouse clicks untouched.
             TOUCH_SUPPRESS_UNTIL_MS
                 .store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
+            TOUCH_LEFT_EATEN.store(false, Ordering::Release);
             TOUCH_STATE.store(TOUCH_WAITING_FOR_REPLAY, Ordering::Release);
             if PostMessageW(
                 Some(hwnd),
