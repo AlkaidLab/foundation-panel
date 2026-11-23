@@ -502,6 +502,7 @@ fn main() {
             tray::main_panel_ready,
             panel_page::take_pending_panel_page,
             pin_window::pin_pairing_client,
+            pin_window::pin_window_selftest,
             start_guide::take_pending_start_guide,
         ];
     let application = builder

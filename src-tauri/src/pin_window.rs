@@ -257,6 +257,18 @@ pub fn pin_pairing_client() -> String {
     crate::tray::current_pairing_client()
 }
 
+/// What a click on a pairing notification does, for the isolated test instance (test_isolation.rs): the isolation has no notifications and no second launch, so it cannot receive the click
+/// that opens the entry. Goes through the same door as the click, the tray's pairing item and `--url=…/pin` (`windows::open_pin_window`): the saved setting decides between the
+/// full-screen entry and the panel's pairing page. Answers with the setting it followed. Refused outside a test profile.
+#[tauri::command]
+pub fn pin_window_selftest(app: AppHandle) -> Result<String, String> {
+    if !crate::test_isolation::active() {
+        return Err("pin_window_selftest runs only in a test profile".into());
+    }
+    crate::windows::open_pin_window(&app).map_err(|error| error.to_string())?;
+    Ok(crate::pin_prompt::PinPrompt::current().as_str().to_owned())
+}
+
 /// The window event `Destroyed` of the entry.
 pub(crate) fn destroyed() {
     lifecycle(Lifecycle::closed);
@@ -349,6 +361,15 @@ mod tests {
         assert_eq!(route(Fullscreen, Some("idle")), Entry::PanelPage);
         // an unset or unreadable setting is `fullscreen`
         assert_eq!(route(crate::pin_prompt::PinPrompt::from_config(None), Some("pairing")), Entry::FullScreen);
+    }
+
+    #[test]
+    fn the_selftest_is_for_a_test_profile_only() {
+        // no test profile is active in the unit tests: the selftest source refuses, and the isolation lets exactly this command and the client name through
+        assert!(!crate::test_isolation::active());
+        let source = include_str!("pin_window.rs");
+        assert!(source.contains("if !crate::test_isolation::active()"));
+        assert!(crate::test_isolation::allows_command("pin_window_selftest"));
     }
 
     #[test]
