@@ -1741,6 +1741,7 @@ export const ko = {
       fixRebootInstall: "USB/IP {version}은(는) Windows를 다시 시작한 뒤에 사용할 수 있습니다. “다시 시작”을 선택하세요(“시스템 종료”가 아님).",
       fixNothing: "제어판이 스스로 수리할 수 있는 불일치를 찾지 못했습니다. 원본 진단을 확인하세요.",
       fixStopFailed: "현재 스트림을 종료하지 못했습니다. Sunshine에서 종료한 뒤 다시 시도하세요.",
+      fixStreamUnknown: "Sunshine이 응답하지 않아 스트림이 실행 중인지 확인할 수 없습니다. Sunshine을 시작한 뒤 다시 시도하세요.",
       fixRestartNow: "지금 다시 시작",
       fixRestartConfirm: "Windows가 30초 뒤에 다시 시작됩니다. 먼저 작업을 저장하세요.",
       fixConfirmInstall: "맞는 USB/IP {version}을(를) 설치합니다. 관리자 승인이 필요합니다.",

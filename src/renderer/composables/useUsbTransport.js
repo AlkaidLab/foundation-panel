@@ -73,6 +73,7 @@ export function useUsbTransport(options = {}) {
     install_pending_restart: false,
     install_resume: false,
     error_code: '',
+    driver_signature: '',
     attached_devices: [],
     detail: '',
   })
@@ -90,9 +91,16 @@ export function useUsbTransport(options = {}) {
   let resumeRetryTimer
   let resumeBusyRetries = 0
   let disposed = false
-  // a repair that waited for a restart continues in the first run of the panel that starts after it was written
-  const processStart = typeof performance !== 'undefined' && Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : 0
-  const hasFixResume = () => Boolean(loadFixResume(globalThis.localStorage, { processStart }))
+  // A repair that waited for a restart continues once Windows has started after it was kept. When this Windows session began comes from the
+  // native side (the clock of the cleanup's restart marker), read once; until it is known nothing is claimed.
+  let bootMs = 0
+  const readBoot = async () => {
+    try {
+      const secs = Number((await usbip.bootSecs())?.data)
+      bootMs = Number.isFinite(secs) && secs > 0 ? secs * 1000 : 0
+    } catch { bootMs = 0 }
+  }
+  const hasFixResume = () => Boolean(loadFixResume(globalThis.localStorage, { bootMs }))
   let statusRefreshPromise = null
 
   function retryBusyResume(error, auto) {
@@ -179,6 +187,13 @@ export function useUsbTransport(options = {}) {
       if (result?.success) {
         statusProbeFailed.value = false
         applyStatus(result.data)
+        // a driver Windows would refuse reads ready here: its signature is part of the state the repair is offered for
+        let signature = ''
+        if (result.data?.installed && result.data?.version_valid) {
+          try { signature = (await usbip.driverSignature())?.data || '' } catch { signature = '' }
+        }
+        if (disposed) return 'disposed'
+        status.driver_signature = String(signature)
       } else {
         outcome = 'failed'
         applyProbeFailure(result?.message || '')
@@ -266,7 +281,7 @@ export function useUsbTransport(options = {}) {
       await refreshStatus({ force: true })
       if (!status.last_install_error && error) status.last_install_error = String(error)
       if (!quiet) ElMessage.error(friendlyError(error))
-      return { ok: false, error: String(error) }
+      return { ok: false, error: String(error), reported: true }
     } finally {
       installing.value = false
     }
@@ -276,7 +291,7 @@ export function useUsbTransport(options = {}) {
       await refreshStatus({ force: true })
       if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
       if (!quiet) ElMessage.error(friendlyError(result?.message))
-      return { ok: false, error: String(result?.message) }
+      return { ok: false, error: String(result?.message), reported: true }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
@@ -317,7 +332,7 @@ export function useUsbTransport(options = {}) {
       reportError(error)
       await refreshStatus({ force: true })
       if (!quiet) ElMessage.error(cleanupError(error))
-      return { ok: false, error: String(error) }
+      return { ok: false, error: String(error), reported: true }
     } finally {
       cleaning.value = false
     }
@@ -328,7 +343,7 @@ export function useUsbTransport(options = {}) {
       // residual flag reflects the actual state instead of the stale snapshot.
       await refreshStatus({ force: true })
       if (!quiet) ElMessage.error(cleanupError(result?.message))
-      return { ok: false, error: String(result?.message) }
+      return { ok: false, error: String(result?.message), reported: true }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
@@ -360,7 +375,7 @@ export function useUsbTransport(options = {}) {
       reportError(error)
       await refreshStatus({ force: true })
       if (!quiet) ElMessage.error(cleanupError(error))
-      return { ok: false, error: String(error) }
+      return { ok: false, error: String(error), reported: true }
     } finally {
       cleaning.value = false
     }
@@ -369,7 +384,7 @@ export function useUsbTransport(options = {}) {
       reportError(result?.message)
       await refreshStatus({ force: true })
       if (!quiet) ElMessage.error(cleanupError(result?.message))
-      return { ok: false, error: String(result?.message) }
+      return { ok: false, error: String(result?.message), reported: true }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
@@ -422,7 +437,7 @@ export function useUsbTransport(options = {}) {
       await refreshStatus({ force: true })
       if (!status.last_install_error && error) status.last_install_error = String(error)
       if (!quiet) ElMessage.error(friendlyError(error))
-      return { ok: false, error: String(error) }
+      return { ok: false, error: String(error), reported: true }
     } finally {
       replacing.value = false
     }
@@ -432,7 +447,7 @@ export function useUsbTransport(options = {}) {
       await refreshStatus({ force: true })
       if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
       if (!quiet) ElMessage.error(friendlyError(result?.message))
-      return { ok: false, error: String(result?.message) }
+      return { ok: false, error: String(result?.message), reported: true }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
@@ -522,38 +537,37 @@ export function useUsbTransport(options = {}) {
           const read = await refreshStatus({ force: true, afterCurrent: true })
           if (read === 'disposed') throw new Error('USB/IP status refresh was abandoned: the page was closed')
           if (read !== 'ok') throw new Error(`USB/IP status refresh failed${status.detail ? `: ${status.detail}` : ''}`)
-          // the signature of the registered driver is what the DualSense status reads; a bad one is a state of its own
-          let signature = ''
-          if (status.installed && status.version_valid) {
-            try { signature = (await dualsense.getStatus())?.data?.transport?.signature || '' } catch { signature = '' }
-          }
-          return { ...status, attached_devices: [...(status.attached_devices || [])], driver_signature: signature }
+          if (disposed) throw new Error('USB/IP status refresh was abandoned: the page was closed')
+          return { ...status, attached_devices: [...(status.attached_devices || [])] }
         },
         sessions: async () => {
+          // a page that was closed cannot say what runs: unknown stops the repair before anything changes
+          if (disposed) return null
           try {
             const sessions = await sunshine.askActiveSessions()
             return Array.isArray(sessions) ? sessions : null
           } catch { return null }
         },
-        confirm: ({ plan }) => ElMessageBox.confirm(
+        confirm: ({ plan }) => (disposed ? Promise.resolve(false) : ElMessageBox.confirm(
           fixConfirmText(plan, usb(), version),
           usb().fixTitle,
           { confirmButtonText: usb().fixStart, cancelButtonText: usb().cancel, type: 'warning', danger: Boolean(plan.replacesExternal) },
-        ).then(() => true, () => false),
+        ).then(() => true, () => false)),
         endStream: async () => {
           try { await sunshine.stopAllSessions(); return { ok: true } } catch (error) { return { ok: false, error: String(error) } }
         },
-        detach: async () => {
+        // only the devices the person was told about; a new one makes the question come again before this step (usbipFix.js)
+        detach: async (ports) => {
           const released = []
-          for (const device of status.attached_devices || []) {
-            const result = await usbip.detach(device.port)
-            if (!result?.success) return { ok: false, error: String(result?.message) }
-            released.push(`port ${device.port}: released`)
+          for (const port of ports) {
+            const result = await usbip.detach(port)
+            if (!result?.success) return { ok: false, error: String(result?.message), raw: released.join('\n') }
+            released.push(`port ${port}: released`)
           }
           usbipStatusChannel.invalidate()
           // the replacement refuses while the status still lists a device: read it again before the next step
           const read = await refreshStatus({ force: true, afterCurrent: true })
-          if (read !== 'ok') return { ok: false, error: 'USB/IP status refresh failed after the devices were released' }
+          if (read !== 'ok') return { ok: false, error: 'USB/IP status refresh failed after the devices were released', raw: released.join('\n') }
           return { ok: true, raw: released.join('\n') }
         },
         removeStale: () => removeStaleRaw({ confirmed: true, quiet: true }),
@@ -577,7 +591,8 @@ export function useUsbTransport(options = {}) {
     if (!finished.outcome.startsWith('reboot-')) clearFixResume(globalThis.localStorage)
     const failedCleanup = ['cleanup', 'remove-stale'].includes(finished.failedStep)
     const result = describeFixResult(finished, usb(), (raw) => (failedCleanup ? cleanupError(raw) : friendlyError(raw)), version)
-    if (finished.outcome === 'failed') reportError(finished.error)
+    // the cleanup, install, replacement and removal reported their own failures; the failures the repair made itself are reported here
+    if (finished.outcome === 'failed' && !finished.reported) reportError(finished.error)
     // declined: the progress sentence that waited behind the question goes away
     if (!result.text) return message?.close()
     const action = result.action === 'restart'
@@ -590,13 +605,17 @@ export function useUsbTransport(options = {}) {
     }
   })
 
-  /** Continues a repair that waited for a restart: once, from the first panel that starts after it; asks nothing the person did not already answer. */
+  /**
+   * Continues a repair that waited for a restart: once, from the first panel that runs after Windows started again. The record is claimed
+   * only when the repair can start now, so a driver operation of another component that holds the lock only delays it (it is tried again
+   * when the lock is free); the person confirmed this before the restart.
+   */
   async function resumeFixAfterRestart() {
-    const kept = loadFixResume(globalThis.localStorage, { processStart })
-    if (!kept) return
-    // dropped first: a second panel page, or a failure in the middle, never starts it again
-    clearFixResume(globalThis.localStorage)
     if (disposed || operationBlocked() || fixing.value) return
+    if (!bootMs) await readBoot()
+    const kept = loadFixResume(globalThis.localStorage, { bootMs })
+    if (!kept) return
+    clearFixResume(globalThis.localStorage)
     await fixTransport({ resume: kept })
   }
 
@@ -607,10 +626,13 @@ export function useUsbTransport(options = {}) {
     if (wasBusy && !busy && !resumeStarted && (status.cleanup_resume || status.install_resume)) {
       void refreshStatus({ force: true })
     }
+    if (wasBusy && !busy) void resumeFixAfterRestart()
   })
   // Entering the page reads the devices again: the shared answer may be minutes old, and the native side answers this from cheap probes.
   onMounted(async () => {
+    const booting = readBoot()
     await refreshStatus({ force: true })
+    await booting
     await resumeFixAfterRestart()
   })
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。

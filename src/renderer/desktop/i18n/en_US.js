@@ -1736,6 +1736,7 @@ export const en_US = {
       "fixRebootInstall": "USB/IP {version} works after Windows restarts. Choose Restart (not Shut down).",
       "fixNothing": "No mismatch the panel can fix by itself was found. See the original diagnosis.",
       "fixStopFailed": "The current stream could not be ended. End it in Sunshine, then try again.",
+      "fixStreamUnknown": "Sunshine did not answer, so it is not known whether a stream is running. Start Sunshine and try again.",
       "fixRestartNow": "Restart now",
       "fixRestartConfirm": "Windows restarts in 30 seconds. Save your work first.",
       "fixConfirmInstall": "This installs the matching USB/IP {version}. It needs administrator approval.",

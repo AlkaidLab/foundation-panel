@@ -1741,6 +1741,7 @@ export const sv = {
       fixRebootInstall: "USB/IP {version} fungerar efter att Windows startats om. Välj Starta om (inte Stäng av).",
       fixNothing: "Ingen avvikelse som panelen kan åtgärda själv hittades. Se originaldiagnosen.",
       fixStopFailed: "Den pågående strömmen kunde inte avslutas. Avsluta den i Sunshine och försök igen.",
+      fixStreamUnknown: "Sunshine svarade inte, så det är okänt om en ström pågår. Starta Sunshine och försök igen.",
       fixRestartNow: "Starta om nu",
       fixRestartConfirm: "Windows startar om om 30 sekunder. Spara ditt arbete först.",
       fixConfirmInstall: "Matchande USB/IP {version} installeras. Administratörsgodkännande krävs.",

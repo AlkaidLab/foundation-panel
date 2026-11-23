@@ -1741,6 +1741,7 @@ export const cs = {
       fixRebootInstall: "USB/IP {version} bude fungovat po restartu Windows. Zvolte Restartovat (ne Vypnout).",
       fixNothing: "Nebyl nalezen rozdíl, který by panel opravil sám. Viz původní diagnostika.",
       fixStopFailed: "Aktuální stream se nepodařilo ukončit. Ukončete ho v Sunshine a zkuste to znovu.",
+      fixStreamUnknown: "Sunshine neodpověděl, proto není známo, zda běží stream. Spusťte Sunshine a zkuste to znovu.",
       fixRestartNow: "Restartovat hned",
       fixRestartConfirm: "Windows se restartuje za 30 sekund. Nejdřív si uložte práci.",
       fixConfirmInstall: "Nainstaluje se odpovídající USB/IP {version}. Je potřeba souhlas správce.",

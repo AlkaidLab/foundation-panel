@@ -1741,6 +1741,7 @@ export const fr = {
       fixRebootInstall: "USB/IP {version} fonctionne après le redémarrage de Windows. Choisissez Redémarrer (pas Arrêter).",
       fixNothing: "Aucune différence réparable par le panneau n’a été trouvée. Consultez le diagnostic d’origine.",
       fixStopFailed: "Le flux en cours n’a pas pu être terminé. Terminez-le dans Sunshine, puis réessayez.",
+      fixStreamUnknown: "Sunshine n’a pas répondu : on ignore si un flux est en cours. Démarrez Sunshine puis réessayez.",
       fixRestartNow: "Redémarrer maintenant",
       fixRestartConfirm: "Windows redémarre dans 30 secondes. Enregistrez d’abord votre travail.",
       fixConfirmInstall: "Le USB/IP {version} correspondant sera installé. Une autorisation administrateur est requise.",

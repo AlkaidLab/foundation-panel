@@ -1442,6 +1442,7 @@ export const zh = {
       fixRebootInstall: 'USB/IP {version} 需要重启 Windows 后才能使用。请选“重启”（不要选“关机”）。',
       fixNothing: '没有发现可自动修复的不一致。请查看原始诊断。',
       fixStopFailed: '无法结束当前串流。请先在 Sunshine 中结束串流，再试一次。',
+      fixStreamUnknown: 'Sunshine 没有响应，无法确认有没有串流在运行。请先启动 Sunshine，再试一次。',
       fixRestartNow: '立即重启',
       fixRestartConfirm: 'Windows 将在 30 秒后重启。请先保存正在进行的工作。',
       fixConfirmInstall: '将安装配套的 USB/IP {version}。需要管理员授权。',

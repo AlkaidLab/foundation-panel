@@ -21,12 +21,13 @@
 | `external-incompatible-manual` | `USBIP-SETUP-008`、`USBIP-REPLACE-001` | 外部安装不兼容，且主机助手不允许替换 | 不改动；给出在「已安装的应用」里手动卸载的步骤 | 无（不会改动） | 用户手动卸载后需要 | 不适用 |
 | `external-stale-controller` | `Multiple instances of VHCI device interface found` | 外部安装可用，但旧版留下了多余的控制器 | 只移除多余的控制器（外部安装本身保留） | 移除多余控制器 | 节点要等重启才删时 | 读取传输状态：就绪、无残留、无错误码；再读 DualSense 原生通道状态，不得是 usbip_* 状态 |
 | `external-compatible-healthy` | — | 外部安装的 0.9.8.1，工具和驱动哈希一致，就绪 | 不需要；保留用户自己的安装 | 无 | 否 | 不适用 |
-| `pending-restart-cleanup` | `USBIP-CLEAN-006`、`cleanup_pending_restart` | 清理已被 Windows 接受，重启后才完成 | 说明原因并提供立即重启；重启后自动继续清理与剩下的步骤 | 确认重启 | 需要 | 重启后继续并检查 |
-| `pending-restart-install` | `USBIP-SETUP-015`、`install_pending_restart` | Windows 有待完成的重启，安装不能完成 | 说明原因并提供立即重启；重启后自动继续安装 | 确认重启 | 需要 | 重启后继续并检查 |
-| `reboot-recommended` | `reboot_recommended` | 安装器建议重启（退出码 3010） | 说明原因并提供立即重启 | 确认重启 | 建议 | 重启后检查 |
+| `pending-restart-cleanup` | `USBIP-CLEAN-006`、`cleanup_pending_restart` | 清理已被 Windows 接受，重启后才完成 | 说明原因并提供立即重启；同时保存计划（清理、检查），重启后继续；清理完成后要装的 USB/IP 要重新确认 | 确认重启；重启后若还要安装，再问一次 | 需要 | 重启后继续并检查 |
+| `pending-restart-install` | `USBIP-SETUP-015`、`install_pending_restart` | Windows 有待完成的重启，安装不能完成 | 说明原因并提供立即重启；同时保存计划（安装、检查），重启后自动继续安装 | 确认重启；重启前的安装请求已经是用户的决定 | 需要 | 重启后继续并检查 |
+| `reboot-recommended` | `reboot_recommended` | 安装器建议重启（退出码 3010） | 说明原因并提供立即重启；同时保存计划（检查），重启后做检查 | 确认重启 | 建议 | 重启后检查 |
 | `healthy` | — | 传输就绪，无残留，无错误码，签名有效 | 不需要 | 无 | 否 | 不适用 |
 | `unsupported-os` | `USBIP-SETUP-004` | 不是 Windows | 不做任何事 | 无 | 否 | 不适用 |
 | `unexplained` | — | 已安装但未就绪，没有错误码，没有重启建议 | 不改动；打开原始诊断，建议导出诊断 | 无 | 否 | 不适用 |
+| `stream-unknown` | `USBIP-SETUP-006` | 主机读不到会话（Sunshine 没有响应）：不知道有没有串流在用传输 | 读不到不等于没有串流：有限时间内重试，仍读不到就停下，什么都不动；说明要先启动 Sunshine | 无 | 否 | 不适用 |
 | `stream-active` | `USBIP-SETUP-006`、`USBIP-CLEAN-001` | 有串流在用传输 | 经主机接口结束串流并等它真正结束；读不到就一直等到时限，不继续 | 写明会结束串流 | 否 | 主机返回空的会话列表 |
 | `driver-op-busy` | `USBIP-SETUP-018` | 另一项驱动操作（VB-CABLE、虚拟鼠标等）还在进行 | 不开始，提示稍后重试 | 无 | 否 | 不适用 |
 | `uac-cancelled` | `USBIP-UAC-001`、`USBIP-UAC-002`、`USBIP-UAC-003` | 管理员授权被取消、助手连不上或超时 | 停在当前步骤，提示重试 | 无 | 否 | 不适用 |

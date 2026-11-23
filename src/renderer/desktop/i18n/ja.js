@@ -1742,6 +1742,7 @@ export const ja = {
       fixRebootInstall: "USB/IP {version} は Windows の再起動後に使えます。「再起動」を選んでください（「シャットダウン」ではありません）。",
       fixNothing: "コントロールパネルが自動で修復できる不一致は見つかりませんでした。元の診断をご確認ください。",
       fixStopFailed: "現在のストリームを終了できませんでした。Sunshine で終了してから、もう一度お試しください。",
+      fixStreamUnknown: "Sunshine が応答しないため、ストリームが動作中か確認できません。Sunshine を起動して、もう一度お試しください。",
       fixRestartNow: "今すぐ再起動",
       fixRestartConfirm: "Windows は 30 秒後に再起動します。先に作業内容を保存してください。",
       fixConfirmInstall: "対応する USB/IP {version} をインストールします。管理者の承認が必要です。",

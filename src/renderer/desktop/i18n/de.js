@@ -1741,6 +1741,7 @@ export const de = {
       fixRebootInstall: "USB/IP {version} funktioniert nach einem Neustart von Windows. Wählen Sie „Neu starten“ (nicht „Herunterfahren“).",
       fixNothing: "Es wurde keine Abweichung gefunden, die das Bedienfeld selbst beheben kann. Siehe Originaldiagnose.",
       fixStopFailed: "Der laufende Stream konnte nicht beendet werden. Beenden Sie ihn in Sunshine und versuchen Sie es erneut.",
+      fixStreamUnknown: "Sunshine hat nicht geantwortet, daher ist unbekannt, ob ein Stream läuft. Starten Sie Sunshine und versuchen Sie es erneut.",
       fixRestartNow: "Jetzt neu starten",
       fixRestartConfirm: "Windows startet in 30 Sekunden neu. Speichern Sie zuerst Ihre Arbeit.",
       fixConfirmInstall: "Das passende USB/IP {version} wird installiert. Dafür ist eine Administratorfreigabe nötig.",

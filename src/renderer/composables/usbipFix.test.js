@@ -176,7 +176,7 @@ test('a live stream is ended first, then the shared transport is cleaned and the
   const seen = []
   const state = await runUsbipFix(deps, (next) => seen.push(`${next.phase}:${next.index}`))
   assert.equal(state.outcome, 'done')
-  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'endStream', 'cleanup', 'install', 'verify'])
+  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'refresh', 'endStream', 'cleanup', 'install', 'verify'], 'the system is read again after the answer')
   assert.equal(calls.filter((c) => c === 'confirm').length, 1, 'the person is asked once')
   assert.ok(calls.indexOf('endStream') < calls.indexOf('cleanup'), 'the stream ends before the transport changes')
   assert.equal(world.questions.at(-1).streaming, true)
@@ -192,8 +192,26 @@ test('without a stream nothing is ended and the question does not mention one', 
   assert.equal(calls.includes('endStream'), false)
   assert.equal(world.questions.at(-1).streaming, false)
   assert.deepEqual(state.steps, ['cleanup', 'install', 'verify'])
-  const unknown = world({ sessions: new Error('host unreachable') })
-  assert.deepEqual((await runUsbipFix(unknown.deps)).steps, ['cleanup', 'install', 'verify'], 'a host that cannot be asked has no stream to end; the native step checks again')
+})
+
+test('a host that cannot say whether a stream runs is not "no stream": the repair stops before the question and changes nothing', async () => {
+  for (const unreadable of [new Error('host unreachable'), null]) {
+    const { deps, calls } = world({ sessions: unreadable })
+    deps.sessions = async () => { calls.push('sessions'); if (unreadable) throw unreadable; return null }
+    const state = await runUsbipFix(deps)
+    assert.deepEqual([state.outcome, state.failedStep], ['failed', 'check'])
+    assert.match(state.error, /^USBIP-SETUP-006: unable to verify stream ownership/)
+    for (const step of ['confirm', 'endStream', 'detach', 'removeStale', 'cleanup', 'install', 'replace', 'verify']) assert.equal(calls.includes(step), false, `${step} was not called`)
+    assert.ok(calls.filter((c) => c === 'sessions').length > 3, 'it asked again for a while')
+    assert.equal(describeFixResult(state, usb.en, friendly(usb.en), VERSION).text.includes(usb.en.fixStreamUnknown), true)
+  }
+})
+
+test('a host that fails once and then answers with an empty list lets the repair go on', async () => {
+  const { deps, calls } = scriptedSessions([[]], { first: [new Error('timeout')] })
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'done')
+  assert.deepEqual(calls.filter((c) => ['cleanup', 'install'].includes(c)), ['cleanup', 'install'])
 })
 
 test('declining the question changes nothing', async () => {
@@ -214,10 +232,13 @@ test('a stream that does not end in time fails the end-stream step with the stre
   assert.ok(STREAM_STOP_WAIT_MS >= 10_000)
 })
 
-/** A host whose answers to "which streams run" are scripted: the first is the plan's read, the next ones follow the stop request. */
-function scriptedSessions(answers) {
+/**
+ * A host whose answers to "which streams run" are scripted: first the answers of the initial look (`first`), then the stream that shows
+ * at the plan and at the second look, then `answers` (what follows the stop request).
+ */
+function scriptedSessions(answers, { first = [] } = {}) {
   const { deps, calls } = world({ sessions: [] })
-  const queue = [[{ session_id: 1 }], ...answers]
+  const queue = [...first, [{ session_id: 1 }], [{ session_id: 1 }], ...answers]
   deps.sessions = async () => {
     calls.push('sessions')
     const next = queue.length > 1 ? queue.shift() : queue[0]
@@ -294,7 +315,7 @@ test('a full usbip-win2 of the person is replaced only after the question, by th
   const { deps, calls } = world({ status, sessions: [] })
   const state = await runUsbipFix(deps)
   assert.equal(state.outcome, 'done')
-  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'replace', 'verify'])
+  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'refresh', 'replace', 'verify'])
   assert.equal(world.questions.at(-1).plan.replacesExternal, true)
   const declined = world({ status, sessions: [], confirm: false })
   await runUsbipFix(declined.deps)
@@ -417,7 +438,7 @@ test('attached devices are released before the cleanup, and a release that fails
   const { deps, calls } = world({ status: withDevices, sessions: [] })
   const state = await runUsbipFix(deps)
   assert.equal(state.outcome, 'done')
-  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'detach', 'cleanup', 'install', 'verify'])
+  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'refresh', 'detach', 'cleanup', 'install', 'verify'])
   assert.equal(world.questions.at(-1).plan.attachedCount, 2)
   const refused = world({ status: withDevices, sessions: [], detach: { ok: false, error: 'USBIP-UAC-001: administrator authorization was canceled' } })
   const failed = await runUsbipFix(refused.deps)
@@ -430,7 +451,7 @@ test('extra controllers are removed alone: the working transport is not cleaned 
   const { deps, calls } = world({ status: stale, sessions: [] })
   const state = await runUsbipFix(deps)
   assert.equal(state.outcome, 'done')
-  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'removeStale', 'verify'])
+  assert.deepEqual(calls.filter((c) => c !== 'sessions'), ['refresh', 'confirm', 'refresh', 'removeStale', 'verify'])
   const waiting = await runUsbipFix(world({ status: stale, sessions: [], removeStale: { ok: true, data: { cleanup_pending_restart: true } } }).deps)
   assert.equal(waiting.outcome, 'reboot-cleanup')
 })
@@ -503,18 +524,22 @@ const memory = () => {
 test('a restart keeps the plan; the next run of the panel loads it once, and an old or same-run record is not used', () => {
   const store = memory()
   saveFixResume(store, { id: 'mismatch-hash-abi', steps: ['end-stream', 'cleanup', 'install', 'verify'] }, 1000)
-  assert.equal(loadFixResume(store, { processStart: 500, now: 2000 }), null, 'a panel that started before the plan was written does not continue it')
-  const kept = loadFixResume(store, { processStart: 1500, now: 2000 })
-  assert.deepEqual(kept, { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], written: 1000 })
-  assert.equal(loadFixResume(store, { processStart: 1500, now: 1000 + 25 * 60 * 60 * 1000 }), null, 'a day later it is gone')
-  assert.equal(loadFixResume(store, { processStart: 1500, now: 2000 }), null, 'and was dropped')
+  assert.equal(loadFixResume(store, { bootMs: 500, now: 2000 }), null, 'the same Windows session (it started before the plan was kept) does not continue it')
+  assert.equal(loadFixResume(store, { bootMs: 1000, now: 2000 }), null, 'not earlier than the write either')
+  assert.equal(loadFixResume(store, { bootMs: 0, now: 2000 }), null, 'without a boot time nothing is claimed')
+  const kept = loadFixResume(store, { bootMs: 1500, now: 2000 })
+  assert.deepEqual(kept, { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], ports: [], written: 1000 }, 'a record that is not claimable yet stays, and is claimed once Windows has started after it')
+  assert.equal(loadFixResume(store, { bootMs: 1500, now: 1000 + 25 * 60 * 60 * 1000 }), null, 'a day later it is gone')
+  assert.equal(loadFixResume(store, { bootMs: 1500, now: 2000 }), null, 'and was dropped')
   clearFixResume(store)
-  assert.equal(loadFixResume(store, { processStart: 1500, now: 2000 }), null)
-  assert.equal(loadFixResume({ getItem() { throw new Error('private mode') } }, { processStart: 1, now: 2 }), null)
+  assert.equal(loadFixResume(store, { bootMs: 1500, now: 2000 }), null)
+  assert.equal(loadFixResume({ getItem() { throw new Error('private mode') } }, { bootMs: 2, now: 3 }), null)
+  saveFixResume(store, { id: 'external-incompatible-replaceable', steps: ['detach', 'replace', 'verify'], ports: [2, 1] }, 1000)
+  assert.deepEqual(loadFixResume(store, { bootMs: 1500, now: 2000 }).ports, [2, 1], 'the devices that were confirmed are kept with the steps')
 })
 
-test('after the restart the rest of the plan runs without a question; anything beyond it asks again, from the button', async () => {
-  const resume = { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'] }
+test('after the restart the rest of the plan runs without a question; anything beyond it, a new stream or a new device included, asks again', async () => {
+  const resume = { id: 'mismatch-hash-abi', steps: ['cleanup', 'install', 'verify'], ports: [] }
   // Windows finished the cleanup: only the install is left
   const left = world({ status: { ...base, installed: false, ready: false }, sessions: [] })
   const done = await runUsbipFix(left.deps, undefined, { resume })
@@ -525,17 +550,133 @@ test('after the restart the rest of the plan runs without a question; anything b
   const fine = world({ status: base })
   assert.equal((await runUsbipFix(fine.deps, undefined, { resume })).outcome, 'done')
   assert.deepEqual(fine.calls, ['refresh', 'verify'])
-  // the state changed into something the person did not confirm (a replacement): it stops without a word and nothing runs
-  const other = world({ status: { ...base, ready: false, externally_managed: true, replaceable: true, version_valid: false }, sessions: [] })
-  const stopped = await runUsbipFix(other.deps, undefined, { resume })
-  assert.equal(stopped.outcome, 'cancelled')
+  // a stream that was not there when the plan was confirmed is not ended on that old answer: the question comes again, and the stream is ended only after a yes
+  const stream = world({ status: { ...base, installed: false, ready: false }, sessions: [{ session_id: 1 }], streamEndsAfter: 3 })
+  assert.equal((await runUsbipFix(stream.deps, undefined, { resume })).outcome, 'done')
+  assert.equal(world.questions.at(-1).streaming, true)
+  assert.ok(stream.calls.indexOf('confirm') < stream.calls.indexOf('endStream'), 'asked before the stream was ended')
+  const refused = world({ status: { ...base, installed: false, ready: false }, sessions: [{ session_id: 1 }], confirm: false })
+  assert.equal((await runUsbipFix(refused.deps, undefined, { resume })).outcome, 'cancelled')
+  assert.equal(refused.calls.includes('endStream'), false, 'a no leaves the stream alone')
+  // a replacement the person did not confirm asks; a no changes nothing
+  const other = world({ status: { ...base, ready: false, externally_managed: true, replaceable: true, version_valid: false }, sessions: [], confirm: false })
+  assert.equal((await runUsbipFix(other.deps, undefined, { resume })).outcome, 'cancelled')
   assert.equal(other.calls.includes('replace'), false)
+  assert.ok(other.calls.includes('confirm'))
+  // a device that was not among the confirmed ones asks again
+  const device = world({ status: { ...mismatch, attached_devices: [{ port: 3 }] }, sessions: [], confirm: false })
+  assert.equal((await runUsbipFix(device.deps, undefined, { resume: { ...resume, steps: ['detach', 'cleanup', 'install', 'verify'], ports: [1] } })).outcome, 'cancelled')
+  assert.ok(device.calls.includes('confirm'))
+  const same = world({ status: { ...mismatch, attached_devices: [{ port: 1 }] }, sessions: [] })
+  assert.equal((await runUsbipFix(same.deps, undefined, { resume: { ...resume, steps: ['detach', 'cleanup', 'install', 'verify'], ports: [1] } })).outcome, 'done')
+  assert.equal(same.calls.includes('confirm'), false)
   // a second restart keeps the plan again
   const again = world({ status: { ...base, installed: false, ready: false }, sessions: [], install: { ok: true, data: { ready: false, install_pending_restart: true } } })
   const kept = []
   again.deps.onReboot = ({ plan }) => kept.push(plan.steps)
   assert.equal((await runUsbipFix(again.deps, undefined, { resume })).outcome, 'reboot-install')
   assert.deepEqual(kept, [['install', 'verify']])
+})
+
+// ---- phases never overlap ----
+/** A system that changes while the question is open: `statuses` and `streams` are what each look gives, one after the other. */
+function changing({ statuses, streams, confirm = true }) {
+  const { deps, calls } = world({ sessions: [] })
+  const looks = [...statuses]
+  const streamLooks = [...streams]
+  let ended = false
+  deps.refresh = async () => { calls.push('refresh'); return looks.length > 1 ? looks.shift() : looks[0] }
+  deps.endStream = async () => { calls.push('endStream'); ended = true; return { ok: true } }
+  deps.sessions = async () => { calls.push('sessions'); return ended ? [] : streamLooks.length > 1 ? streamLooks.shift() : streamLooks[0] }
+  deps.confirm = async (question) => { calls.push('confirm'); world.questions.push(question); return typeof confirm === 'function' ? confirm(question) : confirm }
+  return { deps, calls }
+}
+
+test('a stream that starts while the question is open is not changed under: the question comes again, naming the stream', async () => {
+  const { deps, calls } = changing({ statuses: [mismatch], streams: [[], [{ session_id: 1 }]] })
+  const asked = []
+  const originalConfirm = deps.confirm
+  deps.confirm = async (question) => { asked.push(question.plan.steps); return originalConfirm(question) }
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'done')
+  assert.deepEqual(asked, [['cleanup', 'install', 'verify'], ['end-stream', 'cleanup', 'install', 'verify']], 'the second question names the stream that will end')
+  assert.ok(calls.indexOf('endStream') > calls.lastIndexOf('confirm'), 'the stream is ended only after the answer to the second question')
+})
+
+test('a device attached while the question is open comes into the question before it is released', async () => {
+  const { deps } = changing({ statuses: [mismatch, { ...mismatch, attached_devices: [{ port: 4 }] }], streams: [[]] })
+  const asked = []
+  const originalConfirm = deps.confirm
+  deps.confirm = async (question) => { asked.push([question.plan.steps, question.plan.ports]); return originalConfirm(question) }
+  const released = []
+  deps.detach = async (ports) => { released.push(ports); return { ok: true } }
+  assert.equal((await runUsbipFix(deps)).outcome, 'done')
+  assert.deepEqual(asked, [[['cleanup', 'install', 'verify'], []], [['detach', 'cleanup', 'install', 'verify'], [4]]])
+  assert.deepEqual(released, [[4]], 'only the devices that were confirmed are released')
+})
+
+test('a no to the second question changes nothing, and a system that keeps changing ends the questions', async () => {
+  const declined = changing({ statuses: [mismatch], streams: [[], [{ session_id: 1 }]], confirm: (question) => !question.streaming })
+  assert.equal((await runUsbipFix(declined.deps)).outcome, 'cancelled')
+  for (const step of ['endStream', 'cleanup', 'install']) assert.equal(declined.calls.includes(step), false)
+  let flip = 0
+  const unstable = changing({ statuses: [mismatch], streams: [[]] })
+  unstable.deps.sessions = async () => { unstable.calls.push('sessions'); flip += 1; return flip % 2 ? [] : [{ session_id: flip }, { session_id: flip + 1 }].slice(0, 1 + (flip % 3)) }
+  const state = await runUsbipFix(unstable.deps)
+  assert.deepEqual([state.outcome, state.failedStep], ['failed', 'check'])
+  assert.equal(unstable.calls.includes('cleanup'), false)
+})
+
+test('the system turning healthy while the question is open ends the repair with nothing done', async () => {
+  const { deps, calls } = changing({ statuses: [mismatch, base], streams: [[]] })
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'healthy')
+  assert.equal(calls.includes('cleanup'), false)
+})
+
+// ---- a restart that was already waiting is kept too, and the order of an install result ----
+test('a restart that was already waiting when the repair began is kept with the steps it finishes', async () => {
+  for (const [status, id, steps] of [
+    [{ ...mismatch, cleanup_pending_restart: true }, 'pending-restart-cleanup', ['cleanup', 'verify']],
+    [{ ...base, installed: false, ready: false, install_pending_restart: true }, 'pending-restart-install', ['install', 'verify']],
+    [{ ...base, reboot_recommended: true }, 'reboot-recommended', ['verify']],
+  ]) {
+    const { deps } = world({ status })
+    const kept = []
+    deps.onReboot = ({ plan, kind }) => kept.push([plan.id, plan.steps, kind])
+    const state = await runUsbipFix(deps)
+    assert.match(state.outcome, /^reboot-/)
+    assert.equal(kept.length, 1, id)
+    assert.deepEqual(kept[0].slice(0, 2), [id, steps], id)
+  }
+})
+
+test('an install that answers ready and still asks for a restart is a restart; one that is not ready and says nothing is an ordinary failure with its own steps', async () => {
+  const both = await runUsbipFix(world({ sessions: [], install: { ok: true, data: { ready: true, reboot_recommended: true } } }).deps)
+  assert.equal(both.outcome, 'reboot-install')
+  const silent = await runUsbipFix(world({ sessions: [], install: { ok: true, data: { ready: false } } }).deps)
+  assert.deepEqual([silent.outcome, silent.failedStep], ['failed', 'install'])
+  assert.equal(primaryCode(silent.error), 'USBIP-SETUP-010')
+  const result = describeFixResult(silent, usb.zh, friendly(usb.zh), VERSION)
+  assert.equal(result.guide, 'generic', 'an ordinary install failure is not the steps for removing an installation of the person')
+  assert.equal(guideFor('USBIP-SETUP-008: externally managed incompatible USB/IP is installed (exit code 106)'), 'external', 'the real external error keeps its steps')
+})
+
+// ---- a failure is reported once, and keeps what was done before it ----
+test('a failure the step already reported is not reported again; one the repair made itself is', async () => {
+  const own = await runUsbipFix(world({ sessions: [], cleanup: { ok: false, error: 'USBIP-CLEAN-008: busy', reported: true } }).deps)
+  assert.equal(own.reported, true)
+  const synthetic = await runUsbipFix(world({ sessions: [], cleanup: { ok: true, data: { vhci_residual: true } } }).deps)
+  assert.equal(synthetic.reported, false)
+  const check = await runUsbipFix(world({ sessions: [], verify: { ok: false, error: 'USBIP-VERIFY-001: not ready' } }).deps)
+  assert.equal(check.reported, false)
+})
+
+test('devices released before a release failed stay in the diagnostics of the failure', async () => {
+  const { deps } = world({ status: { ...mismatch, attached_devices: [{ port: 1 }, { port: 2 }] }, sessions: [], detach: { ok: false, error: 'USBIP-UAC-001: canceled', raw: 'port 1: released' } })
+  const state = await runUsbipFix(deps)
+  assert.equal(state.failedStep, 'detach')
+  assert.match(usbipFixRawText(state), /detach: failed\nport 1: released\nUSBIP-UAC-001: canceled/)
 })
 
 test('the document of the inventory is the one the inventory gives', async () => {

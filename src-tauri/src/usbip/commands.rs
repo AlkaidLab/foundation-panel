@@ -226,6 +226,27 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     Ok(status)
 }
 
+/// When this Windows session started, in seconds since the Unix epoch (0 where there is no such thing): the clock the cleanup's restart
+/// marker uses. A repair that waited for a restart continues only in a panel that runs after this is later than when the plan was kept.
+#[tauri::command]
+pub fn usbip_boot_secs() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        super::journal::boot_secs()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        0
+    }
+}
+
+/// The signature verdict of the registered driver (`signed`, `unsigned`, `invalid`, `unknown`), kept per driver file like the status's own
+/// reading, so the repair is offered for a driver Windows would refuse even when the transport reads ready.
+#[tauri::command]
+pub async fn usbip_driver_signature() -> String {
+    super::signature::driver_signature().await.state
+}
+
 /// Restarts Windows after 30 seconds that the person can still cancel with `shutdown /a`. Only the panel's own confirmation calls
 /// it, and neither the program nor the delay is an argument.
 #[tauri::command]

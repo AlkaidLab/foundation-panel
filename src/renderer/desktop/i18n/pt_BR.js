@@ -1741,6 +1741,7 @@ export const pt_BR = {
       fixRebootInstall: "O USB/IP {version} funciona depois que o Windows reiniciar. Escolha Reiniciar (não Desligar).",
       fixNothing: "Nenhuma diferença que o painel consiga corrigir sozinho foi encontrada. Veja o diagnóstico original.",
       fixStopFailed: "Não foi possível encerrar a transmissão atual. Encerre-a no Sunshine e tente de novo.",
+      fixStreamUnknown: "O Sunshine não respondeu, então não se sabe se há uma transmissão em andamento. Inicie o Sunshine e tente de novo.",
       fixRestartNow: "Reiniciar agora",
       fixRestartConfirm: "O Windows reiniciará em 30 segundos. Salve seu trabalho antes.",
       fixConfirmInstall: "O USB/IP {version} correspondente será instalado. É preciso autorização de administrador.",

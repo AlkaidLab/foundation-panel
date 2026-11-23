@@ -83,17 +83,17 @@ export const USBIP_FIX_INVENTORY = [
     status: { ...base, externally_managed: true }, expect: { kind: 'healthy', steps: [] },
   },
   {
-    id: 'pending-restart-cleanup', codes: ['USBIP-CLEAN-006', 'cleanup_pending_restart'], detect: '清理已被 Windows 接受，重启后才完成', repair: '说明原因并提供立即重启；重启后自动继续清理与剩下的步骤',
-    confirm: '确认重启', reboot: '需要', verify: '重启后继续并检查',
+    id: 'pending-restart-cleanup', codes: ['USBIP-CLEAN-006', 'cleanup_pending_restart'], detect: '清理已被 Windows 接受，重启后才完成', repair: '说明原因并提供立即重启；同时保存计划（清理、检查），重启后继续；清理完成后要装的 USB/IP 要重新确认',
+    confirm: '确认重启；重启后若还要安装，再问一次', reboot: '需要', verify: '重启后继续并检查',
     status: { ...base, ready: false, cleanup_pending_restart: true, vhci_residual: true }, expect: { kind: 'reboot', reason: 'cleanup', steps: [] },
   },
   {
-    id: 'pending-restart-install', codes: ['USBIP-SETUP-015', 'install_pending_restart'], detect: 'Windows 有待完成的重启，安装不能完成', repair: '说明原因并提供立即重启；重启后自动继续安装',
-    confirm: '确认重启', reboot: '需要', verify: '重启后继续并检查',
+    id: 'pending-restart-install', codes: ['USBIP-SETUP-015', 'install_pending_restart'], detect: 'Windows 有待完成的重启，安装不能完成', repair: '说明原因并提供立即重启；同时保存计划（安装、检查），重启后自动继续安装',
+    confirm: '确认重启；重启前的安装请求已经是用户的决定', reboot: '需要', verify: '重启后继续并检查',
     status: { ...base, installed: false, ready: false, install_pending_restart: true }, expect: { kind: 'reboot', reason: 'install', steps: [] },
   },
   {
-    id: 'reboot-recommended', codes: ['reboot_recommended'], detect: '安装器建议重启（退出码 3010）', repair: '说明原因并提供立即重启', confirm: '确认重启', reboot: '建议', verify: '重启后检查',
+    id: 'reboot-recommended', codes: ['reboot_recommended'], detect: '安装器建议重启（退出码 3010）', repair: '说明原因并提供立即重启；同时保存计划（检查），重启后做检查', confirm: '确认重启', reboot: '建议', verify: '重启后检查',
     status: { ...base, reboot_recommended: true }, expect: { kind: 'reboot', reason: 'install', steps: [] },
   },
   {
@@ -109,6 +109,7 @@ export const USBIP_FIX_INVENTORY = [
     status: { ...base, ready: false }, expect: { kind: 'blocked', reason: 'nothing', steps: [] },
   },
   // ---- found while the repair runs ----
+  { id: 'stream-unknown', codes: ['USBIP-SETUP-006'], detect: '主机读不到会话（Sunshine 没有响应）：不知道有没有串流在用传输', repair: '读不到不等于没有串流：有限时间内重试，仍读不到就停下，什么都不动；说明要先启动 Sunshine', confirm: '无', reboot: '否', verify: '不适用', error: 'USBIP-SETUP-006: unable to verify stream ownership: the host did not answer', guide: '' },
   { id: 'stream-active', codes: ['USBIP-SETUP-006', 'USBIP-CLEAN-001'], detect: '有串流在用传输', repair: '经主机接口结束串流并等它真正结束；读不到就一直等到时限，不继续', confirm: '写明会结束串流', reboot: '否', verify: '主机返回空的会话列表', error: 'USBIP-SETUP-006: finish the active Sunshine stream', guide: '' },
   { id: 'driver-op-busy', codes: ['USBIP-SETUP-018'], detect: '另一项驱动操作（VB-CABLE、虚拟鼠标等）还在进行', repair: '不开始，提示稍后重试', confirm: '无', reboot: '否', verify: '不适用', error: 'USBIP-SETUP-018: another component driver operation is still running', guide: '' },
   { id: 'uac-cancelled', codes: ['USBIP-UAC-001', 'USBIP-UAC-002', 'USBIP-UAC-003'], detect: '管理员授权被取消、助手连不上或超时', repair: '停在当前步骤，提示重试', confirm: '无', reboot: '否', verify: '不适用', error: 'USBIP-UAC-001: canceled', guide: '' },

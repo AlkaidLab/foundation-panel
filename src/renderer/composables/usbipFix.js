@@ -12,6 +12,10 @@ export const USBIP_FIX_CODE = 'USBIP-EXEC-006'
 /** How long the host gets to drop the stream after it was asked to stop, and how often it is asked. */
 export const STREAM_STOP_WAIT_MS = 20000
 export const STREAM_STOP_POLL_MS = 500
+/** How long the first look at the streams may take when the host does not answer, before the repair stops. */
+export const STREAM_QUERY_WAIT_MS = 6000
+/** How many times what was confirmed may change under the question before the repair stops asking. */
+export const MAX_CONFIRM_ROUNDS = 3
 
 const codesOf = (error) => String(error || '').match(/USBIP-[A-Z]+-\d{3}/g) || []
 
@@ -64,7 +68,8 @@ export function planUsbipFix(status = {}) {
   if (status.supported === false) return make({ kind: 'blocked', id: 'unsupported-os', reason: 'unsupported' })
   if (status.cleanup_pending_restart) return make({ kind: 'reboot', id: 'pending-restart-cleanup', reason: 'cleanup' })
   if (status.install_pending_restart) return make({ kind: 'reboot', id: 'pending-restart-install', reason: 'install' })
-  const attachedCount = (status.attached_devices || []).length
+  const ports = (status.attached_devices || []).map((device) => device.port).sort((a, b) => a - b)
+  const attachedCount = ports.length
   const withDetach = (steps) => (attachedCount ? ['detach', ...steps] : steps)
   const staleOnly = usbipResidualIsStale(status) && status.version_valid !== false && !status.error_code && !badSignature(status)
   if (status.externally_managed) {
@@ -74,7 +79,7 @@ export function planUsbipFix(status = {}) {
     }
     if (staleOnly) return make({ kind: 'remove-stale', id: 'external-stale-controller', steps: ['remove-stale', 'verify'] })
     if (!usbipCanReplaceLegacy(status)) return make({ kind: 'blocked', id: 'external-incompatible-manual', reason: 'external', guide: 'external' })
-    return make({ kind: 'replace', id: 'external-incompatible-replaceable', steps: [...withDetach(['replace']), 'verify'], replacesExternal: true, attachedCount })
+    return make({ kind: 'replace', id: 'external-incompatible-replaceable', steps: [...withDetach(['replace']), 'verify'], replacesExternal: true, attachedCount, ports })
   }
   if (staleOnly) return make({ kind: 'remove-stale', id: 'stale-controller', steps: ['remove-stale', 'verify'] })
   const broken = usbipTransportNeedsCleanup(status) || badSignature(status) || Boolean(status.cleanup_resume)
@@ -88,10 +93,10 @@ export function planUsbipFix(status = {}) {
           : status.cleanup_resume ? 'cleanup-resume'
             : status.installed && status.version_valid === false ? 'old-version'
               : status.installed || status.vhci_residual ? 'residual-broken' : 'not-installed'
-    return make({ kind: 'clean-install', id, steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount })
+    return make({ kind: 'clean-install', id, steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, ports })
   }
   if (!status.installed) return make({ kind: 'install', id: status.install_resume ? 'install-resume' : 'not-installed', steps: ['install', 'verify'] })
-  if (TOOL_ERRORS.has(status.error_code)) return make({ kind: 'clean-install', id: 'tool-failed', steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount })
+  if (TOOL_ERRORS.has(status.error_code)) return make({ kind: 'clean-install', id: 'tool-failed', steps: [...withDetach(['cleanup', 'install']), 'verify'], attachedCount, ports })
   if (status.reboot_recommended) return make({ kind: 'reboot', id: 'reboot-recommended', reason: 'install' })
   return make({ kind: 'blocked', id: 'unexplained', reason: 'nothing' })
 }
@@ -126,6 +131,7 @@ export const initialFix = () => ({
   error: '',
   note: '',
   resumed: false,
+  reported: false,
   log: [],
 })
 
@@ -159,7 +165,9 @@ export function reduceFix(state, event) {
         outcome: 'failed',
         failedStep: event.step,
         error: String(event.error || ''),
-        log: [...state.log, { step: event.step, ok: false, raw: String(event.error || '') }],
+        // a step's own failure was reported by the operation that made it; one the repair made itself was not
+        reported: Boolean(event.reported),
+        log: [...state.log, { step: event.step, ok: false, raw: [event.raw, String(event.error || '')].filter(Boolean).join('\n') }],
       }
     case 'reboot':
       return { ...state, phase: FINISHED, outcome: `reboot-${event.kind}`, index: state.steps.length }
@@ -172,17 +180,33 @@ export function reduceFix(state, event) {
 
 const rawOf = (status = {}) => [status.detail, status.last_install_error, status.last_cleanup_error].filter(Boolean).join('\n')
 
+/** What the plan asks the person to confirm; when this changes under the question, the question is asked again. */
+const confirmedShape = (plan) => JSON.stringify([plan.kind, plan.steps, plan.ports || [], Boolean(plan.replacesExternal), Boolean(plan.streaming)])
+
+/**
+ * What a repair that waited for a restart may do without asking: only steps the person confirmed before it, no stream to end (nothing says
+ * they agreed to end one that was not there), and only the devices that were released-to-be then.
+ */
+function resumeAllows(plan, resume) {
+  if (plan.streaming || plan.steps.includes('end-stream')) return false
+  if (!plan.steps.every((step) => step === 'verify' || resume.steps.includes(step))) return false
+  return !plan.steps.includes('detach') || (plan.ports || []).every((port) => (resume.ports || []).includes(port))
+}
+
 /**
  * Runs the repair. `deps`:
  *   refresh()              reads the transport status again and resolves it (it rejects when it could not be read)
- *   sessions()             the live streams, or null when the host cannot be asked
+ *   sessions()             the live streams, or null when the host cannot be asked (that is not an empty list)
  *   confirm({ plan, streaming })   the one question; resolves true to go on
  *   endStream()            asks the host to end the stream: { ok, error? }
- *   detach() / removeStale() / cleanup() / install() / replace()   the steps of the component page: { ok, data?, error?, skipped? }
+ *   detach(ports) / removeStale() / cleanup() / install() / replace()   the steps of the component page: { ok, data?, error?, raw?, skipped?, reported? }
  *   verify()               the check after the steps: { ok, error?, note? }
+ *   onReboot({ plan, kind }) called when the plan has to wait for a restart, so it can be kept
  *   sleep(ms), now()       injectable clock
- * `options.resume` ({ steps }) continues a repair that waited for a restart: it asks nothing when everything left to do was in the plan the
- * person confirmed, and stops without a word otherwise.
+ * Phases never overlap: what is confirmed is read again from the system once the person has answered, and when it differs (a stream came, a
+ * device was attached) the question is asked again with the new facts; nothing changes under an answer that was given for something else.
+ * `options.resume` ({ steps, ports }) continues a repair that waited for a restart: it asks nothing when everything left to do was in the plan
+ * the person confirmed, and asks as usual otherwise (a new stream, a new device, a replacement).
  * Resolves the finished state. Nothing here throws: a step that throws is a failed step.
  */
 export async function runUsbipFix(deps, onState = () => {}, options = {}) {
@@ -192,7 +216,7 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
     onState(state)
     return state
   }
-  const fail = (step, error) => apply({ type: 'step-failed', step, error })
+  const fail = (step, error, extra = {}) => apply({ type: 'step-failed', step, error, ...extra })
   const guarded = async (call, fallback) => {
     try {
       return await call()
@@ -200,39 +224,77 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
       return { ok: false, error: String(error || fallback) }
     }
   }
-  const resume = options.resume || null
-  apply({ type: 'check', resumed: Boolean(resume) })
-  let status
-  try {
-    status = await deps.refresh()
-  } catch (error) {
-    return fail('check', error?.message || error)
+  /** One look at the streams: 'live', 'empty', or 'unknown' when the host does not answer within `limitMs` (asked again meanwhile). */
+  const lookAtStreams = async (limitMs) => {
+    const started = deps.now()
+    for (;;) {
+      let answer = null
+      try { answer = await deps.sessions() } catch { answer = null }
+      if (Array.isArray(answer)) return answer.length ? 'live' : 'empty'
+      if (deps.now() - started >= limitMs) return 'unknown'
+      await deps.sleep(STREAM_STOP_POLL_MS)
+    }
   }
-  let plan = planUsbipFix(status)
-  // after a restart that finished the cleanup, only the check is left
-  if (resume && plan.kind === 'healthy') plan = { kind: 'verify-only', id: plan.id, steps: ['verify'] }
-  let sessions = null
-  if (plan.steps.some((step) => step !== 'verify')) {
-    try { sessions = await deps.sessions() } catch { sessions = null }
-    const streaming = Array.isArray(sessions) && sessions.length > 0
-    plan = { ...plan, streaming, steps: streaming ? ['end-stream', ...plan.steps] : plan.steps }
+  /** The state of the transport and of the streams, as one plan; a failure to read either is returned as { error }. */
+  const diagnose = async () => {
+    let status
+    try {
+      status = await deps.refresh()
+    } catch (error) {
+      return { error: error?.message || String(error), step: 'check' }
+    }
+    let plan = planUsbipFix(status)
+    if (options.resume && plan.kind === 'healthy') plan = { kind: 'verify-only', id: plan.id, steps: ['verify'] }
+    if (plan.steps.some((step) => step !== 'verify')) {
+      const streams = await lookAtStreams(STREAM_QUERY_WAIT_MS)
+      // unknown is not empty: nothing is detached, cleaned or installed while it is not known whether a stream uses the transport
+      if (streams === 'unknown') return { error: 'USBIP-SETUP-006: unable to verify stream ownership: the host did not answer', step: 'check' }
+      plan = { ...plan, streaming: streams === 'live', steps: streams === 'live' ? ['end-stream', ...plan.steps] : plan.steps }
+    }
+    return { plan }
   }
-  apply({ type: 'plan', plan })
-  if (state.phase !== 'confirming') return state
-  let accepted = false
-  if (resume) {
-    // the person said yes to this much before the restart; anything beyond it asks again, from the button
-    accepted = plan.steps.every((step) => step === 'end-stream' || step === 'verify' || resume.steps.includes(step))
-    if (!accepted) return apply({ type: 'declined' })
-  } else {
-    try { accepted = await deps.confirm({ plan, streaming: Boolean(plan.streaming) }) } catch { accepted = false }
-    if (!accepted) return apply({ type: 'declined' })
-  }
-  apply({ type: 'confirmed' })
-  const rebootWith = (kind) => {
+  const rebootWith = (kind, plan) => {
     deps.onReboot?.({ plan, kind })
     return apply({ type: 'reboot', kind })
   }
+  // what a restart that was already waiting when the repair began finishes, kept like the steps of a repair that started the wait
+  const waitingSteps = { 'pending-restart-cleanup': ['cleanup', 'verify'], 'pending-restart-install': ['install', 'verify'], 'reboot-recommended': ['verify'] }
+
+  apply({ type: 'check', resumed: Boolean(options.resume) })
+  let seen = await diagnose()
+  if (seen.error) return fail(seen.step, seen.error)
+  let plan = seen.plan
+  apply({ type: 'plan', plan })
+  if (plan.kind === 'reboot') {
+    deps.onReboot?.({ plan: { ...plan, steps: waitingSteps[plan.id] || ['verify'], ports: [] }, kind: plan.reason })
+    return state
+  }
+  if (state.phase !== 'confirming') return state
+
+  let resume = options.resume || null
+  for (let round = 1; ; round += 1) {
+    let accepted
+    if (resume && resumeAllows(plan, resume)) {
+      accepted = true
+    } else {
+      try { accepted = await deps.confirm({ plan, streaming: Boolean(plan.streaming) }) } catch { accepted = false }
+      if (!accepted) return apply({ type: 'declined' })
+      // the answer was given for this plan: read the system again, and ask again if it is no longer what was shown
+      seen = await diagnose()
+      if (seen.error) return fail(seen.step, seen.error)
+      if (confirmedShape(seen.plan) !== confirmedShape(plan)) {
+        if (round >= MAX_CONFIRM_ROUNDS) return fail('check', 'USBIP-SETUP-006: the state of the system kept changing while the question was open')
+        plan = seen.plan
+        resume = null
+        apply({ type: 'plan', plan })
+        if (plan.kind === 'reboot') return state
+        if (state.phase !== 'confirming') return state
+        continue
+      }
+    }
+    break
+  }
+  apply({ type: 'confirmed' })
 
   for (const step of plan.steps) {
     if (step === 'end-stream') {
@@ -263,10 +325,10 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
       apply({ type: 'step-done', step, raw: checked.raw || '' })
       return apply({ type: 'done', note: checked.note || '' })
     }
-    const run = { detach: deps.detach, 'remove-stale': deps.removeStale, cleanup: deps.cleanup, replace: deps.replace, install: deps.install }[step]
+    const run = { detach: () => deps.detach(plan.ports || []), 'remove-stale': deps.removeStale, cleanup: deps.cleanup, replace: deps.replace, install: deps.install }[step]
     const result = await guarded(() => run(), 'the step did not finish')
     if (result?.skipped) return fail(step, 'USBIP-SETUP-018: another driver operation is in progress')
-    if (!result?.ok) return fail(step, result?.error || 'the step did not finish')
+    if (!result?.ok) return fail(step, result?.error || 'the step did not finish', { raw: result?.raw, reported: Boolean(result?.reported) })
     const data = result.data || {}
     if (step === 'detach') {
       apply({ type: 'step-done', step, raw: result.raw || '' })
@@ -275,24 +337,18 @@ export async function runUsbipFix(deps, onState = () => {}, options = {}) {
     if (step === 'cleanup' || step === 'remove-stale') {
       if (data.cleanup_pending_restart) {
         apply({ type: 'step-done', step, raw: rawOf(data) })
-        return rebootWith('cleanup')
+        return rebootWith('cleanup', plan)
       }
       if (data.vhci_residual) return fail(step, 'USBIP-CLEAN-002: the USB/IP host controller is still there after the cleanup')
       apply({ type: 'step-done', step, raw: rawOf(data) })
       continue
     }
-    // install and replace: ready, or Windows has to restart first
-    if (data.install_pending_restart) {
+    // install and replace: Windows has to restart first (also when the transport already answers), or it is ready
+    if (data.install_pending_restart || data.reboot_recommended) {
       apply({ type: 'step-done', step, raw: rawOf(data) })
-      return rebootWith('install')
+      return rebootWith('install', plan)
     }
-    if (!data.ready) {
-      if (data.reboot_recommended) {
-        apply({ type: 'step-done', step, raw: rawOf(data) })
-        return rebootWith('install')
-      }
-      return fail(step, data.detail || data.last_install_error || 'USBIP-SETUP-008: USB/IP is installed but not ready')
-    }
+    if (!data.ready) return fail(step, data.detail || data.last_install_error || 'USBIP-SETUP-010: USB/IP is installed but not ready')
     apply({ type: 'step-done', step, raw: rawOf(data) })
   }
   return apply({ type: 'done' })
@@ -325,7 +381,8 @@ export function describeFixResult(state, texts, friendly, version = '') {
     case 'blocked-nothing': return { tone: 'warning', text: texts.fixNothing, action: 'diagnostics', guide: '' }
     case 'failed': {
       const coded = codesOf(state.error).length > 0
-      const reason = state.failedStep === 'end-stream' && !coded ? texts.fixStopFailed : state.failedStep === 'check' && !coded ? texts.statusUnavailable : friendly(state.error)
+      const unknownStreams = /unable to verify/.test(state.error)
+      const reason = unknownStreams ? texts.fixStreamUnknown : state.failedStep === 'end-stream' && !coded ? texts.fixStopFailed : state.failedStep === 'check' && !coded ? texts.statusUnavailable : friendly(state.error)
       const text = fill(texts.fixFailed, { step: fixStepLabel(state.failedStep, texts, version), reason })
       return guided(text, guideFor(state.error), 'error')
     }
@@ -377,7 +434,9 @@ const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 /** Keeps what was confirmed, so the steps left run after Windows restarted. `storage` is localStorage (a read or write that fails keeps nothing). */
 export function saveFixResume(storage, plan, now = Date.now()) {
-  try { storage?.setItem(RESUME_KEY, JSON.stringify({ id: plan.id, steps: plan.steps.filter((step) => step !== 'end-stream'), written: now })) } catch { /* nothing kept: the person presses the button again */ }
+  try {
+    storage?.setItem(RESUME_KEY, JSON.stringify({ id: plan.id, steps: plan.steps.filter((step) => step !== 'end-stream'), ports: plan.ports || [], written: now }))
+  } catch { /* nothing kept: the person presses the button again */ }
 }
 
 export function clearFixResume(storage) {
@@ -385,18 +444,20 @@ export function clearFixResume(storage) {
 }
 
 /**
- * The kept plan when this run of the panel started after it was written (Windows restarted, or the panel did) and it is not older than a day;
- * otherwise null (and the stale record is dropped).
+ * The kept plan when Windows started after it was written: `bootMs` is when this Windows session began (the native side's boot time; the same
+ * clock the cleanup marker uses), so a panel that was only closed and opened again in the same session does not claim it. Without a boot
+ * time nothing is claimed. A record older than a day is dropped; one that is not yet claimable stays.
  */
-export function loadFixResume(storage, { processStart = 0, now = Date.now() } = {}) {
+export function loadFixResume(storage, { bootMs = 0, now = Date.now() } = {}) {
   let value = null
   try { value = JSON.parse(storage?.getItem(RESUME_KEY) || 'null') } catch { value = null }
   if (!value || !Array.isArray(value.steps) || !Number.isFinite(value.written)) return null
-  if (now - value.written > RESUME_MAX_AGE_MS || value.written >= processStart) {
-    if (now - value.written > RESUME_MAX_AGE_MS) clearFixResume(storage)
+  if (now - value.written > RESUME_MAX_AGE_MS) {
+    clearFixResume(storage)
     return null
   }
-  return { id: String(value.id || ''), steps: value.steps.map(String), written: value.written }
+  if (!(bootMs > value.written)) return null
+  return { id: String(value.id || ''), steps: value.steps.map(String), ports: Array.isArray(value.ports) ? value.ports.map(Number) : [], written: value.written }
 }
 
 export const FIX_GUIDE_KEYS = {

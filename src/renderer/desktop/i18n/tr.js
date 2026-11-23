@@ -1741,6 +1741,7 @@ export const tr = {
       fixRebootInstall: "USB/IP {version}, Windows yeniden başladıktan sonra çalışır. Yeniden başlat’ı seçin (Kapat’ı değil).",
       fixNothing: "Denetim masasının kendi başına onarabileceği bir uyumsuzluk bulunamadı. Özgün tanılamaya bakın.",
       fixStopFailed: "Geçerli yayın sonlandırılamadı. Sunshine’da sonlandırıp tekrar deneyin.",
+      fixStreamUnknown: "Sunshine yanıt vermedi, bu yüzden bir yayının sürüp sürmediği bilinmiyor. Sunshine’ı başlatıp tekrar deneyin.",
       fixRestartNow: "Şimdi yeniden başlat",
       fixRestartConfirm: "Windows 30 saniye sonra yeniden başlayacak. Önce çalışmanızı kaydedin.",
       fixConfirmInstall: "Eşleşen USB/IP {version} kurulacak. Yönetici onayı gerekir.",

@@ -1741,6 +1741,7 @@ export const it = {
       fixRebootInstall: "USB/IP {version} funziona dopo il riavvio di Windows. Scegli Riavvia (non Arresta).",
       fixNothing: "Non è stata trovata alcuna differenza che il pannello possa riparare da solo. Vedi la diagnosi originale.",
       fixStopFailed: "Non è stato possibile terminare lo stream in corso. Terminalo in Sunshine e riprova.",
+      fixStreamUnknown: "Sunshine non ha risposto, quindi non si sa se uno stream è in corso. Avvia Sunshine e riprova.",
       fixRestartNow: "Riavvia ora",
       fixRestartConfirm: "Windows si riavvierà tra 30 secondi. Salva prima il tuo lavoro.",
       fixConfirmInstall: "Verrà installato l’USB/IP {version} corrispondente. Serve l’autorizzazione dell’amministratore.",

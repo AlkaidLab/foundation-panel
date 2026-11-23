@@ -1469,6 +1469,7 @@ export const zh_TW = {
       fixRebootInstall: 'USB/IP {version} 需要重新啟動 Windows 後才能使用。請選「重新啟動」（不要選「關機」）。',
       fixNothing: '沒有發現可自動修復的不一致。請查看原始診斷。',
       fixStopFailed: '無法結束目前的串流。請先在 Sunshine 中結束串流，再試一次。',
+      fixStreamUnknown: 'Sunshine 沒有回應，無法確認有沒有串流在執行。請先啟動 Sunshine，再試一次。',
       fixRestartNow: '立即重新啟動',
       fixRestartConfirm: 'Windows 將在 30 秒後重新啟動。請先儲存進行中的工作。',
       fixConfirmInstall: '將安裝相符的 USB/IP {version}。需要系統管理員授權。',

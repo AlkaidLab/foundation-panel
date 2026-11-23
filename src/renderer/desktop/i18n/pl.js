@@ -1741,6 +1741,7 @@ export const pl = {
       fixRebootInstall: "USB/IP {version} zadziała po ponownym uruchomieniu Windows. Wybierz Uruchom ponownie (nie Zamknij).",
       fixNothing: "Nie znaleziono rozbieżności, którą panel naprawi sam. Zobacz oryginalną diagnostykę.",
       fixStopFailed: "Nie udało się zakończyć bieżącej transmisji. Zakończ ją w Sunshine i spróbuj ponownie.",
+      fixStreamUnknown: "Sunshine nie odpowiedział, więc nie wiadomo, czy trwa transmisja. Uruchom Sunshine i spróbuj ponownie.",
       fixRestartNow: "Uruchom ponownie",
       fixRestartConfirm: "Windows uruchomi się ponownie za 30 sekund. Najpierw zapisz swoją pracę.",
       fixConfirmInstall: "Zostanie zainstalowany pasujący USB/IP {version}. Wymagana jest zgoda administratora.",
