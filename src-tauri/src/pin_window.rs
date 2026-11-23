@@ -162,27 +162,30 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     info!("[pin] making the full-screen PIN entry");
     let shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let page_shown = shown.clone();
-    let window = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
+    let builder = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         PIN_WINDOW_ID,
         tauri::WebviewUrl::App("pin/index.html".into()),
     ))
     .title("PIN")
-    .fullscreen(true)
     .decorations(false)
     .transparent(true)
     .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(false)
-    .disable_drag_drop_handler()
-    .on_page_load(move |window, payload| {
-        if payload.event() == PageLoadEvent::Finished {
-            reveal(&window, &page_shown, "page loaded");
-        }
-    })
-    .build()
-    .map_err(|e| format!("the PIN window could not be made: {e}"))?;
+    .disable_drag_drop_handler();
+    // A measurement instance (SUNSHINE_GUI_TEST_OFFSCREEN, windows.rs `test_offscreen`) opens its windows outside every monitor: nothing of it shows on the desk of whoever uses
+    // the machine. The entry is then a window of the size of a display, out of sight, instead of the display-covering one.
+    let builder = if crate::windows::test_offscreen() { builder.inner_size(1920.0, 1080.0).position(6000.0, 100.0) } else { builder.fullscreen(true) };
+    let window = builder
+        .on_page_load(move |window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                reveal(&window, &page_shown, "page loaded");
+            }
+        })
+        .build()
+        .map_err(|e| format!("the PIN window could not be made: {e}"))?;
 
     #[cfg(target_os = "windows")]
     crate::windows::configure_webview_security(&window);
