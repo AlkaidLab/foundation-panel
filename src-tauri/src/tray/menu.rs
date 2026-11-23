@@ -194,7 +194,7 @@ pub(super) fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<M
     let slider_keys = popup_input::native_slider_keys();
     let (bitrate_now, dpi_now) = popup_input::native_slider_values();
     let bitrate_submenu = if slider_keys.iter().any(|k| k == "bitrate") {
-        let bitrate_enabled = core_connected && bitrate_now.is_some();
+        let bitrate_enabled = core_connected && bitrate_now.is_some_and(|kbps| kbps > 0);
         let mut steps = Vec::new();
         for mbps in popup_input::NATIVE_BITRATE_MBPS {
             steps.push(CheckMenuItem::with_id(app, format!("slider_bitrate_{mbps}"), format!("{mbps} Mbps"), bitrate_enabled, bitrate_now == Some(mbps * 1000), None::<&str>)?);

@@ -347,7 +347,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
             .collect(),
         _ => Vec::new(),
     };
-    let current_session = live.as_ref().and_then(|rows| rows.iter().find(|row| row.state == "RUNNING" && row.bitrate > 0));
+    let current_session = live.as_ref().and_then(|rows| rows.iter().find(|row| row.state == "RUNNING"));
     let first = live.as_ref().and_then(|rows| rows.first());
     let vdd_active = tray_state.as_ref().is_some_and(|state| state.vdd.active);
     let (vdd_mode, vdd_short) = match first {
@@ -360,7 +360,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
         None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
         None => None,
     };
-    let sliders = slider_state(connected, vdd_active, stream, current_session.map(|row| (row.bitrate as u64, true))).await;
+    let sliders = slider_state(connected, vdd_active, stream, current_session.map(|row| (row.bitrate as u64, row.bitrate > 0))).await;
     let notification = tray_state.as_ref().filter(|state| state.notification.active).map(|state| menu::tray_notification_label(s, state));
     let update_version = update::last_seen_update();
     #[cfg(target_os = "windows")]
@@ -446,7 +446,7 @@ async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u3
             None
         }
     };
-    let bitrate = connected.then(|| current_bitrate.map_or_else(|| json!({ "kbps": 0, "enabled": false }), |(kbps, enabled)| json!({ "kbps": kbps, "enabled": enabled })));
+    let bitrate = connected.then(|| current_bitrate.map_or_else(|| json!({ "kbps": 0, "enabled": false }), |(kbps, enabled)| json!({ "kbps": kbps, "enabled": enabled, "unknown": !enabled })));
     display_sliders::sliders_json(&outputs, target, dpi.as_ref(), bitrate)
 }
 
@@ -541,7 +541,7 @@ async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), Str
         "bitrate" => {
             let kbps = value.as_u64().filter(|n| (1_000..=800_000).contains(n)).ok_or("码率无效")?;
             let sessions = tokio::time::timeout(LIVE_TIMEOUT, sunshine::get_active_sessions()).await.ok().and_then(Result::ok).unwrap_or_default();
-            let session = sessions.into_iter().find(|row| row.state == "RUNNING" && row.bitrate > 0).ok_or("当前没有正在串流的会话")?;
+            let session = sessions.into_iter().find(|row| row.state == "RUNNING").ok_or("当前没有正在串流的会话")?;
             sunshine::change_bitrate(session.client_name, kbps as u32).await?;
             Duration::from_millis(100)
         }
@@ -605,7 +605,7 @@ pub(super) async fn refresh_native_sliders<R: Runtime + 'static>(app: AppHandle<
     let bitrate = if connected && keys.iter().any(|k| k == "bitrate") {
         tokio::time::timeout(LIVE_TIMEOUT, sunshine::get_active_sessions()).await.ok()
             .and_then(Result::ok)
-            .and_then(|rows| rows.into_iter().find(|row| row.state == "RUNNING" && row.bitrate > 0))
+            .and_then(|rows| rows.into_iter().find(|row| row.state == "RUNNING"))
             .map(|row| row.bitrate as u64)
     } else { None };
     let dpi = if cfg!(target_os = "windows") && keys.iter().any(|k| k == "dpi") { crate::dpi_scale::read_range(scale_display().await).await.ok() } else { None };
