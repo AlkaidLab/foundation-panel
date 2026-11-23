@@ -347,6 +347,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
             .collect(),
         _ => Vec::new(),
     };
+    let current_session = live.as_ref().and_then(|rows| rows.iter().find(|row| row.state == "RUNNING" && row.bitrate > 0));
     let first = live.as_ref().and_then(|rows| rows.first());
     let vdd_active = tray_state.as_ref().is_some_and(|state| state.vdd.active);
     let (vdd_mode, vdd_short) = match first {
@@ -359,7 +360,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
         None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
         None => None,
     };
-    let sliders = slider_state(connected, vdd_active, stream).await;
+    let sliders = slider_state(connected, vdd_active, stream, current_session.map(|row| (row.bitrate as u64, true))).await;
     let notification = tray_state.as_ref().filter(|state| state.notification.active).map(|state| menu::tray_notification_label(s, state));
     let update_version = update::last_seen_update();
     #[cfg(target_os = "windows")]
@@ -431,9 +432,9 @@ async fn displays_and_facts(vdd_active: bool, stream: Option<(u32, u32, u32)>, f
     (outputs, Facts { virtual_active: vdd_active, output_is_virtual, stream }, config)
 }
 
-/// `state.sliders`: the target display and what it can do now, the scale, the bitrate cap (only with a connected core).
-async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u32, u32)>) -> Value {
-    let (outputs, facts, config) = displays_and_facts(vdd_active, stream, false).await;
+/// `state.sliders`: the target display and what it can do now, the scale, and the current stream bitrate.
+async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u32, u32)>, current_bitrate: Option<(u64, bool)>) -> Value {
+    let (outputs, facts, _) = displays_and_facts(vdd_active, stream, false).await;
     let target = display_sliders::choose(&outputs, &facts);
     // the scale is a property of the display the sliders point at (the stream's, else the virtual display, else the primary one), and what Windows lets that display take is read now: it changes with the
     // display and its resolution
@@ -445,7 +446,7 @@ async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u3
             None
         }
     };
-    let bitrate = connected.then(|| config_text(&config, "max_bitrate").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0));
+    let bitrate = connected.then(|| current_bitrate.map_or_else(|| json!({ "kbps": 0, "enabled": false }), |(kbps, enabled)| json!({ "kbps": kbps, "enabled": enabled })));
     display_sliders::sliders_json(&outputs, target, dpi.as_ref(), bitrate)
 }
 
@@ -510,7 +511,7 @@ pub(super) fn act(app: &AppHandle, token: u64, id: &str) {
     handle_tray_menu_event(app, id);
 }
 
-/// Writes one slider's value to the machine (the display's mode, the scale, the bitrate cap) and returns how long the system needs to show it, and a notice for the page (null; for the scale, what came of a
+/// Writes one slider's value to the machine (the display's mode, the scale, the current stream bitrate) and returns how long the system needs to show it, and a notice for the page (null; for the scale, what came of a
 /// step the display does not allow without signing out: `{ requested, applied, clamped: true, max }`). The quick page and the native menu's stepped items both come here, so the two cannot disagree
 /// about what a value means.
 async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), String> {
@@ -538,14 +539,10 @@ async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), Str
             Duration::from_millis(500)
         }
         "bitrate" => {
-            let kbps = value.as_u64().filter(|n| *n <= 800_000).ok_or("码率无效")?;
-            // the configuration API replaces the whole table: read it all, change the one key, write it back under the lock every such writer takes
-            let _guard = crate::device_config::DEVICE_CONFIG_LOCK.lock().await;
-            let mut config = crate::vdd::read_full_sunshine_config().await?;
-            config.insert("max_bitrate".to_string(), json!(kbps.to_string()));
-            // The host applies the ceiling to the running process and to every running session before it answers; its answer says what is in force. A host that says something else is told to the person.
-            let answer = sunshine::post_sunshine_config_reporting(&config).await?;
-            check_ceiling_in_force(&answer, kbps)?;
+            let kbps = value.as_u64().filter(|n| (1_000..=800_000).contains(n)).ok_or("码率无效")?;
+            let sessions = tokio::time::timeout(LIVE_TIMEOUT, sunshine::get_active_sessions()).await.ok().and_then(Result::ok).unwrap_or_default();
+            let session = sessions.into_iter().find(|row| row.state == "RUNNING" && row.bitrate > 0).ok_or("当前没有正在串流的会话")?;
+            sunshine::change_bitrate(session.client_name, kbps as u32).await?;
             Duration::from_millis(100)
         }
         other => return Err(format!("未知的滑块 {other}")),
@@ -553,13 +550,6 @@ async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), Str
     Ok((settle, notice))
 }
 
-/// The host's answer to a saved bitrate ceiling: when it says which one is in force (a host that applies it at once does), it must be the one that was asked for. A host that does not say is not doubted.
-fn check_ceiling_in_force(answer: &Value, asked_kbps: u64) -> Result<(), String> {
-    match answer.get("max_bitrate_in_force").and_then(Value::as_u64) {
-        Some(in_force) if in_force != asked_kbps => Err(format!("主机实际生效的码率上限是 {} Kbps", in_force)),
-        _ => Ok(()),
-    }
-}
 
 /// A slider of the quick page was released (`tray_popup_set`): the menu stays open; the answer comes when the value is set, and the state the host ended up in is pushed first. The answer is the notice
 /// of `write_slider` (null when there is nothing to say).
@@ -576,16 +566,16 @@ pub(super) async fn set(app: &AppHandle, key: &str, value: &Value) -> Result<Val
 
 // ---- the native menu's stepped sliders --------------------------------------------------------------------------------------------------------------------------------------------------------
 //
-// The native menu cannot draw a slider, so 码率上限 and 缩放 are two submenus of steps (the same two values the menus' sliders set, through `write_slider`). Which of them the menu has follows the same
-// list as the sliders of the three menus (`layout.sliders`, default bitrate + dpi); the ticks show what was read a moment ago (the menu is built synchronously).
+// The native menu cannot draw a slider, so 当前码率 and 缩放 are two submenus of steps (the same two values the menus' sliders set, through `write_slider`). Which of them the menu has follows the same
+// list as the sliders of the three menus (`layout.sliders`, default bitrate + dpi); the current session value is read a moment ago (the menu is built synchronously).
 
-/// The steps of the native 码率上限 submenu, in Mbps (0 = 自动). The 缩放 submenu has the steps the display allows now (`ScaleRange::options`, read with the ticks); `NATIVE_DPI_STEPS` is every step Windows
+/// The steps of the native current-bitrate submenu, in Mbps. The 缩放 submenu has the steps the display allows now (`ScaleRange::options`, read with the ticks); `NATIVE_DPI_STEPS` is every step Windows
 /// has, which is all an item id may name (`slider_dpi_N`).
-pub(super) const NATIVE_BITRATE_MBPS: [u64; 5] = [0, 10, 20, 50, 100];
+pub(super) const NATIVE_BITRATE_MBPS: [u64; 6] = [5, 10, 20, 50, 100, 200];
 pub(super) const NATIVE_DPI_STEPS: [u32; 12] = crate::dpi_scale_core::DPI_VALS;
 const NATIVE_SLIDER_PREFIX: &str = "slider_";
 
-/// (bitrate cap in kbps, what the target display allows for the scale) as the native menu last read them.
+/// (current session bitrate in kbps, what the target display allows for the scale) as the native menu last read them.
 static NATIVE_SLIDERS: Mutex<(Option<u64>, Option<ScaleRange>)> = Mutex::new((None, None));
 
 pub(super) fn native_slider_values() -> (Option<u64>, Option<ScaleRange>) {
@@ -613,11 +603,11 @@ pub(super) async fn refresh_native_sliders<R: Runtime + 'static>(app: AppHandle<
     let connected = connection == CoreConnectionState::Connected;
     let keys = native_slider_keys();
     let bitrate = if connected && keys.iter().any(|k| k == "bitrate") {
-        let config = crate::vdd::read_full_sunshine_config().await.unwrap_or_default();
-        Some(config_text(&config, "max_bitrate").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0))
-    } else {
-        None
-    };
+        tokio::time::timeout(LIVE_TIMEOUT, sunshine::get_active_sessions()).await.ok()
+            .and_then(Result::ok)
+            .and_then(|rows| rows.into_iter().find(|row| row.state == "RUNNING" && row.bitrate > 0))
+            .map(|row| row.bitrate as u64)
+    } else { None };
     let dpi = if cfg!(target_os = "windows") && keys.iter().any(|k| k == "dpi") { crate::dpi_scale::read_range(scale_display().await).await.ok() } else { None };
     let changed = {
         let mut held = NATIVE_SLIDERS.lock().unwrap_or_else(|p| p.into_inner());
@@ -739,18 +729,17 @@ mod tests {
     }
 
     #[test]
-    fn the_bitrate_ceiling_must_be_the_one_the_host_says_is_in_force() {
-        assert!(check_ceiling_in_force(&json!({ "status": "true", "max_bitrate_in_force": 50000, "sessions_updated": 1 }), 50000).is_ok());
-        assert!(check_ceiling_in_force(&json!({ "status": "true", "max_bitrate_in_force": 0 }), 0).is_ok());
-        assert_eq!(check_ceiling_in_force(&json!({ "status": "true", "max_bitrate_in_force": 20000 }), 50000).unwrap_err(), "主机实际生效的码率上限是 20000 Kbps");
-        assert!(check_ceiling_in_force(&json!({ "status": "true" }), 50000).is_ok(), "an older host that says nothing is not doubted");
-        // the one writer is told apart from the answer by the source text: the host's own words reach the person through post_sunshine_config_reporting
-        assert!(include_str!("popup_input.rs").contains("post_sunshine_config_reporting(&config).await?"));
+    fn current_bitrate_uses_the_runtime_session_endpoint() {
+        let source = include_str!("popup_input.rs");
+        assert!(source.contains("sunshine::change_bitrate(session.client_name, kbps as u32).await?"));
+        assert!(source.contains("row.state == \"RUNNING\""));
+        assert!(!source.contains("max_bitrate"));
     }
 
     #[test]
     fn the_native_menu_has_stepped_stand_ins_for_the_sliders() {
-        assert_eq!(parse_native_slider("slider_bitrate_0"), Some(("bitrate", 0)));
+        assert_eq!(parse_native_slider("slider_bitrate_0"), None);
+        assert_eq!(parse_native_slider("slider_bitrate_5"), Some(("bitrate", 5_000)));
         assert_eq!(parse_native_slider("slider_bitrate_20"), Some(("bitrate", 20_000)));
         assert_eq!(parse_native_slider("slider_dpi_150"), Some(("dpi", 150)));
         // 350 is a step Windows has (a large display may take it); 275 and 130 are not steps at all

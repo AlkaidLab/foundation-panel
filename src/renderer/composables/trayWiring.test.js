@@ -99,12 +99,12 @@ test('the sliders: tray_popup_set is registered, its answer reaches the page (a 
   const refused = trayTransport({ invoke: async () => { throw '显示器不支持这个模式' }, listen: () => {} })
   await assert.rejects(() => refused.set(7, 'refresh', 144), /显示器不支持这个模式/)
   for (const key of ['resolution', 'refresh', 'dpi', 'bitrate']) assert.ok(inputRs.includes(`"${key}" =>`), `popup_input::set has no arm for ${key}`)
-  // the host is the one that writes: the same lock and config round trip as the other config writers, DisplayConfig (dpi_scale::set_scale) for the scale, Win32 for the modes
-  assert.match(inputRs, /DEVICE_CONFIG_LOCK[\s\S]*read_full_sunshine_config[\s\S]*post_sunshine_config/); assert.ok(inputRs.includes('crate::dpi_scale::set_scale(scale_display().await, dpi)'))
+  // the host is the one that writes: runtime bitrate for the selected session, DisplayConfig (dpi_scale::set_scale) for the scale, Win32 for the modes
+  assert.ok(inputRs.includes('sunshine::change_bitrate(session.client_name, kbps as u32).await?')); assert.ok(inputRs.includes('crate::dpi_scale::set_scale(scale_display().await, dpi)'))
   assert.ok(sliderRs.includes('ChangeDisplaySettingsExW') && sliderRs.includes('CDS_TEST') && sliderRs.includes('EnumDisplaySettingsExW'))
   // the page sends exactly the keys the model draws
   assert.deepEqual([...SLIDER_KEYS], ['resolution', 'refresh', 'dpi', 'bitrate'])
-  assert.equal(VARIANTS.v3.pages.quick.rows.find((r) => r.t === 'sliders').source, 'layout', 'which sliders: the person\'s layout, the bitrate cap and the scale by default')
+  assert.equal(VARIANTS.v3.pages.quick.rows.find((r) => r.t === 'sliders').source, 'layout', 'which sliders: the person\'s layout, the current bitrate and the scale by default')
 })
 
 test('the quick panel\'s layout: the host keeps it apart from the click settings, accepts exactly the ids the menu knows, and sends it with the state', async () => {
@@ -136,7 +136,7 @@ test('the sliders are in all three menus from one list, and the native menu has 
     assert.equal(rows.filter((r) => r.t === 'sliders' && r.source === 'layout').length, 1, v)
   }
   const menuRs = read('src-tauri/src/tray/menu.rs'), prefsRs = read('src-tauri/src/tray_prefs.rs')
-  // one writer: the quick page and the native steps both end in write_slider (the config key max_bitrate, the display's scale through DisplayConfig)
+  // one writer: the quick page and the native steps both end in write_slider (the current session bitrate endpoint, the display's scale through DisplayConfig)
   assert.match(inputRs, /async fn write_slider\(key: &str, value: &Value\)/); assert.match(inputRs, /let \(settle, notice\) = write_slider\(key, value\)\.await\?;/); assert.match(inputRs, /match write_slider\(key, &json!\(value\)\)\.await/)
   // the steps: the menu builds ids the handler parses; the labels are in three languages
   assert.match(menuRs, /format!\("slider_bitrate_\{mbps\}"\)/); assert.match(menuRs, /format!\("slider_dpi_\{pct\}"\)/)

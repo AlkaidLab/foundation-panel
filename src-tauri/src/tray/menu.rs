@@ -190,22 +190,18 @@ pub(super) fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<M
         core_connected,
         None::<&str>,
     )?;
-    // the stepped stand-ins for the sliders of the three menus (the native menu cannot draw a slider): 码率上限 and 缩放, the ones the person's list (`layout.sliders`) has; the tick is what was read a moment ago
+    // the stepped stand-ins for the sliders of the three menus (the native menu cannot draw a slider): current bitrate and 缩放, the ones the person's list (`layout.sliders`) has; the tick is what was read a moment ago
     let slider_keys = popup_input::native_slider_keys();
     let (bitrate_now, dpi_now) = popup_input::native_slider_values();
     let bitrate_submenu = if slider_keys.iter().any(|k| k == "bitrate") {
+        let bitrate_enabled = core_connected && bitrate_now.is_some();
         let mut steps = Vec::new();
         for mbps in popup_input::NATIVE_BITRATE_MBPS {
-            let label = if mbps == 0 { s.bitrate_auto.to_string() } else { format!("{mbps} Mbps") };
-            steps.push(CheckMenuItem::with_id(app, format!("slider_bitrate_{mbps}"), label, core_connected, bitrate_now == Some(mbps * 1000), None::<&str>)?);
+            steps.push(CheckMenuItem::with_id(app, format!("slider_bitrate_{mbps}"), format!("{mbps} Mbps"), bitrate_enabled, bitrate_now == Some(mbps * 1000), None::<&str>)?);
         }
         let refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = steps.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<R>).collect();
-        let now = match bitrate_now {
-            Some(0) => format!(": {}", s.bitrate_auto),
-            Some(kbps) => format!(": {} Mbps", kbps as f64 / 1000.0),
-            None => String::new(),
-        };
-        Some(Submenu::with_id_and_items(app, "bitrate", format!("{}{}", s.bitrate_menu, now), core_connected, &refs)?)
+        let now = bitrate_now.map(|kbps| format!(": {} Mbps", kbps as f64 / 1000.0)).unwrap_or_default();
+        Some(Submenu::with_id_and_items(app, "bitrate", format!("{}{}", s.bitrate_menu, now), bitrate_enabled, &refs)?)
     } else {
         None
     };
