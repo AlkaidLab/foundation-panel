@@ -192,7 +192,9 @@ impl TrayRuntimeState {
     fn mark_disconnected(&mut self) -> bool {
         let connection_changed = self.connection != CoreConnectionState::Disconnected;
         self.connection = CoreConnectionState::Disconnected;
-        connection_changed || self.tray_state.take().is_some()
+        // the state is dropped whether or not the connection changed: `||` would skip it on the first disconnect and `current_status()` would go on reporting the old one
+        let had_state = self.tray_state.take().is_some();
+        connection_changed || had_state
     }
 }
 
@@ -1164,6 +1166,24 @@ mod tests {
         assert!(!recovery.complete_from_monitored_state(11));
         assert!(recovery.complete_from_monitored_state(12));
         assert!(!recovery.complete_from_monitored_state(13));
+    }
+
+    #[test]
+    fn the_first_disconnect_forgets_the_last_state_as_well_as_rebuilding_the_menu() {
+        // the full-screen PIN entry and a notification click read the status here: a pairing from before the host was lost must not be reported
+        let mut runtime = TrayRuntimeState {
+            connection: CoreConnectionState::Connecting,
+            tray_state: None,
+            recovery: RecoveryState::default(),
+        };
+        let mut pairing = tray_state("pairing");
+        pairing.pairing_client_name = "Living Room TV".to_string();
+        runtime.apply_connected_state(&pairing, Some(1)).expect("a monitor state is accepted");
+        assert_eq!(runtime.tray_state.as_ref().map(|state| state.status.as_str()), Some("pairing"));
+
+        assert!(runtime.mark_disconnected(), "the connection changed: the menu is rebuilt");
+        assert!(runtime.tray_state.is_none(), "and the old state is gone, though the connection changed too");
+        assert!(!runtime.mark_disconnected());
     }
 
     #[test]

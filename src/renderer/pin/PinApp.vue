@@ -25,7 +25,8 @@ const pin = ref('')
 const phase = ref('preparing')
 const notice = ref({ kind: '', key: '' })
 const clientName = ref('')
-const proxy = ref(DEFAULT_PROXY)
+// the address the host's proxy is bound to once it is ready ('' until then: nothing is sent to a guessed port)
+const proxy = ref('')
 const padCursor = ref(null)
 const root = ref(null)
 
@@ -38,7 +39,32 @@ const later = (fn, ms) => { const id = setTimeout(() => { timers.delete(id); fn(
 const closeWindow = async () => { try { await getCurrentWindow().close() } catch { /* a browser preview has no window to close */ } }
 const cancel = () => { if (phase.value !== 'submitting') void closeWindow() }
 
+const inPanel = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+// `get_proxy_url_command` answers with the port the proxy is meant to have, while the listener is bound a moment later and may take another one when that is in use:
+// the address is asked of `wait_for_proxy_ready`, which answers when the listener is up. Outside the panel (a browser preview) the default address stands.
+async function resolveProxy() {
+  if (!inPanel()) return DEFAULT_PROXY
+  for (let attempt = 0; attempt < 3 && phase.value !== 'ended'; attempt++) {
+    try {
+      const base = await invoke('wait_for_proxy_ready')
+      if (base) return String(base).replace(/\/+$/, '')
+    } catch { /* the proxy did not come up in time: ask again */ }
+  }
+  return ''
+}
+
+// the client that waits for its PIN, as the host reports it (the host may report it a moment after the window opened, so it is asked again until it is known)
+async function refreshClientName() {
+  if (!inPanel()) return
+  try {
+    const name = String((await invoke('pin_pairing_client')) || '').trim()
+    if (name && name !== clientName.value) clientName.value = name
+  } catch { /* the host is not reporting: the heading stays general */ }
+}
+
 async function waitForProxy() {
+  if (!proxy.value) return null
   for (let attempt = 0; attempt < 30; attempt++) {
     try {
       const controller = new AbortController()
@@ -59,6 +85,10 @@ async function submit(code) {
   notice.value = { kind: '', key: '' }
   let answer
   try {
+    // a proxy that was not up at the start is asked for again before a PIN is given up on
+    if (!proxy.value) proxy.value = await resolveProxy()
+    if (!proxy.value) throw new Error('no proxy')
+    await refreshClientName()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 10000)
     const response = await fetch(`${proxy.value}/api/pin`, {
@@ -89,6 +119,7 @@ let before = []
 let stickBefore = null
 let cursor = null
 let poll = 0
+let nameTimer = 0
 const keyButtons = () => Array.from(root.value?.querySelectorAll('.m-pin__key') || [])
 function showCursor(cell) {
   const buttons = keyButtons()
@@ -149,12 +180,12 @@ onMounted(async () => {
   }
   try {
     off.push(await listen('pin-pairing-ended', (event) => onEnded(event.payload)))
-    proxy.value = (await invoke('get_proxy_url_command')) || DEFAULT_PROXY
-    clientName.value = String((await invoke('pin_pairing_client')) || '')
   } catch { /* not inside the Panel: the harness drives window.__pinEntry */ }
+  void refreshClientName()
+  nameTimer = setInterval(() => { if (phase.value !== 'done' && phase.value !== 'ended') void refreshClientName() }, 1000)
+  proxy.value = await resolveProxy()
   const config = await waitForProxy()
   if (phase.value === 'preparing') {
-    if (!clientName.value && config) clientName.value = String(config.pair_name || config.sunshine_name || '')
     if (config) phase.value = 'ready'
     else { notice.value = { kind: 'error', key: 'unreachable' }; phase.value = 'ready' }
   }
@@ -172,6 +203,7 @@ onBeforeUnmount(() => {
   systemDark?.removeEventListener?.('change', onScheme)
   window.removeEventListener('keydown', onKey)
   clearInterval(poll)
+  clearInterval(nameTimer)
   timers.forEach(clearTimeout)
   off.forEach((fn) => fn())
 })
