@@ -129,6 +129,8 @@ pub(crate) fn allows_command(command: &str) -> bool {
             | "panel_set_surface"
             | "panel_state_save"
             | "parse_sunshine_config"
+            | "pin_pairing_client"
+            | "pin_window_selftest"
             | "probe_sunshine_host"
             | "system_load"
             | "take_pending_panel_page"
@@ -161,6 +163,8 @@ mod tests {
         assert!(allows_command("ctx_popup_ready"));
         assert!(allows_command("ctx_popup_selftest"));
         assert!(allows_command("launch_splash_selftest"));
+        assert!(allows_command("pin_window_selftest"));
+        assert!(allows_command("pin_pairing_client"));
         for name in [
             "update_desktop_settings",
             "set_locale_preferences",

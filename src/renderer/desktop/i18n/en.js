@@ -3,7 +3,24 @@ const USBIP_VERSION = compatibility.usbip.version
 
 export const en = {
   windowTitles: { toolbar: 'Toolbar', toolWindow: 'Tool Window' },
-  "pinEntry": { "keyboardHint": "Type with your keyboard · Esc to cancel" },
+  "pinEntry": {
+    "title": "PIN pairing",
+    "hint": "Enter the 4-digit PIN shown on the client",
+    "named": "“{name}” wants to pair",
+    "unnamed": "A device wants to pair",
+    "keyboardHint": "Type with your keyboard · Esc to cancel",
+    "cancel": "Cancel",
+    "preparing": "Connecting to the host…",
+    "pairing": "Pairing…",
+    "done": "Paired",
+    "wrong": "That PIN is not right. Try again.",
+    "unreachable": "Cannot reach the host. Make sure Sunshine is running.",
+    "failed": "Pairing did not work. Try again.",
+    "endedFinished": "This pairing request is over",
+    "endedNoRequest": "No pairing request is waiting",
+    "endedHostLost": "The host is not responding",
+    "backspace": "Delete"
+  },
   "toolActions": {
     "adminRequiredTitle": "Administrator Privileges Required",
     "cleanupAdminRequired": "Cleaning temporary files requires administrator privileges.\n\nRestart the app as administrator?",
@@ -266,6 +283,10 @@ export const en = {
     notifications: 'Notifications',
     desktopNotifications: 'Desktop Notifications',
     desktopNotificationsDesc: 'Show system notifications for pairing, connections, and updates',
+    pinPrompt: "Pairing request",
+    pinPromptDesc: "Where to enter the PIN when a client asks to pair",
+    pinPromptFullscreen: "Full-screen PIN entry (default)",
+    pinPromptPanel: "Enter in the control panel",
     connectionNotify: 'Connection Notifications',
     connectionNotifyDesc: 'Show the device name when a client connects or disconnects',
     updateNotify: 'Update Notifications',

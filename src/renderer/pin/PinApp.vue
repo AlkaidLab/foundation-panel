@@ -2,7 +2,7 @@
 // The full-screen PIN entry (src-tauri/src/pin_window.rs): a dimmed, transparent window over the display with one card: who asks, the keypad, Cancel.
 // Keyboard (digits, Backspace, Esc), touch and mouse press the keypad's own buttons; a controller moves over them (d-pad or left stick, A presses, B cancels).
 // The host closes the window when the pairing is over (`pin-pairing-ended`); the page says so first.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -10,20 +10,19 @@ import MPinPad from 'foundation-ui/vue/MPinPad.vue'
 import MIcon from 'foundation-ui/vue/MIcon.vue'
 import MButton from 'foundation-ui/vue/MButton.vue'
 import { useI18n } from '../desktop/i18n/index.js'
-import { getInitialSimpleLocale, pickSimpleMessages, setDocumentLocale, syncSimpleLocaleFromSunshine } from '../shared/simple-i18n.js'
+import { documentLang } from '../desktop/i18n/merge.js'
 import {
-  CLOSE_AFTER_ENDED_MS, CLOSE_AFTER_SUCCESS_MS, MESSAGES, PAD_CELLS, PIN_LENGTH, classifyAnswer, classifyFailure, endedKey, headingFor, movePad, padEdges, stickDirection,
+  CLOSE_AFTER_ENDED_MS, CLOSE_AFTER_SUCCESS_MS, PAD_CELLS, PIN_LENGTH, classifyAnswer, classifyFailure, endedKey, headingFor, keepWhileMounted, movePad, padEdges, stickDirection,
 } from './pinFlow.js'
 
 const DEFAULT_PROXY = 'http://localhost:48081'
 const DEFAULT_NAME = 'Moonlight Client'
 
-const text = ref(pickSimpleMessages(MESSAGES))
-const applyLocale = (locale) => { text.value = pickSimpleMessages(MESSAGES, locale); setDocumentLocale(locale); document.title = text.value.title }
-
-// the hint about the keyboard is in every language of the panel (desktop/i18n, pinEntry); the rest of the card is Chinese and English as it was
-const { t } = useI18n()
-const keyboardHint = computed(() => t.value.pinEntry?.keyboardHint || '')
+// every text of the card is in the language of the panel (desktop/i18n, the `pinEntry` section of each language file)
+const { t, locale } = useI18n()
+const text = computed(() => t.value.pinEntry || {})
+const keyboardHint = computed(() => text.value.keyboardHint || '')
+watchEffect(() => { document.documentElement.lang = documentLang(locale.value); document.title = text.value.title || '' })
 // a screen with nothing but a finger to type with has no use for it
 const coarsePointer = window.matchMedia?.('(any-pointer: coarse)')
 const finePointer = window.matchMedia?.('(any-pointer: fine)')
@@ -56,7 +55,7 @@ const inPanel = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in 
 // the address is asked of `wait_for_proxy_ready`, which answers when the listener is up. Outside the panel (a browser preview) the default address stands.
 async function resolveProxy() {
   if (!inPanel()) return DEFAULT_PROXY
-  for (let attempt = 0; attempt < 3 && phase.value !== 'ended'; attempt++) {
+  for (let attempt = 0; attempt < 3 && phase.value !== 'ended' && !unmounted; attempt++) {
     try {
       const base = await invoke('wait_for_proxy_ready')
       if (base) return String(base).replace(/\/+$/, '')
@@ -84,7 +83,7 @@ async function waitForProxy() {
       clearTimeout(timer)
       if (response.ok) return await response.json().catch(() => ({}))
     } catch { /* the host is still starting */ }
-    if (phase.value === 'ended') return null
+    if (phase.value === 'ended' || unmounted) return null
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }
   return null
@@ -131,6 +130,8 @@ let stickBefore = null
 let cursor = null
 let poll = 0
 let nameTimer = 0
+// set when the component goes: what an `await` of the mount brings back after that is undone or never started
+let unmounted = false
 const keyButtons = () => Array.from(root.value?.querySelectorAll('.m-pin__key') || [])
 function showCursor(cell) {
   const buttons = keyButtons()
@@ -179,8 +180,6 @@ onMounted(async () => {
   systemDark?.addEventListener?.('change', onScheme)
   coarsePointer?.addEventListener?.('change', onPointers)
   finePointer?.addEventListener?.('change', onPointers)
-  applyLocale(getInitialSimpleLocale())
-  void syncSimpleLocaleFromSunshine(MESSAGES, applyLocale)
   window.addEventListener('keydown', onKey)
   poll = setInterval(readPad, 33)
   // for the harness and for a person at the devtools: the calls the host and the keypad make, and a way to put the page in a state to look at
@@ -191,13 +190,16 @@ onMounted(async () => {
     cursor: (cell) => showCursor(cell),
     pin: (digits) => { pin.value = String(digits || '').slice(0, PIN_LENGTH) },
   }
-  try {
-    off.push(await listen('pin-pairing-ended', (event) => onEnded(event.payload)))
-  } catch { /* not inside the Panel: the harness drives window.__pinEntry */ }
+  // outside the panel there is no host to listen to: the harness drives window.__pinEntry
+  const mounted = await keepWhileMounted(() => listen('pin-pairing-ended', (event) => onEnded(event.payload)), () => !unmounted, (undo) => off.push(undo))
+  // the window can close while the listener is being registered: then the listener is undone already and no timer is started
+  if (!mounted) return
   void refreshClientName()
   nameTimer = setInterval(() => { if (phase.value !== 'done' && phase.value !== 'ended') void refreshClientName() }, 1000)
   proxy.value = await resolveProxy()
+  if (unmounted) return
   const config = await waitForProxy()
+  if (unmounted) return
   if (phase.value === 'preparing') {
     if (config) phase.value = 'ready'
     else { notice.value = { kind: 'error', key: 'unreachable' }; phase.value = 'ready' }
@@ -213,6 +215,7 @@ function onEnded(reason) {
 }
 
 onBeforeUnmount(() => {
+  unmounted = true
   systemDark?.removeEventListener?.('change', onScheme)
   coarsePointer?.removeEventListener?.('change', onPointers)
   finePointer?.removeEventListener?.('change', onPointers)
@@ -280,8 +283,8 @@ onBeforeUnmount(() => {
   background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
 }
 .pin-ico .m-icon, .pin-ico svg { font-size: 28px; width: 28px; height: 28px; }
-.pin-title { margin: 8px 0 0; font: 500 24px/32px var(--md-ref-typeface-brand, inherit); overflow-wrap: anywhere; }
-.pin-hint { margin: 0; font: 400 14px/20px var(--md-ref-typeface-plain, inherit); color: var(--md-sys-color-on-surface-variant); }
+.pin-title { margin: 8px 0 0; font: 500 24px/32px var(--md-ref-typeface-brand, inherit); overflow-wrap: anywhere; text-wrap: balance; word-break: auto-phrase; }
+.pin-hint { margin: 0; font: 400 14px/20px var(--md-ref-typeface-plain, inherit); color: var(--md-sys-color-on-surface-variant); text-wrap: balance; word-break: auto-phrase; }
 .pin-notice { min-height: 20px; margin: 0; font: 500 14px/20px var(--md-ref-typeface-plain, inherit); text-align: center; color: var(--md-sys-color-on-surface-variant); }
 .pin-notice.is-error { color: var(--md-sys-color-error); }
 .pin-notice.is-ok { color: var(--md-sys-color-primary); }

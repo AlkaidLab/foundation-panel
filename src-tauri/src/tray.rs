@@ -53,6 +53,8 @@ static SUNSHINE_USER_MODE_STATE: Mutex<bool> = Mutex::new(false);
 
 // 当前语言状态管理 ("zh" 或 "en")
 static CURRENT_LOCALE: Mutex<Option<String>> = Mutex::new(None);
+/// The language of the pairing-request notification: one of the 20 codes of the panel (notifications/pairing_texts.rs), while the tray menu has its three.
+static NOTIFICATION_LOCALE: Mutex<Option<&'static str>> = Mutex::new(None);
 static LOCALE_CHANGE_REVISION: AtomicU64 = AtomicU64::new(0);
 static LOCALE_PERSIST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -288,9 +290,6 @@ struct TrayStrings {
     client_disconnected_detail: &'static str,
     client_disconnected_named: &'static str,
     nr_active: &'static str,
-    incoming_pairing: &'static str,
-    pairing_instruction: &'static str,
-    pairing_menu_instruction: &'static str,
     complete_pairing: &'static str,
     open_main_panel: &'static str,
     connect_device: &'static str,
@@ -386,9 +385,6 @@ const ZH_STRINGS: TrayStrings = TrayStrings {
     client_disconnected_detail: "串流连接已结束。",
     client_disconnected_named: "「{name}」已从这台电脑断开。",
     nr_active: "当前串流的 DLSS NR 画质增强已生效。",
-    incoming_pairing: "Moonlight 配对请求",
-    pairing_instruction: "点击此通知，输入 Moonlight 上显示的 4 位 PIN。",
-    pairing_menu_instruction: "打开 Sunshine 托盘菜单中的“完成配对”，输入 Moonlight 上显示的 4 位 PIN。",
     complete_pairing: "完成配对",
     open_main_panel: "打开主面板",
     connect_device: "配对新设备",
@@ -483,9 +479,6 @@ const EN_STRINGS: TrayStrings = TrayStrings {
     client_disconnected_detail: "The streaming connection has ended.",
     client_disconnected_named: "“{name}” disconnected from this computer.",
     nr_active: "DLSS NR is enhancing the current stream.",
-    incoming_pairing: "Moonlight pairing request",
-    pairing_instruction: "Click this notification to enter the 4-digit PIN shown in Moonlight.",
-    pairing_menu_instruction: "Open Complete Pairing from the Sunshine tray menu and enter the 4-digit PIN shown in Moonlight.",
     complete_pairing: "Complete pairing",
     open_main_panel: "Open Main Panel",
     connect_device: "Pair a New Device",
@@ -580,9 +573,6 @@ const JA_STRINGS: TrayStrings = TrayStrings {
     client_disconnected_detail: "ストリーミング接続が終了しました。",
     client_disconnected_named: "「{name}」がこのコンピューターから切断されました。",
     nr_active: "現在のストリームで DLSS NR が有効になりました。",
-    incoming_pairing: "Moonlight ペアリング要求",
-    pairing_instruction: "この通知をクリックし、Moonlight に表示された 4 桁の PIN を入力してください。",
-    pairing_menu_instruction: "Sunshine のトレイメニューから「ペアリングを完了」を開き、Moonlight に表示された 4 桁の PIN を入力してください。",
     complete_pairing: "ペアリングを完了",
     open_main_panel: "メインパネルを開く",
     connect_device: "新しいデバイスをペアリング",
@@ -681,6 +671,11 @@ pub(crate) fn download_done_tooltip() -> &'static str {
 
 pub(crate) fn download_failed_tooltip() -> &'static str {
     get_tray_strings().download_failed
+}
+
+/// The code of the language of the pairing-request notification (`en` before the tray has started).
+fn notification_locale() -> &'static str {
+    NOTIFICATION_LOCALE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).unwrap_or("en")
 }
 
 fn get_current_locale() -> String {
@@ -811,6 +806,13 @@ fn initialize_tray_locale() {
     let system_locale = get_system_locale();
     let locale = resolve_initial_tray_locale(config.as_ref(), system_locale.as_deref());
     info!("🌍 托盘菜单：启动语言为 {}", locale);
+    // the host's own setting names the language of the notification, when it is one the panel has; otherwise it follows the tray
+    let notification_locale = config
+        .as_ref()
+        .and_then(|config| config.locale.as_deref())
+        .and_then(notifications::pairing_code_for)
+        .unwrap_or_else(|| normalize_tray_locale(&locale));
+    *NOTIFICATION_LOCALE.lock().unwrap() = Some(notification_locale);
     *CURRENT_LOCALE.lock().unwrap() = Some(locale);
 }
 
@@ -1373,6 +1375,8 @@ fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64,
         let revision = next_locale_change_revision();
         let changed = current_locale.as_deref() != Some(locale.as_str());
         *current_locale = Some(locale.clone());
+        // the tray menu's own choice (Chinese, English, Japanese) is also the language of the notification from now on
+        *NOTIFICATION_LOCALE.lock().unwrap() = Some(normalize_tray_locale(&locale));
         (revision, changed)
     };
 
