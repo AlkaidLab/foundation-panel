@@ -6,6 +6,7 @@ export const uk = {
     toolbar: "Панель інструментів",
     toolWindow: "Вікно інструментів"
   },
+  pinEntry: { keyboardHint: "Вводьте з клавіатури · Esc — скасувати" },
   toolActions: {
     adminRequiredTitle: "Потрібні права адміністратора",
     cleanupAdminRequired: "Для очищення тимчасових файлів потрібні права адміністратора.\n\nПерезапустити програму як адміністратор?",

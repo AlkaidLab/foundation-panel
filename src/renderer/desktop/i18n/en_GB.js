@@ -3,6 +3,7 @@ export const en_GB = {
     "toolbar": "Toolbar",
     "toolWindow": "Tool Window"
   },
+  "pinEntry": { "keyboardHint": "Type with your keyboard · Esc to cancel" },
   "toolActions": {
     "adminRequiredTitle": "Administrator Privileges Required",
     "cleanupAdminRequired": "Cleaning temporary files requires administrator privileges.\n\nRestart the app as administrator?",

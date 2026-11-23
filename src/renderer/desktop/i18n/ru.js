@@ -6,6 +6,7 @@ export const ru = {
     toolbar: "Панель инструментов",
     toolWindow: "Окно инструментов"
   },
+  pinEntry: { keyboardHint: "Вводите с клавиатуры · Esc — отмена" },
   toolActions: {
     adminRequiredTitle: "Требуются права администратора",
     cleanupAdminRequired: "Для очистки временных файлов требуются права администратора.\n\nПерезапустить приложение от имени администратора?",

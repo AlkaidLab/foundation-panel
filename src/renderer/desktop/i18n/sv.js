@@ -6,6 +6,7 @@ export const sv = {
     toolbar: "Verktygsfält",
     toolWindow: "Verktygsfönster"
   },
+  pinEntry: { keyboardHint: "Skriv med tangentbordet · Esc avbryter" },
   toolActions: {
     adminRequiredTitle: "Administratörsrättigheter krävs",
     cleanupAdminRequired: "Rengöring av temporära filer kräver administratörsbehörighet.\n\nStarta om appen som administratör?",

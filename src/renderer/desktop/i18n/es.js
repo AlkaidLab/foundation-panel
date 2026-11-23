@@ -6,6 +6,7 @@ export const es = {
     toolbar: "Barra de herramientas",
     toolWindow: "Ventana de herramientas"
   },
+  pinEntry: { keyboardHint: "Escribe con el teclado · Esc para cancelar" },
   toolActions: {
     adminRequiredTitle: "Privilegios de administrador requeridos",
     cleanupAdminRequired: "La limpieza de archivos temporales requiere privilegios de administrador.\n\n¿Reiniciar la aplicación como administrador?",

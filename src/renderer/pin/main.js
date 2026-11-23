@@ -3,5 +3,7 @@ import '../../../src-tauri/inject-traces.js'  // no trace of a browser: drag gho
 import { createApp } from 'vue'
 import 'foundation-ui/all.css'  // Material 3 Expressive tokens and components
 import PinApp from './PinApp.vue'
+import { i18nReady } from '../desktop/i18n/index.js'
 
-createApp(PinApp).mount('#app')
+// the window waits for the language file of the panel, so the first frame already has its texts
+i18nReady.then(() => createApp(PinApp).mount('#app'))

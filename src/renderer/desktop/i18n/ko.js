@@ -6,6 +6,7 @@ export const ko = {
     toolbar: "툴바",
     toolWindow: "도구 창"
   },
+  pinEntry: { keyboardHint: "키보드로 입력할 수 있습니다 · Esc로 취소" },
   toolActions: {
     adminRequiredTitle: "관리자 권한 필요",
     cleanupAdminRequired: "임시 파일을 정리하려면 관리자 권한이 필요합니다.\n\n앱을 관리자로 다시 시작하시겠습니까?",

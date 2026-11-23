@@ -9,6 +9,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import MPinPad from 'foundation-ui/vue/MPinPad.vue'
 import MIcon from 'foundation-ui/vue/MIcon.vue'
 import MButton from 'foundation-ui/vue/MButton.vue'
+import { useI18n } from '../desktop/i18n/index.js'
 import { getInitialSimpleLocale, pickSimpleMessages, setDocumentLocale, syncSimpleLocaleFromSunshine } from '../shared/simple-i18n.js'
 import {
   CLOSE_AFTER_ENDED_MS, CLOSE_AFTER_SUCCESS_MS, MESSAGES, PAD_CELLS, PIN_LENGTH, classifyAnswer, classifyFailure, endedKey, headingFor, movePad, padEdges, stickDirection,
@@ -19,6 +20,16 @@ const DEFAULT_NAME = 'Moonlight Client'
 
 const text = ref(pickSimpleMessages(MESSAGES))
 const applyLocale = (locale) => { text.value = pickSimpleMessages(MESSAGES, locale); setDocumentLocale(locale); document.title = text.value.title }
+
+// the hint about the keyboard is in every language of the panel (desktop/i18n, pinEntry); the rest of the card is Chinese and English as it was
+const { t } = useI18n()
+const keyboardHint = computed(() => t.value.pinEntry?.keyboardHint || '')
+// a screen with nothing but a finger to type with has no use for it
+const coarsePointer = window.matchMedia?.('(any-pointer: coarse)')
+const finePointer = window.matchMedia?.('(any-pointer: fine)')
+const touchOnly = ref(false)
+const onPointers = () => { touchOnly.value = !!coarsePointer?.matches && !finePointer?.matches }
+onPointers()
 
 const pin = ref('')
 // preparing: the host's proxy is not answering yet | ready | submitting | done | ended
@@ -166,6 +177,8 @@ const onScheme = () => {
 const off = []
 onMounted(async () => {
   systemDark?.addEventListener?.('change', onScheme)
+  coarsePointer?.addEventListener?.('change', onPointers)
+  finePointer?.addEventListener?.('change', onPointers)
   applyLocale(getInitialSimpleLocale())
   void syncSimpleLocaleFromSunshine(MESSAGES, applyLocale)
   window.addEventListener('keydown', onKey)
@@ -201,6 +214,8 @@ function onEnded(reason) {
 
 onBeforeUnmount(() => {
   systemDark?.removeEventListener?.('change', onScheme)
+  coarsePointer?.removeEventListener?.('change', onPointers)
+  finePointer?.removeEventListener?.('change', onPointers)
   window.removeEventListener('keydown', onKey)
   clearInterval(poll)
   clearInterval(nameTimer)
@@ -231,6 +246,7 @@ onBeforeUnmount(() => {
       <footer class="pin-foot" :class="{ 'is-quiet': phase === 'done' }">
         <MButton variant="text" :disabled="phase === 'submitting'" @click="cancel">{{ text.cancel }}</MButton>
       </footer>
+      <p v-if="keyboardHint && !touchOnly" class="pin-keys" :class="{ 'is-quiet': phase === 'done' }">{{ keyboardHint }}</p>
     </main>
   </div>
 </template>
@@ -246,7 +262,7 @@ onBeforeUnmount(() => {
 .pin-card {
   width: min(100%, 400px); max-height: 100%; overflow: auto; box-sizing: border-box;
   display: grid; justify-items: center; gap: 20px; padding: 32px 24px 16px;
-  grid-template-areas: "head" "pad" "note" "foot";
+  grid-template-areas: "head" "pad" "note" "foot" "keys";
   border-radius: 36px;
   background: var(--md-sys-color-surface-container-low);
   color: var(--md-sys-color-on-surface);
@@ -257,6 +273,8 @@ onBeforeUnmount(() => {
 .pin-pad { grid-area: pad; }
 .pin-notice { grid-area: note; }
 .pin-foot { grid-area: foot; }
+.pin-keys { grid-area: keys; margin: 0; font: 400 12px/16px var(--md-ref-typeface-plain, inherit); text-align: center; color: var(--md-sys-color-on-surface-variant); opacity: 0.78; }
+.pin-keys.is-quiet { visibility: hidden; }
 .pin-ico {
   display: grid; place-items: center; width: 56px; height: 56px; border-radius: 50%;
   background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
@@ -286,7 +304,7 @@ onBeforeUnmount(() => {
 @media (max-height: 560px) {
   .pin-card {
     width: min(100%, 640px); grid-template-columns: 1fr auto; column-gap: 28px; row-gap: 8px; padding: 16px 24px; align-items: center;
-    grid-template-areas: "head pad" "note pad" "foot pad";
+    grid-template-areas: "head pad" "note pad" "foot pad" "keys pad";
   }
   .pin-pad { zoom: 0.8; }
   .pin-ico { display: none; }

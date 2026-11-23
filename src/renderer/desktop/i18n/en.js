@@ -3,6 +3,7 @@ const USBIP_VERSION = compatibility.usbip.version
 
 export const en = {
   windowTitles: { toolbar: 'Toolbar', toolWindow: 'Tool Window' },
+  "pinEntry": { "keyboardHint": "Type with your keyboard · Esc to cancel" },
   "toolActions": {
     "adminRequiredTitle": "Administrator Privileges Required",
     "cleanupAdminRequired": "Cleaning temporary files requires administrator privileges.\n\nRestart the app as administrator?",

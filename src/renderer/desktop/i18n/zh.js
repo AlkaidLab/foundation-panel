@@ -3,6 +3,7 @@ const USBIP_VERSION = compatibility.usbip.version
 
 export const zh = {
   windowTitles: { toolbar: '工具栏', toolWindow: '工具窗口' },
+  "pinEntry": { "keyboardHint": "可直接用键盘输入 · Esc 取消" },
   "toolActions": {
     "adminRequiredTitle": "需要管理员权限",
     "cleanupAdminRequired": "清理临时文件需要管理员权限。\n\n是否以管理员身份重启应用？",

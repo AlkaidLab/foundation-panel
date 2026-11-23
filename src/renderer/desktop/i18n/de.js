@@ -6,6 +6,7 @@ export const de = {
     toolbar: "Symbolleiste",
     toolWindow: "Werkzeugfenster"
   },
+  pinEntry: { keyboardHint: "Mit der Tastatur eingeben · Esc zum Abbrechen" },
   toolActions: {
     adminRequiredTitle: "Administratorrechte erforderlich",
     cleanupAdminRequired: "Für das Bereinigen temporärer Dateien sind Administratorrechte erforderlich.\n\nApp als Administrator neu starten?",
