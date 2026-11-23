@@ -229,25 +229,33 @@ test('a pending USB/IP cleanup resumes when a VB-CABLE confirmation is cancelled
 })
 
 // ---- the one-click fix, through the real composable with the host and the driver stood in for ----
-async function mountTransport(t, initial) {
-  const { sunshine } = await import('../tauri-adapter.js')
+async function mountTransport(t, initial, { storage = null } = {}) {
+  const { sunshine, dualsense } = await import('../tauri-adapter.js')
   const { useDialogs } = await import('foundation-ui/dialog')
   const { useNotify } = await import('foundation-ui/notify')
   const { useI18n } = await import('../desktop/i18n/index.js')
-  const world = { status: { supported: true, installed: true, version_valid: true, ready: false, externally_managed: false, vhci_residual: false, error_code: 'USBIP-EXEC-006', detail: 'USBIP-EXEC-006: the shared transport does not match the tested component combination', attached_devices: [], ...initial }, calls: [], sessions: [{ session_id: 1 }] }
-  const saved = { fetch: usbipStatusChannel.fetch, cleanup: usbip.cleanupTransport, install: usbip.installTransport, replace: usbip.replaceLegacyTransport, restart: usbip.restartWindows, ask: sunshine.askActiveSessions, stop: sunshine.stopAllSessions }
+  const world = { status: { supported: true, installed: true, version_valid: true, ready: false, externally_managed: false, vhci_residual: false, error_code: 'USBIP-EXEC-006', detail: 'USBIP-EXEC-006: the shared transport does not match the tested component combination', attached_devices: [], ...initial }, calls: [], sessions: [{ session_id: 1 }], dualsense: { state: 'ready', transport: { signature: 'signed' } } }
+  const savedStorage = globalThis.localStorage
+  if (storage) globalThis.localStorage = storage
+  const saved = { fetch: usbipStatusChannel.fetch, cleanup: usbip.cleanupTransport, install: usbip.installTransport, replace: usbip.replaceLegacyTransport, restart: usbip.restartWindows, detach: usbip.detach, dualsense: dualsense.getStatus, ask: sunshine.askActiveSessions, stop: sunshine.stopAllSessions }
   usbipStatusChannel.fetch = async () => ({ success: true, data: { ...world.status } })
   sunshine.askActiveSessions = async () => world.sessions
   sunshine.stopAllSessions = async () => { world.calls.push('stop-stream'); world.sessions = [] }
   usbip.cleanupTransport = async () => { world.calls.push('cleanup'); return world.cleanup ? world.cleanup() : { success: true, data: (world.status = { ...world.status, installed: false, error_code: '', detail: '' }) } }
   usbip.installTransport = async () => { world.calls.push('install'); return world.install ? world.install() : { success: true, data: (world.status = { ...world.status, installed: true, ready: true, error_code: '', detail: '' }) } }
   usbip.restartWindows = async () => { world.calls.push('restart-windows'); return { success: true } }
+  usbip.replaceLegacyTransport = async () => { world.calls.push('replace'); return world.replace ? world.replace() : { success: true, data: (world.status = { ...world.status, externally_managed: false, replaceable: false, version_valid: true, ready: true, error_code: '', detail: '' }) } }
+  usbip.detach = async (port) => { world.calls.push(`detach-${port}`); world.status = { ...world.status, attached_devices: world.status.attached_devices.filter((d) => d.port !== port) }; return { success: true } }
+  dualsense.getStatus = async () => ({ success: true, data: world.dualsense })
   t.after(() => {
     usbipStatusChannel.fetch = saved.fetch
     usbip.cleanupTransport = saved.cleanup
     usbip.installTransport = saved.install
     usbip.replaceLegacyTransport = saved.replace
     usbip.restartWindows = saved.restart
+    usbip.detach = saved.detach
+    dualsense.getStatus = saved.dualsense
+    globalThis.localStorage = savedStorage
     sunshine.askActiveSessions = saved.ask
     sunshine.stopAllSessions = saved.stop
   })
@@ -352,15 +360,19 @@ test('only the version mismatch toast carries the fix, and not for an installati
   assert.equal((await until(toast)).action, '')
 })
 
-test('an installation the person manages gets no button and no change; the fix only tells them so', async (t) => {
-  const { transport, notify, until, texts, dialogs } = await mountTransport(t, { externally_managed: true, replaceable: false })
-  assert.equal(transport.fixOffered.value, false)
-  const message = transport.friendlyError('USBIP-EXEC-006: the shared transport does not match')
-  transport.notifyError('USBIP-EXEC-006: the shared transport does not match')
-  assert.equal((await until(() => notify.state.queue.find((item) => item.message === message))).action, '')
+test('an installation the person manages that the host will not replace is not touched: no question, and the steps to remove it by hand', async (t) => {
+  const { world, transport, notify, until, texts, dialogs, answer } = await mountTransport(t, { externally_managed: true, replaceable: false, version_valid: false })
+  assert.equal(transport.fixOffered.value, true, 'the button leads to the steps')
   await transport.fixTransport()
   assert.equal(dialogs.state.queue.length, 0, 'no question: nothing will be changed')
-  assert.ok((await until(() => notify.state.queue.find((item) => item.id === 'usbip-fix' && item.timeout > 0))).message === texts().externalDecision)
+  assert.deepEqual(world.calls, [])
+  const blocked = await until(() => notify.state.queue.find((item) => item.id === 'usbip-fix' && item.timeout > 0))
+  assert.equal(blocked.message, texts().externalDecision)
+  assert.equal(blocked.action, texts().fixGuideAction)
+  blocked.onAction()
+  const guide = await answer('cancel')
+  assert.ok(guide.message.includes('usbip-win2') && guide.message.includes('0.9.8.1'), guide.message)
+  assert.equal(guide.confirmButtonText, texts().diagnosticDetails)
 })
 
 test('refreshStatus says how the read went: ok, failed, or disposed', async (t) => {
@@ -394,4 +406,109 @@ test('the fix does not start on a page that was closed', async (t) => {
   assert.equal(dialogs.state.queue.length, 0)
   assert.deepEqual(world.calls, [])
   assert.match(transport.fixRaw.value, /check: failed\nUSB\/IP status refresh was abandoned/)
+})
+
+test('the repair says it is done only after the DualSense native channel agrees; one that still reports the transport fails the check', async (t) => {
+  const { world, transport, until, snack, answer, texts } = await mountTransport(t)
+  world.sessions = []
+  world.dualsense = { state: 'usbip_unsigned', transport: { signature: 'invalid' } }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await running
+  assert.deepEqual(world.calls, ['cleanup', 'install'])
+  const failed = await until(() => snack()?.timeout > 0 && snack())
+  assert.ok(failed.message.includes(texts().fixStepVerify))
+  assert.ok(failed.message.includes(texts().errors['USBIP-VERIFY-002']))
+  assert.equal(failed.action, texts().fixGuideAction)
+})
+
+test('a host that does not answer cannot check the native channel: the transport is reported repaired, and the person is told to start Sunshine', async (t) => {
+  const { world, transport, until, snack, answer, texts } = await mountTransport(t)
+  world.sessions = []
+  world.dualsense = { state: 'host_unreachable', transport: { signature: 'signed' } }
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await running
+  const done = await until(() => snack()?.timeout > 0 && snack())
+  assert.equal(done.message, texts().fixDoneHostDown)
+})
+
+test('a driver with a bad signature is repaired even though the transport reads ready, and attached devices are released first', async (t) => {
+  const { world, transport, answer, dialogs, until, snack, texts } = await mountTransport(t, { ready: true, error_code: '', detail: '', attached_devices: [{ port: 1 }, { port: 2 }] })
+  world.sessions = []
+  world.dualsense = { state: 'usbip_unsigned', transport: { signature: 'invalid' } }
+  const running = transport.fixTransport()
+  const question = await answer('confirm')
+  assert.ok(question.message.includes('(2)'), 'the question says how many devices are released')
+  world.dualsense = { state: 'ready', transport: { signature: 'signed' } }
+  await running
+  assert.deepEqual(world.calls, ['detach-1', 'detach-2', 'cleanup', 'install'])
+  assert.equal(dialogs.state.queue.length, 0)
+  assert.equal((await until(() => snack()?.timeout > 0 && snack())).message, texts().fixDone)
+})
+
+test('a failure that software cannot finish gives the steps, and the raw diagnostics are one touch further', async (t) => {
+  const { world, transport, until, snack, answer, texts } = await mountTransport(t, { installed: false, error_code: '', detail: '' })
+  world.sessions = []
+  world.install = () => ({ success: false, message: 'USBIP-SETUP-007: transport installation failed: USBIP-SETUP-016: Windows driver policy blocked (exit code 1) [0xe0000247]' })
+  const running = transport.fixTransport()
+  await answer('confirm')
+  await running
+  const failed = await until(() => snack()?.timeout > 0 && snack())
+  assert.equal(failed.action, texts().fixGuideAction)
+  assert.ok(failed.message.includes(texts().errors['USBIP-SETUP-016']))
+  failed.onAction()
+  const guide = await answer('confirm')
+  assert.ok(guide.message.split('\n').length >= 4, 'numbered steps')
+  assert.equal(guide.title, texts().fixTitle)
+  const raw = await answer('confirm')
+  assert.equal(raw.title, texts().diagnosticDetails)
+  assert.match(raw.message, /0xe0000247/)
+})
+
+const keeping = () => {
+  const map = new Map()
+  return { map, getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, String(v)), removeItem: (k) => map.delete(k) }
+}
+
+test('a repair that waits for a restart keeps its plan, and the panel that starts afterwards continues without asking again', async (t) => {
+  const storage = keeping()
+  const first = await mountTransport(t, { installed: false, error_code: '', detail: '' }, { storage })
+  first.world.sessions = []
+  first.world.install = () => ({ success: true, data: (first.world.status = { ...first.world.status, installed: true, ready: false, reboot_recommended: true }) })
+  const running = first.transport.fixTransport()
+  await first.answer('confirm')
+  await running
+  const kept = JSON.parse(storage.getItem('foundation.usbip.fix.resume'))
+  assert.deepEqual(kept.steps, ['install', 'verify'])
+  first.unmount()
+  // the panel starts again after Windows restarted: the record is older than this run
+  kept.written = Math.floor(performance.timeOrigin) - 5000
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify(kept))
+  const second = await mountTransport(t, { installed: false, ready: false, error_code: '', detail: '', reboot_recommended: false }, { storage })
+  await second.until(() => second.world.calls.includes('install'))
+  assert.equal(second.dialogs.state.queue.length, 0, 'nothing is asked: the person confirmed this before the restart')
+  await second.until(() => second.snack()?.timeout > 0 && second.snack())
+  assert.equal(storage.getItem('foundation.usbip.fix.resume'), null, 'the record is dropped once it has run')
+  assert.deepEqual(second.world.calls, ['stop-stream', 'install'], 'the stream that was running is ended again, then the install runs')
+})
+
+test('a record of the same run of the panel is not a restart: nothing continues', async (t) => {
+  const storage = keeping()
+  storage.setItem('foundation.usbip.fix.resume', JSON.stringify({ id: 'not-installed', steps: ['install', 'verify'], written: Date.now() + 60_000 }))
+  const { world, dialogs } = await mountTransport(t, { installed: false, ready: false, error_code: '', detail: '' }, { storage })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.deepEqual(world.calls, [])
+  assert.equal(dialogs.state.queue.length, 0)
+})
+
+test('a full usbip-win2 with devices attached: the devices are released and the status read again before the replacement, which refuses to run beside them', async (t) => {
+  const { world, transport, answer, until, snack, texts } = await mountTransport(t, { externally_managed: true, replaceable: true, version_valid: false, ready: false, error_code: 'USBIP-SETUP-003', detail: 'x', attached_devices: [{ port: 1 }] })
+  world.sessions = []
+  const running = transport.fixTransport()
+  const question = await answer('confirm')
+  assert.ok(question.message.includes(texts().replaceConfirm) && question.message.includes('(1)'))
+  await running
+  assert.deepEqual(world.calls, ['detach-1', 'replace'])
+  assert.equal((await until(() => snack()?.timeout > 0 && snack())).message, texts().fixDone)
 })

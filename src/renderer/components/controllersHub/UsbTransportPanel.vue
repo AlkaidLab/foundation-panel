@@ -7,10 +7,12 @@
         </template>
       </MItem>
     </MGroup>
-    <MNotice v-if="statusProbeFailed || (status.detail && status.installed)" tone="error">
-      {{ friendlyError(status.detail) }}
-      <template v-if="fixOffered" #action><MButton size="sm" variant="primary" :loading="fixing" :disabled="transportBusy" @click="fixTransport">{{ t.deviceHub.usb.fixAction }}</MButton></template>
-    </MNotice>
+    <MGroup v-if="fixOffered">
+      <MItem icon="build" :title="t.deviceHub.usb.fixTitle">
+        <template #trail><MButton size="sm" variant="primary" :loading="fixing" :disabled="transportBusy" @click="fixTransport()">{{ t.deviceHub.usb.fixAction }}</MButton></template>
+      </MItem>
+    </MGroup>
+    <MNotice v-if="statusProbeFailed || (status.detail && status.installed)" tone="error">{{ friendlyError(status.detail) }}</MNotice>
     <MGroup v-if="statusLoaded && !statusProbeFailed && !status.externally_managed && status.supported && !status.ready && !needsCleanup">
       <MItem action icon="download" :title="t.deviceHub.usb.installTransport" :disabled="transportBusy || installing" @click="installTransport" />
     </MGroup>
