@@ -105,6 +105,15 @@ pub(crate) enum Entry {
     PanelPage,
 }
 
+/// Where a pairing request is answered, from the setting (`pin_prompt.rs`) and what the host reports: the panel's own pairing page when the setting says so, otherwise the full-screen
+/// entry for as long as a request can still be answered (`entry_for_click`).
+pub(crate) fn route(prompt: crate::pin_prompt::PinPrompt, status: Option<&str>) -> Entry {
+    match prompt {
+        crate::pin_prompt::PinPrompt::Panel => Entry::PanelPage,
+        crate::pin_prompt::PinPrompt::Fullscreen => entry_for_click(status),
+    }
+}
+
 pub(crate) fn entry_for_click(status: Option<&str>) -> Entry {
     match status {
         // `None`: the host has not reported since this panel started (a click that started the panel), its request is likely still pending
@@ -325,6 +334,21 @@ mod tests {
         assert_eq!(entry_for_click(None), Entry::FullScreen, "a click that started the panel: the host has not reported yet");
         assert_eq!(entry_for_click(Some("idle")), Entry::PanelPage);
         assert_eq!(entry_for_click(Some("streaming")), Entry::PanelPage);
+    }
+
+    #[test]
+    fn the_setting_decides_where_a_pairing_request_is_answered() {
+        use crate::pin_prompt::PinPrompt::{Fullscreen, Panel};
+        // `panel`: the panel's pairing page, whatever the host reports
+        for status in [Some("pairing"), None, Some("idle"), Some("streaming")] {
+            assert_eq!(route(Panel, status), Entry::PanelPage, "{status:?}");
+        }
+        // `fullscreen` (the default): the full-screen entry while a request can be answered, the panel page for one that is over
+        assert_eq!(route(Fullscreen, Some("pairing")), Entry::FullScreen);
+        assert_eq!(route(Fullscreen, None), Entry::FullScreen);
+        assert_eq!(route(Fullscreen, Some("idle")), Entry::PanelPage);
+        // an unset or unreadable setting is `fullscreen`
+        assert_eq!(route(crate::pin_prompt::PinPrompt::from_config(None), Some("pairing")), Entry::FullScreen);
     }
 
     #[test]

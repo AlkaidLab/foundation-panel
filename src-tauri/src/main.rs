@@ -60,6 +60,7 @@ mod launch_splash;
 mod nr_overlay;
 mod notify_action;
 mod panel_page;
+mod pin_prompt;
 mod pin_window;
 #[cfg(target_os = "windows")]
 mod shell_context_menu;

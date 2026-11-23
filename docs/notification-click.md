@@ -24,6 +24,14 @@
 
 从通知中心点击一条已经离开屏幕的通知，必须在真实桌面会话里验证；自动化测试覆盖的是地址映射、XML 的转义和启动参数的解析。
 
+## 配对请求在哪里输入 PIN（`pin_prompt`）
+
+设置项只有一份：宿主配置里的 `pin_prompt`（`fullscreen` | `panel`，默认 `fullscreen`，Foundation Sunshine 的 `config.cpp` 校验这两个值）。Web UI 把它和其他宿主设置一起编辑，Panel 的设置页（通知 › 配对请求）通过同一个 `POST /api/config` 写入，Panel 本身不另存一份，所以两边永远一致。
+
+- Panel 在每次需要时从已保存的 `sunshine.conf` 读（`pin_prompt.rs`，和读宿主语言的方式一样），改了以后下一次配对请求就生效，不用重启任何一边。读不到、没有这个键、值不认识，都按 `fullscreen`。
+- `fullscreen`：全屏 PIN 输入窗口（见下）。`panel`：打开主面板的「配对」页。入口一视同仁：托盘菜单里的配对项、配对通知（包括通知中心里的通知、面板重启之后的点击）、`--url=…/pin` 都走 `windows::open_pin_window`，由它读这个设置。
+- 选择放在宿主配置而不是 Panel 的 `desktop-settings.json`：后者只放 Panel 自己的行为；这个选项两个界面都要能改，且宿主的 Web UI 在面板之外也能打开，所以以宿主配置为准。
+
 ## 全屏 PIN 输入
 
 `pin_window.rs` 与 `src/renderer/pin/`：覆盖整个显示器、置顶、透明背景的独立窗口，显示是哪个客户端在请求，键盘、触摸、手柄（方向键或左摇杆移动，A 按下，B 取消）都能输入；Esc、取消按钮或点击背景关闭。
