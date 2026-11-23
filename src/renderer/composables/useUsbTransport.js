@@ -1,10 +1,16 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from './notifyMessage.js'
-import { usbip } from '../tauri-adapter.js'
+import { sunshine, usbip } from '../tauri-adapter.js'
+import compatibility from '../../../src-tauri/component-compatibility.json' with { type: 'json' }
 import { useI18n } from '../desktop/i18n/index.js'
 import { useDeviceComponentOperation } from './useDeviceComponentOperation.js'
 import { usbipStatusChannel } from './deviceStatusStore.js'
 import { usbipCanReplaceLegacy, usbipResidualIsStale, usbipTransportNeedsCleanup } from './deviceHubStatus.js'
+import { describeFixResult, fixConfirmText, fixProgressText, runUsbipFix, usbipFixOffered, usbipFixOfferedByStatus, usbipFixRawText } from './usbipFix.js'
+
+// what the last one-click fix answered, as raw text: shared by every panel that shows the transport, kept until the next fix
+const fixRaw = ref('')
+const FIX_MESSAGE_ID = 'usbip-fix'
 
 /** Extracts a fixed-vocabulary telemetry error code (never user text or paths). */
 export function usbipErrorReportCode(error) {
@@ -66,6 +72,7 @@ export function useUsbTransport(options = {}) {
     last_install_error: '',
     install_pending_restart: false,
     install_resume: false,
+    error_code: '',
     attached_devices: [],
     detail: '',
   })
@@ -76,6 +83,7 @@ export function useUsbTransport(options = {}) {
   const cleaning = ref(false)
   const replacing = ref(false)
   const exporting = ref(false)
+  const fixing = ref(false)
   // The cleanup that waited for a restart is continued once per run of the panel, so a node that never goes cannot loop.
   let resumeStarted = false
   let resumeAnnounced = false
@@ -104,7 +112,12 @@ export function useUsbTransport(options = {}) {
   const needsCleanup = computed(() => usbipTransportNeedsCleanup(status))
   const canReplaceLegacy = computed(() => usbipCanReplaceLegacy(status))
   const staleResidual = computed(() => usbipResidualIsStale(status))
-  const transportBusy = computed(() => Boolean(sharedOperation.busyElsewhere.value || installing.value || cleaning.value || replacing.value || exporting.value))
+  // the operations of this window that change the transport or read it for a change; the fix runs them itself, so they do not wait for it
+  const operationBlocked = () => Boolean(sharedOperation.busyElsewhere.value || installing.value || cleaning.value || replacing.value || exporting.value)
+  const transportBusy = computed(() => Boolean(operationBlocked() || fixing.value))
+  // an installation of the person that the host will not replace is theirs to repair: no button for it
+  const fixable = () => !status.externally_managed || canReplaceLegacy.value
+  const fixOffered = computed(() => usbipFixOfferedByStatus(status) && !statusProbeFailed.value && fixable())
   const statusClass = computed(() => {
     if (status.ready) return 'state-ready'
     if (!statusLoaded.value) return ''
@@ -210,96 +223,112 @@ export function useUsbTransport(options = {}) {
     }
   }
 
-  const installTransport = sharedOperation.wrap(async (installOptions = {}) => {
-    if (transportBusy.value || status.externally_managed) return
+  // The three steps below answer { ok, data | error }, or { ok: false, skipped: true } when they did not start. `quiet` keeps their own messages
+  // away (the fix has its own), `confirmed` means the person already answered the question.
+  const installRaw = async (installOptions = {}) => {
+    if (operationBlocked() || status.externally_managed) return { ok: false, skipped: true }
     const auto = installOptions?.auto === true
-    if (auto && disposed) return
+    const quiet = installOptions?.quiet === true
+    if (auto && disposed) return { ok: false, skipped: true }
     installing.value = true
-    if (!auto) {
+    if (!auto && installOptions?.confirmed !== true) {
       try {
         await ElMessageBox.confirm(
           t.value.deviceHub.usb.installConfirm,
           t.value.deviceHub.usb.installTransport,
           { confirmButtonText: t.value.deviceHub.usb.continue, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning' },
         )
-      } catch { installing.value = false; return }
+      } catch { installing.value = false; return { ok: false, skipped: true } }
     }
     // Do not let an in-flight status refresh apply stale data over the result
     // of the operation that is about to run.
     if (statusRefreshPromise) await statusRefreshPromise
-    if (auto && disposed) { installing.value = false; return }
+    if (auto && disposed) { installing.value = false; return { ok: false, skipped: true } }
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
     let result
     try {
       result = await usbip.installTransport()
     } catch (error) {
-      if (retryBusyResume(error, auto)) return
+      if (retryBusyResume(error, auto)) return { ok: false, skipped: true }
       reportError(error)
       await refreshStatus({ force: true })
       if (!status.last_install_error && error) status.last_install_error = String(error)
-      return ElMessage.error(friendlyError(error))
+      if (!quiet) ElMessage.error(friendlyError(error))
+      return { ok: false, error: String(error) }
     } finally {
       installing.value = false
     }
     if (!result?.success) {
-      if (retryBusyResume(result?.message, auto)) return
+      if (retryBusyResume(result?.message, auto)) return { ok: false, skipped: true }
       reportError(result?.message)
       await refreshStatus({ force: true })
       if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
-      return ElMessage.error(friendlyError(result?.message))
+      if (!quiet) ElMessage.error(friendlyError(result?.message))
+      return { ok: false, error: String(result?.message) }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
-    if (result.data?.ready) ElMessage.success(t.value.deviceHub.usb.installSuccess)
-    else ElMessage.warning(t.value.deviceHub.usb.rebootRequired)
-  })
+    if (!quiet) {
+      if (result.data?.ready) ElMessage.success(t.value.deviceHub.usb.installSuccess)
+      else ElMessage.warning(t.value.deviceHub.usb.rebootRequired)
+    }
+    return { ok: true, data: result.data }
+  }
+  const installTransport = sharedOperation.wrap(installRaw)
 
-  const cleanupResidual = sharedOperation.wrap(async (options = {}) => {
-    if (transportBusy.value || status.externally_managed) return
+  const cleanupRaw = async (options = {}) => {
+    if (operationBlocked() || status.externally_managed) return { ok: false, skipped: true }
     const removing = !needsCleanup.value
     const auto = options?.auto === true
-    if (auto && disposed) return
+    const quiet = options?.quiet === true
+    if (auto && disposed) return { ok: false, skipped: true }
     cleaning.value = true
-    // The person confirmed this cleanup before the restart; continuing it asks nothing new.
-    if (!auto) {
+    // The person confirmed this cleanup before the restart (or in the fix); continuing it asks nothing new.
+    if (!auto && options?.confirmed !== true) {
       try {
         await ElMessageBox.confirm(
           t.value.deviceHub.usb.cleanupConfirm,
           removing ? t.value.deviceHub.components.uninstallTransport : t.value.deviceHub.usb.cleanupResidual,
           { confirmButtonText: removing ? t.value.systemTools.uninstall : t.value.deviceHub.usb.continue, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning', danger: removing },
         )
-      } catch { cleaning.value = false; return }
+      } catch { cleaning.value = false; return { ok: false, skipped: true } }
     }
     if (statusRefreshPromise) await statusRefreshPromise
-    if (auto && disposed) { cleaning.value = false; return }
+    if (auto && disposed) { cleaning.value = false; return { ok: false, skipped: true } }
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
     let result
     try {
       result = await usbip.cleanupTransport()
     } catch (error) {
-      if (retryBusyResume(error, auto)) return
+      if (retryBusyResume(error, auto)) return { ok: false, skipped: true }
       reportError(error)
       await refreshStatus({ force: true })
-      return ElMessage.error(cleanupError(error))
+      if (!quiet) ElMessage.error(cleanupError(error))
+      return { ok: false, error: String(error) }
     } finally {
       cleaning.value = false
     }
     if (!result?.success) {
-      if (retryBusyResume(result?.message, auto)) return
+      if (retryBusyResume(result?.message, auto)) return { ok: false, skipped: true }
       reportError(result?.message)
       // The failed cleanup may still have removed some devnodes; refresh so the
       // residual flag reflects the actual state instead of the stale snapshot.
       await refreshStatus({ force: true })
-      return ElMessage.error(cleanupError(result?.message))
+      if (!quiet) ElMessage.error(cleanupError(result?.message))
+      return { ok: false, error: String(result?.message) }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
-    if (result.data?.cleanup_pending_restart) ElMessage.warning(t.value.deviceHub.usb.restartPending)
-    else if (result.data?.vhci_residual) ElMessage.error(cleanupError('USBIP-CLEAN-002'))
-    else ElMessage.success(removing ? t.value.deviceHub.components.transportRemoved : t.value.deviceHub.usb.cleanupSuccess)
-  })
+    if (!quiet) {
+      if (result.data?.cleanup_pending_restart) ElMessage.warning(t.value.deviceHub.usb.restartPending)
+      else if (result.data?.vhci_residual) ElMessage.error(cleanupError('USBIP-CLEAN-002'))
+      else ElMessage.success(removing ? t.value.deviceHub.components.transportRemoved : t.value.deviceHub.usb.cleanupSuccess)
+    }
+    return { ok: true, data: result.data }
+  }
+  const cleanupResidual = sharedOperation.wrap(cleanupRaw)
 
   /** Removes the older controllers beside the working one; the live controller stays and nothing is reinstalled. */
   const removeStale = sharedOperation.wrap(async (options = {}) => {
@@ -351,16 +380,19 @@ export function useUsbTransport(options = {}) {
   }
 
   /** The person's own request to replace an external full usbip-win2; the host decides again and rolls back on failure. */
-  const replaceLegacy = sharedOperation.wrap(async () => {
-    if (transportBusy.value || !canReplaceLegacy.value || attachedDevices.value.length) return
+  const replaceRaw = async (options = {}) => {
+    if (operationBlocked() || !canReplaceLegacy.value || attachedDevices.value.length) return { ok: false, skipped: true }
+    const quiet = options?.quiet === true
     replacing.value = true
-    try {
-      await ElMessageBox.confirm(
-        t.value.deviceHub.usb.replaceConfirm,
-        t.value.deviceHub.usb.replaceLegacy,
-        { confirmButtonText: t.value.deviceHub.usb.replaceLegacy, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning', danger: true },
-      )
-    } catch { replacing.value = false; return }
+    if (options?.confirmed !== true) {
+      try {
+        await ElMessageBox.confirm(
+          t.value.deviceHub.usb.replaceConfirm,
+          t.value.deviceHub.usb.replaceLegacy,
+          { confirmButtonText: t.value.deviceHub.usb.replaceLegacy, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning', danger: true },
+        )
+      } catch { replacing.value = false; return { ok: false, skipped: true } }
+    }
     if (statusRefreshPromise) await statusRefreshPromise
     sharedOperation.markChanged()
     usbipStatusChannel.invalidate()
@@ -371,7 +403,8 @@ export function useUsbTransport(options = {}) {
       reportError(error)
       await refreshStatus({ force: true })
       if (!status.last_install_error && error) status.last_install_error = String(error)
-      return ElMessage.error(friendlyError(error))
+      if (!quiet) ElMessage.error(friendlyError(error))
+      return { ok: false, error: String(error) }
     } finally {
       replacing.value = false
     }
@@ -380,12 +413,104 @@ export function useUsbTransport(options = {}) {
       // A failed replacement may have changed the system (rolled back to "not installed"): show what is really there.
       await refreshStatus({ force: true })
       if (!status.last_install_error && result?.message) status.last_install_error = String(result.message)
-      return ElMessage.error(friendlyError(result?.message))
+      if (!quiet) ElMessage.error(friendlyError(result?.message))
+      return { ok: false, error: String(result?.message) }
     }
     applyStatus(result.data)
     usbipStatusChannel.prime(result)
-    if (result.data?.ready) ElMessage.success(t.value.deviceHub.usb.replaceSuccess)
-    else ElMessage.warning(t.value.deviceHub.usb.rebootRequired)
+    if (!quiet) {
+      if (result.data?.ready) ElMessage.success(t.value.deviceHub.usb.replaceSuccess)
+      else ElMessage.warning(t.value.deviceHub.usb.rebootRequired)
+    }
+    return { ok: true, data: result.data }
+  }
+  const replaceLegacy = sharedOperation.wrap(replaceRaw)
+
+  /** An error toast of the panel; the version mismatch carries the fix on the toast itself. */
+  function notifyError(error) {
+    const message = friendlyError(error)
+    if (!usbipFixOffered(error) || !fixable()) return ElMessage.error(message)
+    return ElMessage.error({ message, actionText: t.value.deviceHub.usb.fixAction, duration: 15000, onClick: () => { void fixTransport() } })
+  }
+
+  /** Windows restarts 30 seconds after the person said so; `shutdown /a` still cancels it. */
+  async function restartWindows() {
+    const usb = t.value.deviceHub.usb
+    try {
+      await ElMessageBox.confirm(usb.fixRestartConfirm, usb.fixRestartNow, { confirmButtonText: usb.fixRestartNow, cancelButtonText: usb.cancel, type: 'warning' })
+    } catch { return }
+    const result = await usbip.restartWindows()
+    if (!result?.success) ElMessage.error(friendlyError(result?.message))
+  }
+
+  /** The raw answer of every step of the last fix, and what the transport says about itself. */
+  function showFixDiagnostics() {
+    return ElMessageBox.alert(fixRaw.value || status.detail || '', t.value.deviceHub.usb.diagnosticDetails)
+  }
+
+  /**
+   * The one-click fix of a tool or driver that differs from the pinned version: reads the status, asks once, ends the stream through the
+   * host, then runs the cleanup and install (or the confirmed replacement) of this page, and says how it went in the message at the bottom.
+   */
+  const fixTransport = sharedOperation.wrap(async () => {
+    if (operationBlocked() || fixing.value) return
+    fixing.value = true
+    const usb = () => t.value.deviceHub.usb
+    const version = compatibility.usbip.version
+    let message = null
+    const show = (tone, options) => { message = ElMessage[tone]({ id: FIX_MESSAGE_ID, ...options }) }
+    const progress = (state) => {
+      if (state.phase === 'checking') show('info', { message: `${usb().fixStepCheck}…`, duration: 0 })
+      else if (state.phase === 'running') show('info', { message: fixProgressText(state, usb(), version), duration: 0 })
+    }
+    let finished
+    try {
+      sharedOperation.markChanged()
+      finished = await runUsbipFix({
+        refresh: async () => {
+          usbipStatusChannel.invalidate()
+          await refreshStatus({ force: true, afterCurrent: true })
+          return { ...status, attached_devices: [...(status.attached_devices || [])] }
+        },
+        sessions: async () => {
+          try {
+            const sessions = await sunshine.askActiveSessions()
+            return Array.isArray(sessions) ? sessions : null
+          } catch { return null }
+        },
+        confirm: ({ plan }) => ElMessageBox.confirm(
+          fixConfirmText(plan, usb(), version),
+          usb().fixTitle,
+          { confirmButtonText: usb().fixStart, cancelButtonText: usb().cancel, type: 'warning', danger: Boolean(plan.replacesExternal) },
+        ).then(() => true, () => false),
+        endStream: async () => {
+          try { await sunshine.stopAllSessions(); return { ok: true } } catch (error) { return { ok: false, error: String(error) } }
+        },
+        cleanup: () => cleanupRaw({ confirmed: true, quiet: true }),
+        install: () => installRaw({ confirmed: true, quiet: true }),
+        replace: () => replaceRaw({ confirmed: true, quiet: true }),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now: () => Date.now(),
+      }, progress)
+    } catch (error) {
+      message?.close()
+      throw error
+    } finally {
+      fixing.value = false
+    }
+    await refreshStatus({ force: true, afterCurrent: true })
+    fixRaw.value = usbipFixRawText(finished, status)
+    const result = describeFixResult(finished, usb(), (raw) => (finished.failedStep === 'cleanup' ? cleanupError(raw) : friendlyError(raw)), version)
+    if (finished.outcome === 'failed') reportError(finished.error)
+    // declined: the progress sentence that waited behind the question goes away
+    if (!result.text) return message?.close()
+    const action = result.action === 'restart'
+      ? { actionText: usb().fixRestartNow, onClick: () => { void restartWindows() } }
+      : result.action === 'diagnostics' ? { actionText: usb().diagnosticDetails, onClick: () => { void showFixDiagnostics() } } : {}
+    show(result.tone, { message: result.text, duration: result.tone === 'success' || result.tone === 'info' ? 8000 : 20000, ...action })
+    if (result.action === 'restart') {
+      ElMessage.warning({ title: result.text, duration: 0, standing: 'usbip-fix-restart', revision: finished.outcome, ...action })
+    }
   })
 
   sharedOperation.onOtherChange(() => refreshStatus({ afterCurrent: true, force: true }))
@@ -400,5 +525,5 @@ export function useUsbTransport(options = {}) {
   onMounted(() => refreshStatus({ force: true }))
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。
   onActivated(() => refreshStatus({ force: true }))
-  return { status, statusLoading, statusLoaded, statusProbeFailed, installing, cleaning, replacing, exporting, attachedDevices, needsCleanup, staleResidual, canReplaceLegacy, transportBusy, statusClass, statusTitle, friendlyError, refreshStatus, installTransport, cleanupResidual, removeStale, exportDiagnostics, replaceLegacy }
+  return { status, statusLoading, statusLoaded, statusProbeFailed, installing, cleaning, replacing, exporting, fixing, fixOffered, fixRaw, attachedDevices, needsCleanup, staleResidual, canReplaceLegacy, transportBusy, statusClass, statusTitle, friendlyError, notifyError, refreshStatus, installTransport, cleanupResidual, removeStale, exportDiagnostics, replaceLegacy, fixTransport, restartWindows, showFixDiagnostics }
 }
