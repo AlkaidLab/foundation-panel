@@ -6,6 +6,7 @@ export const tr = {
     toolbar: "Araç çubuğu",
     toolWindow: "Araç penceresi"
   },
+  pinEntry: { keyboardHint: "Klavyeyle yazabilirsiniz · Esc ile iptal" },
   toolActions: {
     adminRequiredTitle: "Yönetici Ayrıcalıkları Gerekli",
     cleanupAdminRequired: "Geçici dosyaları temizlemek yönetici ayrıcalıkları gerektirir.\n\nUygulama yönetici olarak yeniden başlatılsın mı?",

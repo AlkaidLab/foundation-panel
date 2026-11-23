@@ -31,7 +31,7 @@ mod touch_menu;
 #[cfg(target_os = "windows")]
 mod vdd_confirmation;
 
-pub use actions::{cleanup_prevent_sleep, handle_tray_menu_event};
+pub use actions::{cleanup_prevent_sleep, dispatch_notify_action, handle_tray_menu_event};
 use menu::{build_tray_menu, tray_status_label};
 #[cfg(test)]
 use menu::{compact_menu_text, tray_notification_label};
@@ -192,7 +192,9 @@ impl TrayRuntimeState {
     fn mark_disconnected(&mut self) -> bool {
         let connection_changed = self.connection != CoreConnectionState::Disconnected;
         self.connection = CoreConnectionState::Disconnected;
-        connection_changed || self.tray_state.take().is_some()
+        // the state is dropped whether or not the connection changed: `||` would skip it on the first disconnect and `current_status()` would go on reporting the old one
+        let had_state = self.tray_state.take().is_some();
+        connection_changed || had_state
     }
 }
 
@@ -217,6 +219,27 @@ pub(crate) fn is_tray_session_active() -> bool {
                 .is_some_and(|state| matches!(state.status.as_str(), "streaming" | "paused"))
         })
         .unwrap_or(false)
+}
+
+/// What the host reports now (`TrayState.status`): `None` while the host has not reported since this panel started, or is not reachable.
+pub(crate) fn current_status() -> Option<String> {
+    TRAY_RUNTIME_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .tray_state
+        .as_ref()
+        .map(|state| state.status.clone())
+}
+
+/// The name of the client that waits for its PIN, as the host reports it (empty when there is none).
+pub(crate) fn current_pairing_client() -> String {
+    TRAY_RUNTIME_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .tray_state
+        .as_ref()
+        .map(|state| state.pairing_client_name.trim().to_owned())
+        .unwrap_or_default()
 }
 
 static MAIN_PANEL_BRIDGE: main_panel::Bridge = main_panel::Bridge::new();
@@ -1146,6 +1169,24 @@ mod tests {
     }
 
     #[test]
+    fn the_first_disconnect_forgets_the_last_state_as_well_as_rebuilding_the_menu() {
+        // the full-screen PIN entry and a notification click read the status here: a pairing from before the host was lost must not be reported
+        let mut runtime = TrayRuntimeState {
+            connection: CoreConnectionState::Connecting,
+            tray_state: None,
+            recovery: RecoveryState::default(),
+        };
+        let mut pairing = tray_state("pairing");
+        pairing.pairing_client_name = "Living Room TV".to_string();
+        runtime.apply_connected_state(&pairing, Some(1)).expect("a monitor state is accepted");
+        assert_eq!(runtime.tray_state.as_ref().map(|state| state.status.as_str()), Some("pairing"));
+
+        assert!(runtime.mark_disconnected(), "the connection changed: the menu is rebuilt");
+        assert!(runtime.tray_state.is_none(), "and the old state is gone, though the connection changed too");
+        assert!(!runtime.mark_disconnected());
+    }
+
+    #[test]
     fn runtime_state_applies_connection_transitions_atomically() {
         let mut runtime = TrayRuntimeState {
             connection: CoreConnectionState::Connecting,
@@ -1192,6 +1233,8 @@ fn apply_tray_state<R: Runtime + 'static>(
         debug!("Ignored non-monitor tray state while Core is unavailable");
         return;
     };
+    // the full-screen PIN entry lives as long as the host reports a pairing (pin_window.rs)
+    crate::pin_window::on_tray_state(app, Some(state.status.as_str()));
 
     #[cfg(target_os = "windows")]
     crate::text_context::reconcile_streaming_state(Some(state));
@@ -1235,6 +1278,7 @@ fn apply_core_disconnected<R: Runtime + 'static>(app: &AppHandle<R>) {
     #[cfg(target_os = "windows")]
     crate::text_context::reconcile_streaming_state(None);
     crate::power::refresh_ecoqos_state(app);
+    crate::pin_window::on_tray_state(app, None);
 
     if let Err(e) = build_owned_system_tray(app) {
         error!(

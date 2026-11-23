@@ -6,6 +6,7 @@ export const ja = {
     toolbar: "ツールバー",
     toolWindow: "ツールウィンドウ"
   },
+  pinEntry: { keyboardHint: "キーボードで入力できます · Esc でキャンセル" },
   toolActions: {
     adminRequiredTitle: "必要な管理者権限",
     cleanupAdminRequired: "一時ファイルのクリーニングには管理者権限が必要です。\n\n管理者としてアプリを再起動しますか?",

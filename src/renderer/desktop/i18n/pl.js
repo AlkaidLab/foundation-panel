@@ -6,6 +6,7 @@ export const pl = {
     toolbar: "Pasek narzędzi",
     toolWindow: "Okno narzędzi"
   },
+  pinEntry: { keyboardHint: "Wpisz na klawiaturze · Esc anuluje" },
   toolActions: {
     adminRequiredTitle: "Wymagane uprawnienia administratora",
     cleanupAdminRequired: "Czyszczenie plików tymczasowych wymaga uprawnień administratora.\n\nUruchomić aplikację ponownie jako administrator?",

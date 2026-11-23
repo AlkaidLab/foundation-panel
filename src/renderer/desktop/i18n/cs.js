@@ -6,6 +6,7 @@ export const cs = {
     toolbar: "Panel nástrojů",
     toolWindow: "Okno nástrojů"
   },
+  pinEntry: { keyboardHint: "Zadejte na klávesnici · Esc zruší" },
   toolActions: {
     adminRequiredTitle: "Jsou vyžadována oprávnění správce",
     cleanupAdminRequired: "Čištění dočasných souborů vyžaduje oprávnění správce.\n\nRestartovat aplikaci jako správce?",

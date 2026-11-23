@@ -58,7 +58,9 @@ mod hdr_enhanced;
 mod native_components;
 mod launch_splash;
 mod nr_overlay;
+mod notify_action;
 mod panel_page;
+mod pin_window;
 #[cfg(target_os = "windows")]
 mod shell_context_menu;
 mod stall_watch;
@@ -498,6 +500,7 @@ fn main() {
             tray::main_panel_loading,
             tray::main_panel_ready,
             panel_page::take_pending_panel_page,
+            pin_window::pin_pairing_client,
             start_guide::take_pending_start_guide,
         ];
     let application = builder
