@@ -48,11 +48,31 @@ pub struct FailureFacts<'a> {
     pub credential: Option<CredentialFailure>,
 }
 
+/// The text with every http(s) URL left out, so a word in a path or query is never read as the cause.
+pub fn without_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("http://").into_iter().chain(rest.find("https://")).min() {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let end = tail.find(|c: char| c.is_whitespace() || c == ')' || c == '"' || c == '\'').unwrap_or(tail.len());
+        out.push_str("<url>");
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn classify(facts: &FailureFacts<'_>) -> ProxyFailureKind {
     if let Some(failure) = facts.credential {
         return ProxyFailureKind::Credential(failure);
     }
-    let text = facts.chain.to_lowercase();
+    // the chain carries the request URL (reqwest: "error sending request for url (…)"); a path or query must not decide the kind
+    let text = without_urls(&facts.chain.to_lowercase());
+    // what the HTTP client says of the error comes first: a timeout it reports is a timeout whatever the text says
+    if facts.client_timeout {
+        return if facts.client_connect { ProxyFailureKind::ConnectTimeout } else { ProxyFailureKind::RequestTimeout };
+    }
     if text.contains("refused") || text.contains("10061") {
         return ProxyFailureKind::Refused;
     }
@@ -155,6 +175,39 @@ impl OfflineLine<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_url_in_the_chain_does_not_override_a_client_timeout() {
+        let facts = FailureFacts {
+            chain: "error sending request for url (https://localhost:47990/config?next=refused): operation timed out",
+            client_timeout: true,
+            client_connect: false,
+            credential: None,
+        };
+        assert_eq!(classify(&facts), ProxyFailureKind::RequestTimeout);
+    }
+
+    #[test]
+    fn a_url_alone_does_not_read_as_refused() {
+        let facts = FailureFacts {
+            chain: "error sending request for url (https://localhost:47990/refused?x=10061): connection closed before message completed",
+            client_timeout: false,
+            client_connect: false,
+            credential: None,
+        };
+        assert_ne!(classify(&facts), ProxyFailureKind::Refused);
+    }
+
+    #[test]
+    fn a_real_refusal_is_still_refused() {
+        let facts = FailureFacts {
+            chain: "error sending request for url (https://localhost:47990/): client error (Connect): tcp connect error: No connection could be made because the target machine actively refused it. (os error 10061)",
+            client_timeout: false,
+            client_connect: true,
+            credential: None,
+        };
+        assert_eq!(classify(&facts), ProxyFailureKind::Refused);
+    }
+
     use super::*;
 
     fn kind(chain: &str) -> ProxyFailureKind {

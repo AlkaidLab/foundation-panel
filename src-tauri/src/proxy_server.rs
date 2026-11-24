@@ -701,7 +701,7 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 /// The host is not listening (refused, no route, unreachable): the one failure that proves it is away.
 fn host_is_gone(error: &str) -> bool {
-    let error_lower = error.to_lowercase();
+    let error_lower = crate::proxy_failure::without_urls(&error.to_lowercase());
     error_lower.contains("refused") || error_lower.contains("10061") || error_lower.contains("unreachable") || error_lower.contains("no route")
 }
 

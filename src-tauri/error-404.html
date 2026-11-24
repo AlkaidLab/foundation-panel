@@ -129,6 +129,10 @@
         let countdownTimer = null;
         let returnTimer = null;
         let stallTimer = null;
+        // one return per recovery: `returning` is set from the moment a return is scheduled until it stalls (or is retried); `epoch` moves on every
+        // recovery so a probe that was out before it cannot act on its answer afterwards (neither a second return nor a "probe failed" over 已恢复)
+        let returning = false;
+        let epoch = 0;
         // the ring is the wait: turning while a probe is out, filling down second by second until the next one
         function showProbing(text) {
             headEl.textContent = text; footerEl.textContent = BACK; numEl.textContent = '';
@@ -162,6 +166,9 @@
             } catch { return RETURN_DELAYS[0]; }
         }
         function onSuccess() {
+            if (returning) return;
+            returning = true;
+            epoch++;
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
             if (returnTimer) clearTimeout(returnTimer);
             if (stallTimer) clearTimeout(stallTimer);
@@ -171,7 +178,7 @@
             const delay = returnDelay();
             returnTimer = setTimeout(() => location.reload(), delay);
             // the host answers this page's address and the reload is out: if it does not replace this page in time, the page goes back to counting its rounds (the reload stays pending and still replaces the page when it is answered)
-            stallTimer = setTimeout(scheduleNextRound, delay + RETURN_STALL_MS);
+            stallTimer = setTimeout(() => { stallTimer = null; returning = false; scheduleNextRound(); }, delay + RETURN_STALL_MS);
         }
         function scheduleNextRound() {
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
@@ -194,31 +201,40 @@
         // phase 1: one probe after another for ten seconds, a second between them; a probe that is out is waited for
         async function phase1() {
             roundCount = 1;
+            const mine = epoch;
             const end = Date.now() + PHASE1_DURATION * 1000;
             do {
                 showProbing('第1次探测 Sunshine…');
-                if (await probe()) return onSuccess();
+                const up = await probe();
+                if (mine !== epoch || returning) return;
+                if (up) return onSuccess();
                 if (Date.now() + 1000 < end) await new Promise(r => setTimeout(r, 1000));
+                if (mine !== epoch || returning) return;
             } while (Date.now() + 1000 < end);
             scheduleNextRound();
         }
         async function normalProbe() {
+            const mine = epoch;
             showProbing(`第${roundCount}次探测 Sunshine…`);
-            if (await probe()) return onSuccess();
+            const up = await probe();
+            if (mine !== epoch || returning) return;
+            if (up) return onSuccess();
             scheduleNextRound();
         }
         retryEl.addEventListener('click', () => {
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
             if (returnTimer) { clearTimeout(returnTimer); returnTimer = null; }
             if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+            returning = false;
+            epoch++;
             roundCount = 0;
             phase1();
         });
         if (hostWindow && hostWindow.addEventListener) {
             hostWindow.addEventListener('message', (event) => {
                 if (event.source !== hostWindow.parent || !event.data || event.data.type !== 'foundation-offline-host-up') return;
-                // a return that is out already is not asked for twice
-                if (!returnTimer) onSuccess();
+                // a return that is out already is not asked for twice (onSuccess keeps one return per recovery)
+                onSuccess();
             });
         }
         tellPanel();

@@ -201,3 +201,23 @@ test('a return the panel asked for that does not replace the page lets the page 
   await page.advance(2000)
   assert.equal(page.location.reloads, 2, 'and the panel can ask for another return')
 })
+
+test('the panel telling first and the page\'s own probe answering later, with the document not replaced, reloads once', async () => {
+  // the probe sent at the start is answered 200 only at 3 s; the panel says the host is up at 1 s
+  const page = loadPage({ withPanel: true, answer: (url, at) => (at < 100 ? { status: 200, delay: 3000 } : { status: 503 }) })
+  await page.advance(1000)
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(10000)
+  assert.equal(page.location.reloads, 1, 'one recovery, one reload')
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+})
+
+test('a probe that was out when the panel said the host is up cannot turn 已恢复 back into a failed round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => 'hang' })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' })
+  // the hanging probe is aborted at 5 s: its failure belongs to the round before the recovery
+  await page.advance(8000)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  assert.equal(page.location.reloads, 1)
+})
