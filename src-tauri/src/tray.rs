@@ -26,6 +26,7 @@ mod main_panel;
 mod menu;
 mod notifications;
 pub(crate) mod popup_input;
+mod read_order;
 #[cfg(target_os = "windows")]
 mod touch_menu;
 #[cfg(target_os = "windows")]

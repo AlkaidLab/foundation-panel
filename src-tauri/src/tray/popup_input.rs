@@ -16,6 +16,7 @@ use crate::menu_place::Rect as PhysRect;
 use crate::dpi_scale_core::ScaleRange;
 use crate::tray_prefs::{self, Action, ClickGate, Decision, Gesture, Variant};
 use serde_json::{Value, json};
+use super::read_order::{self, Basis, Coalescer, Latest};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use tauri::menu::Menu;
 
@@ -205,7 +206,7 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
         }
         // the menu opens from what is known now and what was read at the last look (`state_now`): nothing before the window waits for the host, the displays, the controller or the registry. The fresh
         // answer is read at the same time and goes to the menu that is on screen when it is there (`refresh_in_background`), in place.
-        let read_before = SLOW_GEN.load(Ordering::SeqCst);
+        let read_before = slow_generation();
         let state = state_now(&app);
         info!("[traylat] menu asked for; press source {:?}, density preference {}", input_source::last_source(), tray_prefs::current().density);
         refresh_in_background(&app);
@@ -213,7 +214,7 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
             Ok(true) => {
                 FAILURES.store(0, Ordering::SeqCst);
                 // the answer came between the state of the menu and the menu being registered: the push of the reader found no menu then
-                if SLOW_GEN.load(Ordering::SeqCst) != read_before {
+                if slow_generation() != read_before {
                     push_now_if_open(&app);
                 }
             }
@@ -247,7 +248,7 @@ fn push_now_if_open(app: &AppHandle) {
 
 /// The pointer is on the icon: a reading older than this is made again now, so the click that follows finds a fresh one (a touch has no hover: its menu opens from the last reading and is corrected in place).
 pub(super) fn warm_if_stale(app: &AppHandle) {
-    let stale = SLOW.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_none_or(|(_, at)| at.elapsed() > WARM_AFTER);
+    let stale = SLOW.lock().unwrap_or_else(|p| p.into_inner()).age().is_none_or(|age| age > WARM_AFTER);
     if stale {
         refresh_in_background(app);
     }
@@ -354,21 +355,33 @@ struct Slow {
     sliders: Value,
     auto_start: bool,
     rtss: bool,
+    /// the facts the display sliders' target was chosen under, and the display it came to (GDI device name): a menu that is drawn under other facts does not offer the controls of a display that is no
+    /// longer the target
+    basis: Basis,
+    target_device: Option<String>,
 }
 
 impl Default for Slow {
     fn default() -> Self {
-        Slow { live: None, ds5: false, sliders: Value::Null, auto_start: false, rtss: false }
+        Slow { live: None, ds5: false, sliders: Value::Null, auto_start: false, rtss: false, basis: Basis::default(), target_device: None }
     }
 }
 
-/// The last reading and when it was made.
-static SLOW: Mutex<Option<(Slow, std::time::Instant)>> = Mutex::new(None);
-/// Counts the readings kept: a menu that was opened before one was kept is sent it.
-static SLOW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// One reading at a time; a request that comes while one runs makes it read once more when it ends (what changed meanwhile is read too).
-static READING: AtomicBool = AtomicBool::new(false);
-static READ_AGAIN: AtomicBool = AtomicBool::new(false);
+/// The last reading and when it was made. The readings are numbered when they BEGIN: one that began before the last slider write finished, or before the reading that is kept, is never kept (read_order.rs).
+static SLOW: Mutex<Latest<Slow>> = Mutex::new(Latest::new());
+/// One reader in the background at a time; a request that comes while it runs makes it read once more (what changed meanwhile is read too), and a request never waits on a reader that has ended.
+static READER: Coalescer = Coalescer::new();
+/// The display the sliders of the menu on screen were drawn for (GDI device name), as of the last state sent to it: a slider write is for this display or for none.
+static SHOWN_TARGET: Mutex<Option<String>> = Mutex::new(None);
+
+fn slow_generation() -> u64 {
+    SLOW.lock().unwrap_or_else(|p| p.into_inner()).generation()
+}
+
+/// A session holds the display and its resources while it streams and while it is paused: both count as one that is on.
+fn session_on(status: &str) -> bool {
+    matches!(host_word(status), "streaming" | "paused")
+}
 
 /// The reading, made now: every slow fact of the state, read side by side.
 async fn read_slow() -> Slow {
@@ -391,15 +404,17 @@ async fn read_slow() -> Slow {
     let stream = match live.as_ref().and_then(|rows| rows.first()) {
         Some(x) => Some((x.width, x.height, x.fps)),
         // the live list did not come: a stream is still on, its display is the one in use (the primary one when none matches)
-        None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
+        None if connected && tray_state.as_ref().is_some_and(|state| session_on(&state.status)) => Some((0, 0, 0)),
         None => None,
     };
+    let basis = Basis { vdd_active, session: connected && tray_state.as_ref().is_some_and(|state| session_on(&state.status)) };
     let (sliders, auto_start, rtss) = tokio::join!(
         slider_state(connected, vdd_active, stream),
         tokio::task::spawn_blocking(start_up_item_enabled),
         tokio::task::spawn_blocking(crate::rtss::is_rtss_installed),
     );
-    let slow = Slow { live, ds5, sliders, auto_start: auto_start.unwrap_or(false), rtss: rtss.unwrap_or(false) };
+    let (sliders, target_device) = sliders;
+    let slow = Slow { live, ds5, sliders, auto_start: auto_start.unwrap_or(false), rtss: rtss.unwrap_or(false), basis, target_device };
     debug!("[traylat] state read in {} ms (streams and controller {} ms, then displays, start-up and RTSS {} ms)", started.elapsed().as_millis(), live_ms, started.elapsed().as_millis() - live_ms);
     slow
 }
@@ -415,51 +430,56 @@ fn start_up_item_enabled() -> bool {
     }
 }
 
-fn keep(slow: Slow) {
-    *SLOW.lock().unwrap_or_else(|p| p.into_inner()) = Some((slow, std::time::Instant::now()));
-    SLOW_GEN.fetch_add(1, Ordering::SeqCst);
+/// Keeps a reading that began as `ticket` unless a later one is kept already or a slider was written since it began; false when it was not kept (its facts must not be shown).
+fn keep(ticket: u64, slow: Slow) -> bool {
+    SLOW.lock().unwrap_or_else(|p| p.into_inner()).offer(ticket, slow)
 }
 
-/// Reads the slow facts without anyone waiting for them, keeps them, and sends them to the menu that is on screen. One reading at a time.
+fn begin_reading() -> u64 {
+    SLOW.lock().unwrap_or_else(|p| p.into_inner()).begin()
+}
+
+/// Reads the slow facts without anyone waiting for them, keeps them, and sends them to the menu that is on screen. One reader at a time (`READER`): a request that comes meanwhile is read after the
+/// round that runs, and one that comes when the reader has ended starts a new reader.
 pub(super) fn refresh_in_background(app: &AppHandle) {
-    if READING.swap(true, Ordering::SeqCst) {
-        READ_AGAIN.store(true, Ordering::SeqCst);
+    if !READER.request() {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            READ_AGAIN.store(false, Ordering::SeqCst);
-            keep(read_slow().await);
-            push_now_if_open(&app);
-            if !READ_AGAIN.swap(false, Ordering::SeqCst) {
+            let ticket = begin_reading();
+            let slow = read_slow().await;
+            if keep(ticket, slow) {
+                push_now_if_open(&app);
+            }
+            if !READER.round_done() {
                 break;
             }
-        }
-        READING.store(false, Ordering::SeqCst);
-        // a request that came between the last check and the release
-        if READ_AGAIN.swap(false, Ordering::SeqCst) {
-            refresh_in_background(&app);
         }
     });
 }
 
 /// The state for a menu NOW, with nothing awaited: what the native menu knows (in memory) and the last reading of the slow facts. The streams of an old reading are not trusted when the core says nothing streams.
 pub(super) fn state_now(app: &AppHandle) -> Value {
-    let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|(slow, _)| slow.clone()).unwrap_or_default();
+    let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner()).value().unwrap_or_default();
     compose_state(app, &slow, false)
 }
 
-/// The state, read afresh (after a slider was set: what the display has now).
+/// The state, read afresh (after a slider was set: what the display has now). It is numbered like every other reading: when a later one is kept already, that one is the state.
 pub(super) async fn build_state(app: &AppHandle) -> Value {
+    let ticket = begin_reading();
     let slow = read_slow().await;
-    keep(slow.clone());
-    compose_state(app, &slow, true)
+    if keep(ticket, slow.clone()) {
+        compose_state(app, &slow, true)
+    } else {
+        state_now(app)
+    }
 }
 
-/// The streams of a reading, when they can be shown: the core is connected, and the reading is fresh or the core says a stream is on (an old reading says "streaming" long after the stream ended).
-fn usable_live<T>(live: Option<&Vec<T>>, connected: bool, fresh: bool, streaming: bool) -> Option<&Vec<T>> {
-    live.filter(|_| connected && (fresh || streaming))
+/// The streams of a reading, when they can be shown: the core is connected, and the reading is fresh or the core says a session is on, streaming or paused (an old reading says "streaming" long after the stream ended).
+fn usable_live<T>(live: Option<&Vec<T>>, connected: bool, fresh: bool, session: bool) -> Option<&Vec<T>> {
+    live.filter(|_| connected && (fresh || session))
 }
 
 /// The state of the host for a menu: what the native menu knows (menu.rs) and what it does not show (streams, display mode, update, DS5). `fresh`: `slow` was read just now; otherwise it is the last reading.
@@ -468,9 +488,9 @@ fn compose_state(app: &AppHandle, slow: &Slow, fresh: bool) -> Value {
     let locale = get_current_locale();
     let (tray_state, connection, _) = TRAY_RUNTIME_STATE.lock().unwrap_or_else(|p| p.into_inner()).menu_snapshot();
     let connected = connection == CoreConnectionState::Connected;
-    // an old reading says "streaming" long after the stream ended: the core's own state, which is current, decides whether it is used
-    let streaming = tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming");
-    let live = usable_live(slow.live.as_ref(), connected, fresh, streaming);
+    // an old reading says "streaming" long after the stream ended: the core's own state, which is current, decides whether it is used. A paused session still holds its stream's display and its readings.
+    let session = tray_state.as_ref().is_some_and(|state| session_on(&state.status));
+    let live = usable_live(slow.live.as_ref(), connected, fresh, session);
     let ds5 = connected && slow.ds5;
     let streams: Vec<Value> = match (live, &tray_state) {
         (Some(rows), _) => session_rows(rows),
@@ -495,6 +515,10 @@ fn compose_state(app: &AppHandle, slow: &Slow, fresh: bool) -> Value {
     #[cfg(not(target_os = "windows"))]
     let user_mode = false;
     let auto_start = slow.auto_start;
+    // a reading made under other facts than the core's now (a stream ended, the virtual display went) chose a target that may not be the display a slider would change now: the controls of a display are
+    // not offered until a reading made under the facts now is there (it is read at every change of the core's state and arrives at once)
+    let sliders = if fresh || slow.basis == (Basis { vdd_active, session: connected && session }) { slow.sliders.clone() } else { without_display_controls(&slow.sliders) };
+    *SHOWN_TARGET.lock().unwrap_or_else(|p| p.into_inner()) = if sliders.get("target").is_some_and(|t| !t.is_null()) { slow.target_device.clone() } else { None };
 
     let prefs = tray_prefs::current();
     json!({
@@ -521,7 +545,7 @@ fn compose_state(app: &AppHandle, slow: &Slow, fresh: bool) -> Value {
         "update": update_version.map(|version| json!({ "version": version })),
         "ds5": ds5,
         "notification": notification,
-        "sliders": slow.sliders,
+        "sliders": sliders,
         // what the press that opened the menu was, and the person's density choice: the page opens in touch density for a finger (input_source.rs; foundation-ui MTrayMenu)
         "touch": input_source::facts().to_json(),
         "density": prefs.density,
@@ -561,13 +585,13 @@ async fn displays_and_facts(vdd_active: bool, stream: Option<(u32, u32, u32)>, f
 }
 
 /// `state.sliders`: the target display and what it can do now, the scale, the bitrate cap (only with a connected core).
-async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u32, u32)>) -> Value {
+async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u32, u32)>) -> (Value, Option<String>) {
     let (outputs, facts, config) = displays_and_facts(vdd_active, stream, false).await;
     let target = display_sliders::choose(&outputs, &facts);
     // the scale is a property of the display the sliders point at (the stream's, else the virtual display, else the primary one), and what Windows lets that display take is read now: it changes with the
     // display and its resolution
     let device = target.and_then(|(i, _)| outputs.get(i)).map(|o| o.device.clone());
-    let dpi = match crate::dpi_scale::read_range(device).await {
+    let dpi = match crate::dpi_scale::read_range(device.clone()).await {
         Ok(range) => Some(range),
         Err(error) => {
             warn!("tray: the scale range of the target display could not be read: {}", error);
@@ -575,7 +599,20 @@ async fn slider_state(connected: bool, vdd_active: bool, stream: Option<(u32, u3
         }
     };
     let bitrate = connected.then(|| config_text(&config, "max_bitrate").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0));
-    display_sliders::sliders_json(&outputs, target, dpi.as_ref(), bitrate)
+    (display_sliders::sliders_json(&outputs, target, dpi.as_ref(), bitrate), device)
+}
+
+/// `sliders` without the controls of a display (its name and mode, the resolution, the refresh rate, the scale): what is left is the bitrate cap, which is the host's and not a display's.
+fn without_display_controls(sliders: &Value) -> Value {
+    let mut sliders = sliders.clone();
+    if let Some(map) = sliders.as_object_mut() {
+        for key in ["target", "resolution", "refresh", "dpi"] {
+            if map.contains_key(key) {
+                map.insert(key.to_string(), Value::Null);
+            }
+        }
+    }
+    sliders
 }
 
 /// The facts of the moment a slider is released (the menu's state may be a second old).
@@ -586,7 +623,7 @@ async fn live_facts() -> (bool, Option<(u32, u32, u32)>) {
     let sessions = if connected { tokio::time::timeout(LIVE_TIMEOUT, sunshine::get_active_sessions()).await.ok().and_then(Result::ok) } else { None };
     let stream = match sessions.as_ref().and_then(|rows| rows.first()) {
         Some(x) => Some((x.width, x.height, x.fps)),
-        None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
+        None if connected && tray_state.as_ref().is_some_and(|state| session_on(&state.status)) => Some((0, 0, 0)),
         None => None,
     };
     (vdd_active, stream)
@@ -601,13 +638,17 @@ pub(super) async fn scale_display() -> Option<String> {
 }
 
 /// Sets a mode of the target display: the new resolution (keeping the rate where the display has it) or the new refresh rate.
-async fn change_mode(want_size: Option<(u32, u32)>, want_hz: Option<u32>) -> Result<(), String> {
+async fn change_mode(want_size: Option<(u32, u32)>, want_hz: Option<u32>, only_display: Option<String>) -> Result<(), String> {
     let (vdd_active, stream) = live_facts().await;
     let (_, facts, _) = displays_and_facts(vdd_active, stream, true).await;
     tokio::task::spawn_blocking(move || {
         let outputs = display_sliders::outputs();
         let (at, kind) = display_sliders::choose(&outputs, &facts).ok_or("没有可调整的显示器")?;
         let output = &outputs[at];
+        // the display the menu shows (a write is never for another one: the stream that was on it may have ended)
+        if let Some(shown) = only_display.as_deref() {
+            read_order::same_target(Some(shown), Some(output.device.as_str())).map_err(|()| TARGET_CHANGED.to_string())?;
+        }
         let mode = display_sliders::pick_mode(output, want_size, want_hz).ok_or("显示器没有这个模式")?;
         if mode == output.current {
             return Ok(());
@@ -648,23 +689,36 @@ pub(super) fn act(app: &AppHandle, token: u64, id: &str) {
 /// Writes one slider's value to the machine (the display's mode, the scale, the bitrate cap) and returns how long the system needs to show it, and a notice for the page (null; for the scale, what came of a
 /// step the display does not allow without signing out: `{ requested, applied, clamped: true, max }`). The quick page and the native menu's stepped items both come here, so the two cannot disagree
 /// about what a value means.
-async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), String> {
+async fn write_slider(key: &str, value: &Value, shown: Option<Option<String>>) -> Result<(Duration, Value), String> {
     let mut notice = Value::Null;
+    // `shown`: the writer is the menu's page, and the display it shows (None inside: it shows none); a write for a display control must land on that display and on no other
+    if matches!(key, "resolution" | "refresh" | "dpi") {
+        if let Some(shown) = shown.as_ref() {
+            if shown.is_none() {
+                return Err(TARGET_CHANGED.to_string());
+            }
+        }
+    }
+    let only = shown.flatten();
     let settle = match key {
         "resolution" => {
             let size = value.as_str().and_then(display_sliders::parse_resolution).ok_or("分辨率无效")?;
-            change_mode(Some(size), None).await?;
+            change_mode(Some(size), None, only).await?;
             Duration::from_millis(700)
         }
         "refresh" => {
             let hz = value.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| (24..=1000).contains(n)).ok_or("刷新率无效")?;
-            change_mode(None, Some(hz)).await?;
+            change_mode(None, Some(hz), only).await?;
             Duration::from_millis(700)
         }
         "dpi" => {
             let dpi = value.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| (100..=500).contains(n)).ok_or("缩放无效")?;
             // the display the sliders point at takes the nearest step it allows without signing out; a request beyond that is set to the highest step and the page is told (never refused silently)
-            let (resolved, range) = crate::dpi_scale::set_scale(scale_display().await, dpi).await?;
+            let device = scale_display().await;
+            if let Some(shown) = only.as_deref() {
+                read_order::same_target(Some(shown), device.as_deref()).map_err(|()| TARGET_CHANGED.to_string())?;
+            }
+            let (resolved, range) = crate::dpi_scale::set_scale(device, dpi).await?;
             if resolved.clamped {
                 info!("tray: scale {}% is beyond what the display allows without signing out; {}% is set", resolved.requested, resolved.applied);
                 notice = crate::dpi_scale_core::outcome_json(resolved, range.max());
@@ -688,6 +742,9 @@ async fn write_slider(key: &str, value: &Value) -> Result<(Duration, Value), Str
     Ok((settle, notice))
 }
 
+/// What a slider write that was meant for a display that is not the target any more answers (the page shows it; the state is read again at once).
+const TARGET_CHANGED: &str = "显示器已变化，请重新操作";
+
 /// The host's answer to a saved bitrate ceiling: when it says which one is in force (a host that applies it at once does), it must be the one that was asked for. A host that does not say is not doubted.
 fn check_ceiling_in_force(answer: &Value, asked_kbps: u64) -> Result<(), String> {
     match answer.get("max_bitrate_in_force").and_then(Value::as_u64) {
@@ -702,9 +759,21 @@ pub(super) async fn set(app: &AppHandle, key: &str, value: &Value) -> Result<Val
     if !ctx_popup::tray_menu_open() {
         return Err("菜单已经关闭".to_string());
     }
-    let (settle, notice) = write_slider(key, value).await?;
+    let shown = SHOWN_TARGET.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let (settle, notice) = match write_slider(key, value, Some(shown)).await {
+        Ok(done) => done,
+        Err(e) => {
+            if e == TARGET_CHANGED {
+                // the menu shows a display that is not the target now: it gets the state of now
+                refresh_in_background(app);
+            }
+            return Err(e);
+        }
+    };
     tokio::time::sleep(settle).await;
     *OUTPUT_CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None; // what the display has now, not what it had
+    // a reading that began before this moment may hold the value the write replaced: it is not kept and not shown, whenever it ends
+    SLOW.lock().unwrap_or_else(|p| p.into_inner()).invalidate();
     ctx_popup::update_tray_state(app, build_state(app).await);
     Ok(notice)
 }
@@ -780,7 +849,7 @@ pub(super) fn native_slider_event<R: Runtime + 'static>(app: &AppHandle<R>, id: 
     let Some((key, value)) = parse_native_slider(id) else { return false };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match write_slider(key, &json!(value)).await {
+        match write_slider(key, &json!(value), None).await {
             Ok((settle, _)) => {
                 info!("tray: native menu set {} = {}", key, value);
                 tokio::time::sleep(settle).await;
@@ -832,6 +901,8 @@ mod tests {
         assert!(usable_live(Some(&rows), true, true, false).is_some(), "a reading made just now is shown whatever the core's state says");
         assert!(usable_live(Some(&rows), true, false, true).is_some(), "an old reading while a stream is on");
         assert!(usable_live(Some(&rows), true, false, false).is_none(), "an old reading after the stream ended");
+        assert!(usable_live(Some(&rows), true, false, session_on("paused")).is_some(), "a paused session still has its readings");
+        assert!(session_on("streaming") && session_on("paused") && !session_on("pairing") && !session_on("idle") && !session_on(""));
         assert!(usable_live(Some(&rows), false, true, true).is_none(), "no core, no streams");
         assert!(usable_live::<u8>(None, true, true, true).is_none());
     }
@@ -979,5 +1050,66 @@ mod tests {
     #[test]
     fn the_host_word_is_one_the_menus_know() {
         assert_eq!([host_word("streaming"), host_word("paused"), host_word("pairing"), host_word("idle"), host_word("notification"), host_word("")], ["streaming", "paused", "pairing", "idle", "idle", "idle"]);
+    }
+
+    #[test]
+    fn a_stale_target_offers_no_display_control_but_keeps_the_bitrate_cap() {
+        let sliders = json!({
+            "target": { "kind": "stream", "name": "Side", "mode": "1920×1080@60" },
+            "resolution": { "options": ["1920x1080"], "value": "1920x1080" },
+            "refresh": { "options": [60], "value": 60 },
+            "dpi": { "value": 100 },
+            "bitrate": { "kbps": 20000 },
+        });
+        let without = without_display_controls(&sliders);
+        for key in ["target", "resolution", "refresh", "dpi"] {
+            assert!(without[key].is_null(), "{key} is still offered for a display that may not be the target");
+        }
+        assert_eq!(without["bitrate"], sliders["bitrate"]);
+        // a reading with no sliders at all (none made yet) stays as it is
+        assert!(without_display_controls(&Value::Null).is_null());
+    }
+
+    #[test]
+    fn the_basis_a_reading_was_made_under_is_what_the_core_says_now_or_the_display_controls_go() {
+        let made_under = Basis { vdd_active: true, session: true };
+        assert_eq!(made_under, Basis { vdd_active: true, session: true });
+        assert_ne!(made_under, Basis { vdd_active: true, session: false }, "the stream on the second display ended");
+        assert_ne!(made_under, Basis { vdd_active: false, session: true }, "the virtual display went");
+        // a paused session is a session: pausing changes neither the target nor the controls
+        assert_eq!(session_on("paused"), session_on("streaming"));
+    }
+
+    #[test]
+    fn a_slider_write_is_checked_against_the_display_on_screen_in_every_path_that_picks_a_display() {
+        let src = include_str!("popup_input.rs");
+        let mode = &src[src.find("async fn change_mode").unwrap()..src.find("// ---- commands").unwrap()];
+        assert!(mode.contains("only_display") && mode.contains("same_target"), "a mode write is not checked against the display the menu shows");
+        let write = &src[src.find("async fn write_slider").unwrap()..src.find("fn check_ceiling_in_force").unwrap()];
+        assert!(write.contains("same_target(Some(shown), device.as_deref())"), "the scale write is not checked against the display the menu shows");
+        let set_fn = &src[src.find("pub(super) async fn set(").unwrap()..src.find("// ---- the native menu's stepped sliders").unwrap()];
+        assert!(set_fn.contains("SHOWN_TARGET") && set_fn.contains("Some(shown)"), "the page's write does not carry the display it shows");
+    }
+
+    #[test]
+    fn the_state_after_a_slider_write_is_ordered_after_every_reading_that_began_before_it() {
+        let src = include_str!("popup_input.rs");
+        let set_fn = &src[src.find("pub(super) async fn set(").unwrap()..src.find("// ---- the native menu's stepped sliders").unwrap()];
+        let invalidate = set_fn.find(".invalidate()").expect("a write does not invalidate the readings that began before it");
+        let state = set_fn.find("build_state(app)").unwrap();
+        assert!(invalidate < state, "the readings that began before the write are invalidated after the state is read");
+        // every reading takes a number when it begins, and the background reader and `build_state` both keep through it
+        let reading = &src[src.find("pub(super) fn refresh_in_background").unwrap()..src.find("/// The streams of a reading, when they can be shown").unwrap()];
+        assert_eq!(reading.matches("begin_reading()").count(), 2);
+        assert_eq!(reading.matches("keep(ticket").count(), 2);
+        assert!(!src.contains(&format!("fn keep(slo{}", "w")), "a reading is kept without its number again");
+    }
+
+    #[test]
+    fn the_background_reader_has_no_second_flag_that_a_request_can_miss() {
+        let src = include_str!("popup_input.rs");
+        let reader = &src[src.find("pub(super) fn refresh_in_background").unwrap()..src.find("/// The state for a menu NOW").unwrap()];
+        assert!(reader.contains("READER.request()") && reader.contains("READER.round_done()"));
+        assert!(!reader.contains("AtomicBool") && !reader.contains("READ_AGAIN") && !reader.contains("READING"));
     }
 }
