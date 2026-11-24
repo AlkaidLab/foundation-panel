@@ -95,6 +95,8 @@
         // 阶段1: 前10秒每秒探测（快速重连）
         // 阶段2: 第2-5轮每5秒探测
         // 阶段3: 之后每30秒探测
+        // 探测的是这个页面自己的地址：恢复只在失败的那个请求被回答时才算，探测别的地址会得出“已恢复”而重载后仍然失败。
+        // 一个探测发出后等它回答（最多 PROBE_TIMEOUT_MS），不在 1 秒时放弃：负载中的主机 1–3 秒才回答，放弃只会让它永远“没有响应”。
         const footerEl = document.getElementById('footer-text');
         const headEl = document.getElementById('wait-head');
         const numEl = document.getElementById('wait-num');
@@ -108,10 +110,19 @@
         const PHASE2_ROUNDS = 4;
         const PHASE3_INTERVAL = 30;
         const BACK = 'Sunshine 恢复后，这个页面会自动返回。';
+        const PROBE_TIMEOUT_MS = 5000;
+        // the way back is one more request to the host, which the panel's proxy ends after 15 s at the latest. A page that comes back to this page again and again waits longer each time; a return that has not replaced this page after RETURN_STALL_MS is dead and stops being claimed
+        const RETURN_DELAYS = [300, 1500, 5000];
+        const RETURN_WINDOW_MS = 20000;
+        const RETURN_STALL_MS = 20000;
+        const RETURN_KEY = 'foundation-offline-returns';
+        const SELF = location.pathname + location.search;
         let roundCount = 0;
         let countdown = 0;
         let interval = 0;
         let countdownTimer = null;
+        let returnTimer = null;
+        let stallTimer = null;
         // the ring is the wait: turning while a probe is out, filling down second by second until the next one
         function showProbing(text) {
             headEl.textContent = text; footerEl.textContent = BACK; numEl.textContent = '';
@@ -126,23 +137,38 @@
             footerEl.textContent = `${countdown}秒后重试…`;
             retryEl.disabled = false; retryEl.classList.remove('busy'); retryLabel.textContent = '再试一次';
         }
-        async function probe(timeoutMs) {
+        async function probe() {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
             try {
-                const resp = await fetch(location.origin + '/', {
-                    method: 'GET', cache: 'no-store',
-                    signal: AbortSignal.timeout(timeoutMs || 5000)
-                });
-                return resp.status !== 503 && resp.status !== 502;
-            } catch { return false; }
+                const resp = await fetch(SELF, { method: 'GET', cache: 'no-store', signal: controller.signal });
+                // only the status is wanted: the body is not left behind to hold the connection
+                try { if (resp.body) resp.body.cancel().catch(() => {}); } catch { /* nothing to release */ }
+                return resp.status !== 502 && resp.status !== 503 && resp.status !== 504;
+            } catch { return false; } finally { clearTimeout(timer); }
+        }
+        function returnDelay() {
+            try {
+                const last = JSON.parse(sessionStorage.getItem(RETURN_KEY) || 'null');
+                const n = last && Date.now() - last.at < RETURN_WINDOW_MS ? last.n : 0;
+                sessionStorage.setItem(RETURN_KEY, JSON.stringify({ n: n + 1, at: Date.now() }));
+                return RETURN_DELAYS[Math.min(n, RETURN_DELAYS.length - 1)];
+            } catch { return RETURN_DELAYS[0]; }
         }
         function onSuccess() {
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            if (returnTimer) clearTimeout(returnTimer);
+            if (stallTimer) clearTimeout(stallTimer);
             ringEl.classList.remove('spin'); arcEl.style.strokeDashoffset = '0'; numEl.textContent = '';
             headEl.textContent = 'Sunshine 已恢复，正在返回…'; footerEl.textContent = '';
             retryEl.disabled = true; retryLabel.textContent = '正在返回…';
-            setTimeout(() => location.reload(), 300);
+            const delay = returnDelay();
+            returnTimer = setTimeout(() => location.reload(), delay);
+            // the host answers this page's address and the reload is out: if it does not replace this page in time, the page goes back to counting its rounds (the reload stays pending and still replaces the page when it is answered)
+            stallTimer = setTimeout(scheduleNextRound, delay + RETURN_STALL_MS);
         }
         function scheduleNextRound() {
+            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
             roundCount++;
             interval = roundCount <= 1 + PHASE2_ROUNDS ? PHASE2_INTERVAL : PHASE3_INTERVAL;
             countdown = interval;
@@ -157,14 +183,15 @@
                 }
             }, 1000);
         }
-        // phase 1: ten seconds of one probe a second (1 s timeout, so the total stays bounded)
+        // phase 1: one probe after another for ten seconds, a second between them; a probe that is out is waited for
         async function phase1() {
             roundCount = 1;
-            for (let i = 0; i < PHASE1_DURATION; i++) {
+            const end = Date.now() + PHASE1_DURATION * 1000;
+            do {
                 showProbing('第1次探测 Sunshine…');
-                if (await probe(1000)) return onSuccess();
-                if (i < PHASE1_DURATION - 1) await new Promise(r => setTimeout(r, 1000));
-            }
+                if (await probe()) return onSuccess();
+                if (Date.now() + 1000 < end) await new Promise(r => setTimeout(r, 1000));
+            } while (Date.now() + 1000 < end);
             scheduleNextRound();
         }
         async function normalProbe() {
@@ -174,6 +201,8 @@
         }
         retryEl.addEventListener('click', () => {
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            if (returnTimer) { clearTimeout(returnTimer); returnTimer = null; }
+            if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
             roundCount = 0;
             phase1();
         });
