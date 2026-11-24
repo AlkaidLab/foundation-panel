@@ -620,6 +620,10 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
         let _ = popup.set_focus();
         if let Some(open) = state().as_mut().filter(|o| o.token == token) {
             open.shown_at = Some(Instant::now());
+            // the grace counts from the moment the menu is on screen, not from the request to open it
+            if open.tray.is_some() {
+                open.focus_grace_until = Some(Instant::now() + OPEN_FOCUS_GRACE);
+            }
         }
     }
     if first && SELFTEST.load(Ordering::SeqCst) {

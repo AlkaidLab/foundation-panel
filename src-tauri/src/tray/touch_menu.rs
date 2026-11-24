@@ -45,6 +45,9 @@ static TOUCH_LEFT_EATEN: AtomicBool = AtomicBool::new(false);
 /// When the tray callback last carried a right button down (0: never): a right-up without a
 /// recent one did not end a mouse click.
 static LAST_RIGHT_DOWN_MS: AtomicU64 = AtomicU64::new(0);
+/// When the release of the touch context-menu gesture was consumed while the replay was awaited
+/// (0: not the case): the menu that the replay opens needs no guard, that release is gone.
+static RELEASE_EATEN_AT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -56,9 +59,16 @@ fn now_millis() -> u64 {
 /// Arms the release guard for a tray menu that is opening now: the release of the opening
 /// gesture (the lift of a finger, or a stray mouse release) must not land on the icon as a
 /// second click. It is called for a click of any kind: the icon's callback of Windows 11 says
-/// nothing about where the click came from (input_source.rs).
+/// nothing about where the click came from (input_source.rs). Not armed while the release of
+/// the gesture is known to be consumed already (RELEASE_EATEN_AT_MS): the next click is a
+/// person's own.
 pub(crate) fn arm_release_suppression() {
-    TOUCH_SUPPRESS_UNTIL_MS.store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
+    let now = now_millis();
+    let eaten = RELEASE_EATEN_AT_MS.load(Ordering::Acquire);
+    if eaten != 0 && now.saturating_sub(eaten) <= TOUCH_RELEASE_WINDOW_MS {
+        return;
+    }
+    TOUCH_SUPPRESS_UNTIL_MS.store(now + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
     TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
 }
 
@@ -121,6 +131,7 @@ unsafe extern "system" fn hook_proc(
                     if TOUCH_LEFT_EATEN.swap(false, Ordering::AcqRel) {
                         // The gesture's own release already arrived and was eaten, so nothing
                         // follows this replay: leave the next click for tray-icon.
+                        RELEASE_EATEN_AT_MS.store(now_millis(), Ordering::Release);
                         TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
                     } else {
                         // This is our replay, or a physical right-up that arrived before it. Let
@@ -163,6 +174,7 @@ unsafe extern "system" fn hook_proc(
             TOUCH_SUPPRESS_UNTIL_MS
                 .store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
             TOUCH_LEFT_EATEN.store(false, Ordering::Release);
+            RELEASE_EATEN_AT_MS.store(0, Ordering::Release);
             TOUCH_STATE.store(TOUCH_WAITING_FOR_REPLAY, Ordering::Release);
             if PostMessageW(
                 Some(hwnd),
