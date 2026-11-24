@@ -21,6 +21,7 @@ const en = {
     'USBIP-SETUP-015': 'Windows has a pending restart before USB/IP can finish installing. Choose Restart (not Shut down); the panel will retry after reboot.',
     'USBIP-SETUP-016': 'Windows driver policy or signature verification blocked the USB/IP driver (such as Memory Integrity or the vulnerable driver blocklist). Expand "View original diagnosis" for the error code.',
     'USBIP-SETUP-017': 'Windows Smart App Control or Application Control blocked the USB/IP installer. Check your Windows security policy or expand "View original diagnosis".',
+    'USBIP-SETUP-019': 'This Sunshine installation has no USB/IP component files to install from, so nothing was changed. Run the Sunshine installer again to add them.',
   },
   staleHint: 'An older USB/IP version left an extra controller behind. The current transport works; remove the extra controller and it is ready. Nothing needs to be reinstalled.',
   removeStale: 'Remove extra controller',
@@ -38,6 +39,9 @@ const en = {
   externallyManaged: 'Externally managed',
   externalReuse: 'Using your compatible USB/IP installation. You manage its installation, repair and removal.',
   externalDecision: 'Your USB/IP installation is preserved. Only 0.9.8.1 is supported. If its version or driver is incompatible, choose whether to replace or repair it in Windows Installed apps.',
+  fixLeftover: 'USB/IP leftovers are still on this PC that no entry in Installed apps owns, so the panel cannot remove them by itself.',
+  fixGuideHostComponent: 'This Sunshine installation has no USB/IP files to install from (its installer was run without the USB/IP component), so nothing was changed.\n1. Run the Sunshine installer again over the existing installation (the same version or a newer one).\n2. If its components page lists USB/IP (usbip-win2), tick it.\n3. Finish the setup, come back and press Fix now.',
+  fixGuideLeftover: 'USB/IP driver leftovers remain that no entry in Installed apps owns, for example from another tool that brought its own usbip-win2. The panel does not remove what it did not install. Skip these steps if another tool of yours still needs that driver.\nOpen Terminal as administrator, then:\n1. Run pnputil /enum-drivers. For each entry whose Original Name is usbip2_ude.inf or usbip2_filter.inf, run pnputil /delete-driver oemNN.inf /uninstall /force with its Published Name.\n2. Run sc.exe delete usbip2_ude and sc.exe delete usbip2_filter (an error that the service does not exist is fine).\n3. In Device Manager, View, Show hidden devices, uninstall any USB/IP host controller under Universal Serial Bus controllers.\n4. Restart Windows, then press Fix now: the panel installs the matching USB/IP {version}.',
 }
 const zh = {
   replaceLegacy: '清理旧版 USB/IP',
@@ -62,6 +66,7 @@ const zh = {
     'USBIP-SETUP-015': 'Windows 存在待完成的重启（如驱动清理或系统更新尚未生效）。请选“重启”（不要选“关机”），重启后将自动重试安装。',
     'USBIP-SETUP-016': 'Windows 驱动安全策略或签名校验阻止了 USB/IP 驱动加载（例如内核隔离/内存完整性或受阻驱动程序列表）。请展开「查看原始诊断」查看具体错误码。',
     'USBIP-SETUP-017': 'Windows 智能应用控制（Smart App Control）或应用控制策略阻止了安装程序运行。请检查系统安全设置，或展开「查看原始诊断」。',
+    'USBIP-SETUP-019': '这份 Sunshine 没有带 USB/IP 组件文件，无法从它安装，也没有改动任何东西。请重新运行 Sunshine 安装程序补上。',
   },
   staleHint: '旧版 USB/IP 留下了多余的控制器。当前传输本身可用；移除多余控制器后即可就绪，无需重新安装。',
   removeStale: '移除多余控制器',
@@ -79,6 +84,9 @@ const zh = {
   externallyManaged: '外部管理',
   externalReuse: '使用现有的兼容 USB/IP 安装；安装、修复和卸载均由您管理。',
   externalDecision: '现有 USB/IP 安装将保留。仅支持 0.9.8.1；版本或驱动不兼容时，请自行决定是否先在 Windows「已安装的应用」中替换或修复。',
+  fixLeftover: '电脑上留着 USB/IP 残留，而「已安装的应用」里没有任何一项属于它们，控制面板不会擅自清除。',
+  fixGuideHostComponent: '这份 Sunshine 没有可供安装的 USB/IP 文件（它的安装程序运行时没有选 USB/IP 组件），所以什么都没有改动。\n1. 在现有安装上重新运行 Sunshine 安装程序（同一版本或更新版本）。\n2. 如果组件页列出 USB/IP（usbip-win2），勾选它。\n3. 装完后回到这里，再点“一键修复”。',
+  fixGuideLeftover: 'USB/IP 驱动留有残留，而且「已安装的应用」里没有任何一项属于它们，例如另一个自带 usbip-win2 的工具卸载后留下的。控制面板不会清除不是它装的东西。如果你的其他工具还要用这个驱动，请不要做下面的步骤。\n以管理员身份打开终端，然后：\n1. 运行 pnputil /enum-drivers。对每个“原始名称”为 usbip2_ude.inf 或 usbip2_filter.inf 的条目，用它的“发布的名称”运行 pnputil /delete-driver oemNN.inf /uninstall /force。\n2. 运行 sc.exe delete usbip2_ude 和 sc.exe delete usbip2_filter（提示服务不存在也没关系）。\n3. 设备管理器 → 查看 → 显示隐藏的设备，卸载“通用串行总线控制器”下的 USB/IP 主机控制器。\n4. 重启 Windows，再点“一键修复”，控制面板会安装配套的 USB/IP {version}。',
 }
 const zh_TW = {
   replaceLegacy: '清理舊版 USB/IP',
@@ -103,6 +111,7 @@ const zh_TW = {
     'USBIP-SETUP-015': 'Windows 存在待完成的重新啟動（例如驅動清理或系統更新尚未生效）。請選「重新啟動」（不要選「關機」），重啟後將自動重試安裝。',
     'USBIP-SETUP-016': 'Windows 驅動安全性原則或簽名驗證阻止了 USB/IP 驅動載入（例如記憶體完整性或受阻驅動程式清單）。請展開「檢視原始診斷」查看具體錯誤碼。',
     'USBIP-SETUP-017': 'Windows 智慧型應用程式控制（Smart App Control）或應用程式控制原則阻止了安裝程式執行。請檢查系統安全設定，或展開「檢視原始診斷」。',
+    'USBIP-SETUP-019': '這份 Sunshine 沒有帶 USB/IP 元件檔案，無法從它安裝，也沒有改動任何東西。請重新執行 Sunshine 安裝程式補上。',
   },
   staleHint: '舊版 USB/IP 留下了多餘的控制器。目前傳輸本身可用；移除多餘控制器後即可就緒，無需重新安裝。',
   removeStale: '移除多餘控制器',
@@ -120,6 +129,9 @@ const zh_TW = {
   externallyManaged: '外部管理',
   externalReuse: '使用現有的相容 USB/IP 安裝；安裝、修復和解除安裝均由您管理。',
   externalDecision: '現有 USB/IP 安裝將保留。僅支援 0.9.8.1；版本或驅動程式不相容時，請自行決定是否先在 Windows「已安裝的應用程式」中替換或修復。',
+  fixLeftover: '電腦上留著 USB/IP 殘留，而「已安裝的應用程式」裡沒有任何一項屬於它們，控制面板不會擅自清除。',
+  fixGuideHostComponent: '這份 Sunshine 沒有可供安裝的 USB/IP 檔案（它的安裝程式執行時沒有選 USB/IP 元件），所以什麼都沒有改動。\n1. 在現有安裝上重新執行 Sunshine 安裝程式（同一版本或更新版本）。\n2. 如果元件頁列出 USB/IP（usbip-win2），勾選它。\n3. 裝完後回到這裡，再按「一鍵修復」。',
+  fixGuideLeftover: 'USB/IP 驅動留有殘留，而且「已安裝的應用程式」裡沒有任何一項屬於它們，例如另一個自帶 usbip-win2 的工具解除安裝後留下的。控制面板不會清除不是它裝的東西。如果你的其他工具還要用這個驅動，請不要做下面的步驟。\n以系統管理員身分開啟終端機，然後：\n1. 執行 pnputil /enum-drivers。對每個「原始名稱」為 usbip2_ude.inf 或 usbip2_filter.inf 的項目，用它的「發佈的名稱」執行 pnputil /delete-driver oemNN.inf /uninstall /force。\n2. 執行 sc.exe delete usbip2_ude 和 sc.exe delete usbip2_filter（提示服務不存在也沒關係）。\n3. 裝置管理員 → 檢視 → 顯示隱藏的裝置，解除安裝「通用序列匯流排控制器」下的 USB/IP 主機控制器。\n4. 重新啟動 Windows，再按「一鍵修復」，控制面板會安裝相符的 USB/IP {version}。',
 }
 
 /** Extend the small capability vocabulary without growing the legacy locale tables. */
