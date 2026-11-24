@@ -398,6 +398,7 @@ export const en = {
     remove: 'Remove',
     dropImage: 'Drop image here',
     chooseFile: 'or click to choose a file',
+    importFailed: 'Import failed',
     presets: 'Presets',
     presetNames: {
       cyberpunk: 'Cyberpunk',

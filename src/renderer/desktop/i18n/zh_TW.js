@@ -396,6 +396,7 @@ export const zh_TW = {
     remove: '移除',
     dropImage: '拖拽圖片到此處',
     chooseFile: '或點選選擇檔案',
+    importFailed: '匯入失敗',
     presets: '預設主題',
     presetNames: {
       cyberpunk: '賽博朋克',

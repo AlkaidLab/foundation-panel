@@ -1,6 +1,6 @@
 // dev-env-mise, dev-env-npm, dev-env-gtk: version selection and platform prerequisites.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { tmpdir, platform } from 'node:os'
@@ -130,6 +130,15 @@ function container(action) {
 
 function main(action, ...extra) {
   if (action === 'package' && !windows) throw new Error('package builds the Windows installer: run it on Windows')
+  // The pinned settings data for a build outside `just` (the release job): the line NAME=value is appended to $GITHUB_ENV when there is one, and printed.
+  if (action === 'settings-env') {
+    mkdirSync(cache, { recursive: true })
+    settings()
+    const line = `SETTINGS_DATA_DIR=${env.SETTINGS_DATA_DIR}`
+    if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, `${line}\n`)
+    console.log(line)
+    return
+  }
   if (!['doctor', 'doctor-native'].includes(action)) mkdirSync(cache, { recursive: true })
   if (platform() === 'linux' && !process.env.PANEL_DEV_CONTAINER && action !== 'doctor-native') return container(action)
   if (action === 'setup') {

@@ -38,7 +38,7 @@ test('each page draws its part: the tray settings only on the tray page, read on
 
 test('the palette button of the rail foot opens the first page and is lit on every page of 个性化; the narrow window lists the four pages', () => {
   assert.ok(menu.includes(`:current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)"`))
-  assert.ok(hub.includes("id: 'appearance', label: labelOf(locale.value, 'shell.appearance'), items: pageItems(t.value, 'appearance', props.runtime)"), 'the settings hub has a section 个性化 with the four pages')
+  assert.ok(hub.includes("id: 'appearance', label: settingsLabel(locale.value, 'shell.appearance', t.value.settings.appearance), items: pageItems(t.value, 'appearance', props.runtime)"), 'the settings hub has a section 个性化 with the four pages')
   assert.ok(menu.includes("router.navigate(ROUTES.SETTINGS_HUB, { section: 'appearance' })"), '更多 › 个性化 of the bottom bar opens the hub at that section')
   assert.ok(hub.includes('data-hub-section') && hub.includes('scrollIntoView'))
   assert.ok(menu.includes("'appearance', 'settings', 'help'].flatMap"), 'Back names the page that was left')

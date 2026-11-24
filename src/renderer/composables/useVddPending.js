@@ -1,6 +1,7 @@
 import { watch } from 'vue'
 import { usePending } from 'foundation-ui/pending'
 import { vdd } from '../tauri-adapter.js'
+import { noteMissingText } from '../shared/missingText.js'
 
 // The virtual display settings as pending changes: one entry for every value of the driver's settings that differs from what is saved (a list, such as the
 // resolutions, is one value). The page reports them, takes them back and applies the ones kept from before; the save works without the page.
@@ -25,6 +26,13 @@ export function setPath(obj, path, value) {
   for (const k of keys.slice(0, -1)) at = at[k] ||= {}
   at[keys.at(-1)] = clone(value)
 }
+// A setting the driver reports and the tables do not name is shown by the English name, then by its own last word (`CursorMaxX`), never by its dotted path.
+function labelOfPath(names, path, locale) {
+  const known = names[path] || LABELS.en[path]
+  if (known) return known
+  noteMissingText('vdd-pending', path, String(locale).startsWith('zh') ? 'zh' : 'en')
+  return path.split('.').at(-1)
+}
 export function vddEntries(saved, current, locale) {
   const names = LABELS[String(locale).startsWith('zh') ? 'zh' : 'en']
   const a = leaves(saved)
@@ -33,7 +41,7 @@ export function vddEntries(saved, current, locale) {
   for (const path of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (JSON.stringify(a[path]) === JSON.stringify(b[path])) continue
     const list = (v) => (path === 'resolutions.resolution' ? (v || []).map((r) => `${r.width}×${r.height}`).join(', ') : Array.isArray(v) ? v.join(', ') : undefined)
-    out.push({ key: path, label: names[path] || path, before: a[path], after: b[path], beforeText: list(a[path]), afterText: list(b[path]) })
+    out.push({ key: path, label: labelOfPath(names, path, locale), before: a[path], after: b[path], beforeText: list(a[path]), afterText: list(b[path]) })
   }
   return out
 }
