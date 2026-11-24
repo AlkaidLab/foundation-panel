@@ -2821,6 +2821,9 @@ mod robustness_tests {
         assert!(host_is_gone("error sending request: client error (Connect): tcp connect error: Connection refused (os error 10061)"));
         assert!(host_is_gone("No route to host"));
         assert!(!host_is_gone("error sending request for url (https://127.0.0.1:57990/api/pairing/pending?wait=25): operation timed out"));
+        // `)` is a character of an address: the word after it is part of the address, not the cause
+        assert!(!host_is_gone("error sending request for url (https://localhost:47990/config?next=x)refused): operation timed out"));
+        assert!(!host_is_gone("error sending request for url (https://localhost:47990/config?next=x)10061): operation timed out"));
         assert!(!host_is_gone("connection reset by peer"));
         assert_eq!(FAST_FAIL_COOLDOWN_SECS, 1);
     }

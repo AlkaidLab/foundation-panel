@@ -49,13 +49,17 @@ pub struct FailureFacts<'a> {
 }
 
 /// The text with every http(s) URL left out, so a word in a path or query is never read as the cause.
+///
+/// A URL ends where the text of an address ends: at white space or a quote (an address never holds either: white space, `"` and `'` are percent-encoded or refused when it is parsed). It does NOT end
+/// at a closing parenthesis: `)` is a valid character of a path and a query, so `https://localhost:47990/config?next=x)refused` is one address whose last word is `x)refused`. reqwest writes
+/// `error sending request for url (ADDRESS): cause`; the `)` that closes its bracket and the `:` after it are part of the same token and go with the address, the cause that follows after a space stays.
 pub fn without_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("http://").into_iter().chain(rest.find("https://")).min() {
         out.push_str(&rest[..at]);
         let tail = &rest[at..];
-        let end = tail.find(|c: char| c.is_whitespace() || c == ')' || c == '"' || c == '\'').unwrap_or(tail.len());
+        let end = tail.find(|c: char| c.is_whitespace() || c == '"' || c == '\'').unwrap_or(tail.len());
         out.push_str("<url>");
         rest = &tail[end..];
     }
@@ -212,6 +216,34 @@ mod tests {
 
     fn kind(chain: &str) -> ProxyFailureKind {
         classify(&FailureFacts { chain, client_timeout: false, client_connect: false, credential: None })
+    }
+
+    #[test]
+    fn a_closing_parenthesis_inside_the_address_does_not_end_it() {
+        // the review's address: `)` is a character of a query, the word after it belongs to the address
+        let chain = "error sending request for url (https://localhost:47990/config?next=x)refused): operation timed out";
+        assert_eq!(without_urls(chain), "error sending request for url (<url> operation timed out");
+        assert_eq!(kind(chain), ProxyFailureKind::RequestTimeout);
+        assert!(!without_urls("error sending request for url (https://localhost:47990/a)10061)reset)").contains("10061"));
+        // after the address, up to the end of the text
+        assert_eq!(without_urls("failed: https://h:1/x)refused"), "failed: <url>");
+        // the same words outside an address still count
+        assert_eq!(kind("error sending request for url (https://localhost:47990/config?next=x)refused): client error (Connect): tcp connect error: Connection refused (os error 111)"), ProxyFailureKind::Refused);
+    }
+
+    #[test]
+    fn the_cause_after_the_address_survives_and_so_do_several_addresses() {
+        assert_eq!(without_urls("error sending request for url (https://a:1/p?q=)): connection reset by peer"), "error sending request for url (<url> connection reset by peer");
+        assert_eq!(without_urls("redirect https://a/x)refused to http://b/y)timed out then reset"), "redirect <url> to <url> out then reset");
+        assert_eq!(kind("error sending request for url (https://a:1/p?q=)): connection reset by peer"), ProxyFailureKind::Reset);
+        assert_eq!(without_urls("no address here (refused)"), "no address here (refused)");
+        assert_eq!(without_urls("quoted \"https://a/b)refused\" refused"), "quoted \"<url>\" refused");
+    }
+
+    #[test]
+    fn a_refused_word_after_a_parenthesis_in_the_address_does_not_start_the_cooldown() {
+        let chain = "error sending request for url (https://localhost:47990/config?next=x)refused): operation timed out";
+        assert!(!without_urls(chain).contains("refused"));
     }
 
     #[test]
