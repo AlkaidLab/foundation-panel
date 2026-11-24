@@ -1,4 +1,5 @@
 import { ref, watch } from 'vue'
+import { noteMissingText } from '../renderer/shared/missingText.js'
 import { LOCALE_SYSTEM, choiceOf, readLocalePref, resolveSystemLocale, watchSystemLanguage, writeLocalePref } from 'foundation-ui/locale/localePref.js'
 import en from './locales/en.js'
 import en_GB from './locales/en_GB.js'
@@ -132,19 +133,24 @@ export const systemLocale = () => resolveSystem()
 // the operating system changes its language: a window that follows it changes with it
 watchSystemLanguage(() => { if (localeChoice.value === LOCALE_SYSTEM) locale.value = resolveSystem() })
 
-// 平铺查表：当前语言缺失的键回退到 en，再缺失则原样返回键名。
-// Per key: zh_TW then zh then en; every other language then en. An empty string does not count.
-// A key none of them have is returned as itself.
+// 平铺查表：当前语言缺失的键回退到 en，再回退到 zh；都没有时返回空文本并写一行日志，绝不把键名当文案显示。
+// Per key: zh_TW then zh then en; every other language then en; Chinese is the last base. An empty string does not count.
+// A key none of them have is an empty text and a line of the panel's log (the key checks of CI keep this from shipping).
+const textOf = (code, key) => {
+  const text = messages[code]?.[key]
+  return text !== undefined && text !== null && text !== '' ? text : undefined
+}
 export function t(key) {
-  const own = messages[locale.value]?.[key]
-  if (own !== undefined && own !== null && own !== '') return own
+  const own = textOf(locale.value, key)
+  if (own !== undefined) return own
   if (locale.value === 'zh_TW') {
-    const traditional = messages.zh?.[key]
-    if (traditional !== undefined && traditional !== null && traditional !== '') return traditional
+    const traditional = textOf('zh', key)
+    if (traditional !== undefined) return traditional
   }
-  const english = messages.en?.[key]
-  if (english !== undefined && english !== null && english !== '') return english
-  return key
+  const base = textOf('en', key) ?? textOf('zh', key)
+  if (base !== undefined) return base
+  noteMissingText('welcome', key, locale.value)
+  return ''
 }
 
 export function useWelcomeI18n() {

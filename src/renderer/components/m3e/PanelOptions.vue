@@ -172,7 +172,7 @@ async function importAppearance(event) {
   try {
     const data = JSON.parse(await file.text())
     await ap.set(Object.fromEntries(KEYS.filter((k) => k in data).map((k) => [k, data[k]])))
-  } catch (e) { notice.value = `${t.value.themeEditor?.importFailed || 'Import failed'} ${e?.message || ''}`.trim() }
+  } catch (e) { notice.value = `${t.value.themeEditor.importFailed} ${e?.message || ''}`.trim() }
 }
 
 // ---- 高级 (expert) ----

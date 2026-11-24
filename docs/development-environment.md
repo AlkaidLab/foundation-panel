@@ -83,6 +83,18 @@ The host entry derives its image tag from the environment definitions so one
 checkout cannot accidentally reuse another version. The container receives a separate cache mount and no host devices or service sockets.
 The checkout mount is writable for npm output. It is not a sandbox for untrusted code.
 
+## Texts: settings data and key checks
+
+The panel draws the categories and rows of 主机设置 from the settings data of Foundation Sunshine (`settingsData`, pinned in `scripts/ci/foundation-sunshine.sha`).
+`just build` and `just test` fetch it; any other build of a shipped panel must point `SETTINGS_DATA_DIR` at it. The release job does so with
+`node scripts/dev-env.mjs settings-env` (it appends the variable to `$GITHUB_ENV`) and sets `PANEL_REQUIRE_SETTINGS_DATA=1`, so a build without the data fails at the
+start instead of producing a panel whose lists show keys (`tabs.general`). Without the data the panel still draws its own English and Chinese words for the keys
+foundation-ui needs (`src/renderer/composables/settingsBase.js`) and writes the gap to the panel's log (`[renderer] i18n missing-text ...`).
+
+`node scripts/check-i18n-keys.mjs` (also run by `just test`) checks that every text the code reads exists in English, that Chinese holds the keys of English, and that
+a language lacking a key is listed in `scripts/i18n-untranslated.json` (it shows English on purpose). Translating a key removes it from that list; the check fails when a
+listed key is translated everywhere, so the list only shrinks.
+
 ## Verification boundary
 
 These files describe provisioning on Windows, macOS and Linux. They do not prove
