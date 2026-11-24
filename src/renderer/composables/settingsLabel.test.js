@@ -21,3 +21,12 @@ test('a label no table has is the fallback text, never the key, and the gap is w
   assert.deepEqual(lines, ['shell.appearance [en]', 'tabs.audio [en]'])
   setMissingTextSink(null)
 })
+
+test('an empty text of the product is no label: the fallback is drawn, in the language and in English', () => {
+  resetMissingText()
+  setMissingTextSink(() => {})
+  provideSettingsData({ searchIndex: [], labels: { en: { 'tabs.general': '' }, de: { 'tabs.general': '' } } })
+  assert.equal(settingsLabel('de', 'tabs.general', 'General'), 'General')
+  assert.equal(settingsLabel('en', 'tabs.general', 'General'), 'General')
+  setMissingTextSink(null)
+})

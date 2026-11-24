@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { MODEL_LABEL_KEYS } from 'foundation-ui/settings/model.js'
 import { labelOf, provideSettingsData } from 'foundation-ui/settings/provider.js'
-import { BASE_LABELS, ensureBaseLabels } from './settingsBase.js'
+import { BASE_LABELS, ensureBaseLabels, withBaseLabels } from './settingsBase.js'
 import { resetMissingText, setMissingTextSink } from '../shared/missingText.js'
 
 test('the base holds the words of every key foundation-ui needs, in English and Chinese', () => {
@@ -44,4 +44,23 @@ test('the pinned settings data of the product has every key foundation-ui needs 
   const labels = mod.LABELS || mod.default
   const missing = MODEL_LABEL_KEYS.filter((key) => !labels.en?.[key])
   assert.deepEqual(missing, [])
+})
+
+test('an empty text of the product is no text: the base fills it, in English, Chinese and every other language', () => {
+  provideSettingsData({ searchIndex: [], labels: { en: { 'tabs.general': '', 'tabs.files': 'Files' }, zh: { 'tabs.general': '' }, de: { 'tabs.general': '', 'tabs.input': 'Eingabe' } } })
+  assert.equal(labelOf('en', 'tabs.general'), '')
+  assert.equal(ensureBaseLabels(), true)
+  assert.equal(labelOf('en', 'tabs.general'), 'General')
+  assert.equal(labelOf('zh', 'tabs.general'), '常规')
+  assert.equal(labelOf('de', 'tabs.general'), 'General')
+  assert.equal(labelOf('de', 'tabs.input'), 'Eingabe')
+  assert.equal(labelOf('en', 'tabs.files'), 'Files')
+  assert.equal(ensureBaseLabels(), false)
+})
+
+test('withBaseLabels keeps the non-empty texts of the product and drops the empty ones', () => {
+  const merged = withBaseLabels({ en: { 'tabs.general': '' }, fr: { 'tabs.general': '', 'tabs.input': 'Entrée' } })
+  assert.equal(merged.en['tabs.general'], 'General')
+  assert.equal(merged.fr['tabs.input'], 'Entrée')
+  assert.equal(Object.hasOwn(merged.fr, 'tabs.general'), false)
 })

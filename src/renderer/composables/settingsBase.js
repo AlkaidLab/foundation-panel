@@ -65,10 +65,16 @@ export const BASE_LABELS = Object.freeze({
   }),
 })
 
-/** The tables with the base underneath: for English and Chinese a key the product lacks reads the base; every other table is the product's (it falls back to English). */
+const present = (text) => typeof text === 'string' && text !== ''
+
+/** A table without its empty texts: foundation-ui answers an empty string as it is (an empty label), so an empty text is no text. */
+const withoutEmpty = (table) => Object.fromEntries(Object.entries(table || {}).filter(([, text]) => present(text)))
+
+/** The tables with the base underneath: for English and Chinese a key the product lacks, or has empty, reads the base; every other table is the product's with its empty texts left out (it falls back to English). */
 export function withBaseLabels(labels) {
-  const out = { ...labels }
-  for (const code of ['en', 'zh']) out[code] = { ...BASE_LABELS[code], ...labels?.[code] }
+  const out = {}
+  for (const [code, table] of Object.entries(labels || {})) out[code] = withoutEmpty(table)
+  for (const code of ['en', 'zh']) out[code] = { ...BASE_LABELS[code], ...out[code] }
   return out
 }
 
@@ -76,8 +82,9 @@ export function withBaseLabels(labels) {
 export function ensureBaseLabels() {
   const labels = getLabels()
   for (const key of MODEL_LABEL_KEYS) if (!labels?.en?.[key]) noteMissingText('settings-data', key, 'en')
-  const complete = ['en', 'zh'].every((code) => Object.keys(BASE_LABELS[code]).every((key) => labels?.[code]?.[key]))
-  if (complete) return false
+  const complete = ['en', 'zh'].every((code) => Object.keys(BASE_LABELS[code]).every((key) => present(labels?.[code]?.[key])))
+  const hasEmpty = Object.values(labels || {}).some((table) => Object.values(table || {}).some((text) => !present(text)))
+  if (complete && !hasEmpty) return false
   provideSettingsData({ searchIndex: getSearchIndex(), labels: withBaseLabels(labels), aliases: getAliases() })
   return true
 }

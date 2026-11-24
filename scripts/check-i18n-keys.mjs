@@ -13,6 +13,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { findReads, resolve, tableParameterPattern } from './i18n-reads.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DESKTOP = path.join(root, 'src/renderer/desktop/i18n')
@@ -102,68 +103,23 @@ const walk = (dir, out = []) => {
 }
 const lineOf = (src, index) => src.slice(0, index).split('\n').length
 const rel = (file) => path.relative(root, file).split(path.sep).join('/')
-const STRING_OR_ARRAY_MEMBERS = new Set(['length', 'map', 'filter', 'join', 'replace', 'replaceAll', 'split', 'trim', 'slice', 'forEach', 'find', 'some', 'every', 'includes', 'toString', 'concat', 'at', 'entries', 'keys', 'values', 'startsWith', 'endsWith', 'indexOf', 'toLowerCase', 'toUpperCase', 'flatMap', 'reduce', 'padStart', 'padEnd', 'localeCompare'])
-
-/** The node of the English table a chain of members reaches: 'ok', or the first member English lacks. */
-function resolve(table, members) {
-  let node = table
-  for (const member of members) {
-    if (Array.isArray(node)) {
-      if (/^\d+$/.test(member) || STRING_OR_ARRAY_MEMBERS.has(member)) { node = /^\d+$/.test(member) ? node[member] : undefined; if (node === undefined) return 'ok'; continue }
-      return member
-    }
-    if (isObject(node)) {
-      if (!Object.hasOwn(node, member)) return member
-      node = node[member]
-      continue
-    }
-    return 'ok' // a text: what follows is a String member
-  }
-  return 'ok'
-}
-
 // the table a window reads for English: the file plus the USB/IP texts the entry adds (usbipOwnership.js)
 const { withUsbipOwnership } = await import(pathToFileURL(path.join(DESKTOP, 'usbipOwnership.js')).href)
 const en = withUsbipOwnership(desktop.en, 'en')
+// the download site (`npm run build:home`) has a table of its own (home/i18n.js), not the panel's
+const HOME_SITE = path.join(root, 'src/renderer/home') + path.sep
+// a read of a top-level section of the table through `t` in a file that does not call useI18n itself (a module that is handed the table)
+const HANDED_TABLE = tableParameterPattern(Object.keys(en))
 const sources = walk(path.join(root, 'src'))
-let reads = 0
 let checked = 0
 for (const file of sources) {
   if (file.startsWith(DESKTOP)) continue
   const src = fs.readFileSync(file, 'utf8')
-  // the name the window gives the table of the desktop i18n
-  const m = src.match(/const\s*\{([^}]*)\}\s*=\s*useI18n\(\)/)
-  if (!m) continue
-  const alias = /(?:^|,)\s*t(?:\s*:\s*(\w+))?\s*(?=,|$)/.exec(m[1].replace(/\s+/g, ' ').trim())
-  if (!alias) continue
-  const tName = alias[1] || 't'
-  // names bound to a part of the table: `const text = computed(() => t.value.pinEntry)`
-  const roots = new Map([[tName, []]])
-  for (let pass = 0; pass < 3; pass++) {
-    const bind = /(?:const|let)\s+(\w+)\s*=\s*(?:computed\(\s*\(\)\s*=>\s*)?(\w+)(?:\.value)?((?:\??\.\w+)+)\s*\)?\s*(?:$|;|\n)/g
-    for (const b of src.matchAll(bind)) {
-      const base = roots.get(b[2])
-      if (!base) continue
-      const members = b[3].split(/\??\./).filter(Boolean).filter((x) => x !== 'value')
-      if (!roots.has(b[1])) roots.set(b[1], [...base, ...members])
-    }
-  }
-  for (const [name, prefix] of roots) {
-    const use = new RegExp(`(?<![\\w.$])${name}(?:\\??\\.value)?((?:\\??\\.[A-Za-z_]\\w*)+)`, 'g')
-    for (const u of src.matchAll(use)) {
-      const members = u[1].split(/\??\./).filter(Boolean)
-      // the chain stops where the table stops: members of the bound name that are not table members (value) are skipped
-      if (members[0] === 'value') members.shift()
-      if (prefix.length === 0 && members.length === 0) continue
-      const missing = resolve(en, [...prefix, ...members])
-      // a callback parameter of the same name (`t => t.id`) is not the table
-      const lineText = src.slice(src.lastIndexOf('\n', u.index) + 1, src.indexOf('\n', u.index))
-      if (new RegExp(`(?:\\(|,\\s*|\\b)${name}\\s*(?:,[^)]*)?\\)?\\s*=>`).test(lineText)) continue
-      checked += 1
-      if (missing !== 'ok') {
-        reads += 1
-        fail(`desktop: ${rel(file)}:${lineOf(src, u.index)} reads "${[...prefix, ...members].join('.')}" but English has no "${missing}"`)
-      }
+  for (const read of findReads(src, { handedTable: file.startsWith(HOME_SITE) ? null : HANDED_TABLE })) {
+    checked += 1
+    const missing = resolve(en, read.path)
+    if (missing !== 'ok') {
+      fail(`desktop: ${rel(file)}:${lineOf(src, read.index)} reads "${read.path.join('.')}" but English has no "${missing}"`)
     }
   }
 }
