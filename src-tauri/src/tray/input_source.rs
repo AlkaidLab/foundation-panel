@@ -4,6 +4,9 @@
 //!   1. the input source of the message of the tray icon's click: `GetCurrentInputMessageSource` (Windows 8+, INPUT_MESSAGE_SOURCE.deviceType: IMDT_TOUCH 0x04, IMDT_PEN 0x08, IMDT_MOUSE 0x02, IMDT_TOUCHPAD
 //!      0x10; the call answers for the message being dispatched on this thread and says IMDT_UNAVAILABLE outside one, which is why it is read in the icon's own callback and kept for two seconds), with the
 //!      older `GetMessageExtraInfo` signature (0xFF515700 / 0xFF515780 under the 0xFFFFFF00 / 0xFFFFFF80 masks) as a second reading when the first one is unavailable;
+//!      Neither works for a click of the NOTIFICATION ICON: the shell posts the icon's callback message (the message is not an input message and carries no extra information), so a finger and a mouse both
+//!      read "unavailable" there (measured on Windows 11 build 26300: a touch press-and-hold and a mouse right click both arrive as the callback WM_RBUTTONUP with device 0x0 and extra info 0). The cursor
+//!      answers instead: `GetCursorInfo` sets CURSOR_SUPPRESSED while the person is working with touch or a pen and no mouse has moved since (Windows 8+, CURSORINFO.flags), so it is the reading of the icon's click;
 //!   2. whether the machine is in slate (tablet) posture: `GetSystemMetrics(SM_CONVERTIBLESLATEMODE)` is 0 in slate mode (Windows 8+; 0x2003). It says nothing about this press, but a person who has folded the
 //!      keyboard away uses fingers;
 //!   3. whether there is a digitizer at all: `GetSystemMetrics(SM_MAXIMUMTOUCHES)` > 0. Most 2-in-1 laptops have one and are used with a mouse, so this alone never switches the density; it is reported for the
@@ -50,6 +53,14 @@ pub fn source_from_device_type(device_type: i32) -> Source {
     }
 }
 
+/// CURSORINFO.flags: the system is not drawing the cursor because the person is using touch or a pen (Windows 8+; learn.microsoft.com win32/api/winuser/ns-winuser-cursorinfo).
+const CURSOR_SUPPRESSED: u32 = 0x2;
+
+/// Touch (or a pen: the same density) when the system says the cursor is suppressed because of touch or pen input; otherwise nothing is known.
+pub fn source_from_cursor_flags(flags: u32) -> Source {
+    if flags & CURSOR_SUPPRESSED != 0 { Source::Touch } else { Source::Unknown }
+}
+
 /// The legacy reading: GetMessageExtraInfo carries 0xFF515700 (pen) or 0xFF515780 (touch) in its upper bits for messages that came from a pen or a finger.
 pub fn source_from_extra_info(extra: isize) -> Source {
     let extra = (extra as usize) as u32;
@@ -69,10 +80,8 @@ const FRESH: Duration = Duration::from_secs(2);
 pub fn note_icon_event() {
     #[cfg(target_os = "windows")]
     {
-        let source = windows_source();
-        if source != Source::Unknown {
-            *LAST.lock().unwrap_or_else(|p| p.into_inner()) = Some((source, Instant::now()));
-        }
+        // an unknown reading is kept too: a finger a moment ago must not make the mouse click that follows a touch one
+        *LAST.lock().unwrap_or_else(|p| p.into_inner()) = Some((windows_source(), Instant::now()));
     }
 }
 
@@ -83,7 +92,7 @@ pub fn describe_message_source() -> String {
         let mut message = ffi::InputMessageSource { device_type: 0, origin_id: 0 };
         // SAFETY: a plain out-parameter of the documented layout, and a call without arguments.
         let (ok, extra) = unsafe { (ffi::GetCurrentInputMessageSource(&mut message) != 0, ffi::GetMessageExtraInfo()) };
-        format!("source ok={} device={:#x} extra={:#x}", ok, message.device_type, extra as usize as u32)
+        format!("source ok={} device={:#x} extra={:#x} cursor={:?}", ok, message.device_type, extra as usize as u32, cursor_source())
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -143,6 +152,15 @@ pub fn opening_density(pref: &str, facts: Facts) -> &'static str {
 #[cfg(target_os = "windows")]
 mod ffi {
     #[repr(C)]
+    pub struct CursorInfo {
+        pub size: u32,
+        pub flags: u32,
+        pub cursor: isize,
+        pub x: i32,
+        pub y: i32,
+    }
+
+    #[repr(C)]
     pub struct InputMessageSource {
         pub device_type: i32,
         pub origin_id: i32,
@@ -152,6 +170,7 @@ mod ffi {
         pub fn GetCurrentInputMessageSource(source: *mut InputMessageSource) -> i32;
         pub fn GetMessageExtraInfo() -> isize;
         pub fn GetSystemMetrics(index: i32) -> i32;
+        pub fn GetCursorInfo(info: *mut CursorInfo) -> i32;
     }
 }
 
@@ -165,7 +184,22 @@ fn windows_source() -> Source {
         return source;
     }
     // SAFETY: no arguments, reads the calling thread's extra message information.
-    source_from_extra_info(unsafe { ffi::GetMessageExtraInfo() })
+    let source = source_from_extra_info(unsafe { ffi::GetMessageExtraInfo() });
+    if source != Source::Unknown {
+        return source;
+    }
+    cursor_source()
+}
+
+/// The cursor's own answer (see the module doc): the only reading that holds for the notification icon's click.
+#[cfg(target_os = "windows")]
+fn cursor_source() -> Source {
+    let mut info = ffi::CursorInfo { size: std::mem::size_of::<ffi::CursorInfo>() as u32, flags: 0, cursor: 0, x: 0, y: 0 };
+    // SAFETY: a plain out-parameter of the documented layout (CURSORINFO) with `cbSize` set.
+    if unsafe { ffi::GetCursorInfo(&mut info) } == 0 {
+        return Source::Unknown;
+    }
+    source_from_cursor_flags(info.flags)
 }
 
 /// SM_CONVERTIBLESLATEMODE (0x2003): 0 means slate mode.
@@ -195,6 +229,14 @@ mod tests {
         assert_eq!(source_from_device_type(0x01), Source::Keyboard);
         assert_eq!(source_from_device_type(0), Source::Unknown);
         assert_eq!(source_from_device_type(0x20), Source::Unknown);
+    }
+
+    #[test]
+    fn a_suppressed_cursor_means_touch_or_pen_and_a_shown_one_says_nothing() {
+        assert_eq!(source_from_cursor_flags(0x2), Source::Touch);
+        assert_eq!(source_from_cursor_flags(0x3), Source::Touch, "showing and suppressed together");
+        assert_eq!(source_from_cursor_flags(0x1), Source::Unknown, "CURSOR_SHOWING alone: a mouse, or nothing known");
+        assert_eq!(source_from_cursor_flags(0), Source::Unknown);
     }
 
     #[test]
