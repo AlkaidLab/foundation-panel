@@ -19,8 +19,10 @@
 | `tool-failed` | `USBIP-EXEC-001`、`USBIP-EXEC-002`、`USBIP-EXEC-003`、`USBIP-EXEC-007` | usbip.exe 起不来、超时、输出超限或本机操作失败，传输未就绪 | 统一清理后重装 | 清理共享 USB/IP 并重装 | 清理可能需要重启 | 读取传输状态：就绪、无残留、无错误码；再读 DualSense 原生通道状态，不得是 usbip_* 状态 |
 | `external-incompatible-replaceable` | `USBIP-SETUP-008`、`USBIP-REPLACE-*` | 外部安装的完整 usbip-win2（含 GUI/SDK）版本或驱动不兼容，主机助手判定可替换 | 经确认后用主机助手替换为精简配套版本（失败自动回滚） | 明确写出会卸载现有 usbip-win2 及其图形界面和 SDK | 否 | 读取传输状态：就绪、无残留、无错误码；再读 DualSense 原生通道状态，不得是 usbip_* 状态 |
 | `external-incompatible-manual` | `USBIP-SETUP-008`、`USBIP-REPLACE-001` | 外部安装不兼容，且主机助手不允许替换 | 不改动；给出在「已安装的应用」里手动卸载的步骤 | 无（不会改动） | 用户手动卸载后需要 | 不适用 |
+| `unregistered-leftover` | `USBIP-CLEAN-005` | 设备树、服务或文件里有 usbip-win2 的残留，但没有任何卸载登记（别的工具自带的 usbip-win2 卸载后留下的）；「已安装的应用」里没有可卸载的项 | 不改动；给出管理员终端里的手动清理步骤（pnputil /delete-driver、sc.exe delete、设备管理器），清完再修复 | 无（不会改动） | 清理后需要 | 不适用 |
 | `external-stale-controller` | `Multiple instances of VHCI device interface found` | 外部安装可用，但旧版留下了多余的控制器 | 只移除多余的控制器（外部安装本身保留） | 移除多余控制器 | 节点要等重启才删时 | 读取传输状态：就绪、无残留、无错误码；再读 DualSense 原生通道状态，不得是 usbip_* 状态 |
 | `external-compatible-healthy` | — | 外部安装的 0.9.8.1，工具和驱动哈希一致，就绪 | 不需要；保留用户自己的安装 | 无 | 否 | 不适用 |
+| `host-payload-missing` | `USBIP-SETUP-019` | Sunshine 安装目录没有 scripts\usbip 载荷：它的安装程序运行时没选 USB/IP 组件（安装脚本总是会装，载荷只随组件装） | 不改动；在清理之前就停下，说明缺的是哪一部分，给出重新运行 Sunshine 安装程序并勾选 USB/IP 组件的步骤 | 无（不会改动） | 否 | 不适用 |
 | `pending-restart-cleanup` | `USBIP-CLEAN-006`、`cleanup_pending_restart` | 清理已被 Windows 接受，重启后才完成 | 说明原因并提供立即重启；同时保存计划（清理、检查），重启后继续；清理完成后要装的 USB/IP 要重新确认 | 确认重启；重启后若还要安装，再问一次 | 需要 | 重启后继续并检查 |
 | `pending-restart-install` | `USBIP-SETUP-015`、`install_pending_restart` | Windows 有待完成的重启，安装不能完成 | 说明原因并提供立即重启；同时保存计划（安装、检查），重启后自动继续安装 | 确认重启；重启前的安装请求已经是用户的决定 | 需要 | 重启后继续并检查 |
 | `reboot-recommended` | `reboot_recommended` | 安装器建议重启（退出码 3010） | 说明原因并提供立即重启；同时保存计划（检查），重启后做检查 | 确认重启 | 建议 | 重启后检查 |

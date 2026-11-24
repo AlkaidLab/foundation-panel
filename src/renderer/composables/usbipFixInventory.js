@@ -74,6 +74,11 @@ export const USBIP_FIX_INVENTORY = [
     status: { ...base, ready: false, externally_managed: true, replaceable: false, version_valid: false }, expect: { kind: 'blocked', reason: 'external', guide: 'external' },
   },
   {
+    id: 'unregistered-leftover', codes: ['USBIP-CLEAN-005'], detect: '设备树、服务或文件里有 usbip-win2 的残留，但没有任何卸载登记（别的工具自带的 usbip-win2 卸载后留下的）；「已安装的应用」里没有可卸载的项',
+    repair: '不改动；给出管理员终端里的手动清理步骤（pnputil /delete-driver、sc.exe delete、设备管理器），清完再修复', confirm: '无（不会改动）', reboot: '清理后需要', verify: '不适用',
+    status: { ...base, ready: false, externally_managed: true, replaceable: false, version_valid: false, unregistered_leftover: true }, expect: { kind: 'blocked', reason: 'leftover', guide: 'leftover' },
+  },
+  {
     id: 'external-stale-controller', codes: ['Multiple instances of VHCI device interface found'], detect: '外部安装可用，但旧版留下了多余的控制器', repair: '只移除多余的控制器（外部安装本身保留）',
     confirm: '移除多余控制器', reboot: '节点要等重启才删时', verify: VERIFY,
     status: { ...base, ready: false, externally_managed: true, vhci_residual: true, residual_kind: 'stale' }, expect: { kind: 'remove-stale', steps: ['remove-stale', 'verify'] },
@@ -81,6 +86,11 @@ export const USBIP_FIX_INVENTORY = [
   {
     id: 'external-compatible-healthy', codes: [], detect: '外部安装的 0.9.8.1，工具和驱动哈希一致，就绪', repair: '不需要；保留用户自己的安装', confirm: '无', reboot: '否', verify: '不适用',
     status: { ...base, externally_managed: true }, expect: { kind: 'healthy', steps: [] },
+  },
+  {
+    id: 'host-payload-missing', codes: ['USBIP-SETUP-019'], detect: 'Sunshine 安装目录没有 scripts\\usbip 载荷：它的安装程序运行时没选 USB/IP 组件（安装脚本总是会装，载荷只随组件装）',
+    repair: '不改动；在清理之前就停下，说明缺的是哪一部分，给出重新运行 Sunshine 安装程序并勾选 USB/IP 组件的步骤', confirm: '无（不会改动）', reboot: '否', verify: '不适用',
+    status: { ...base, installed: false, ready: false, host_payload_missing: true }, expect: { kind: 'blocked', reason: 'payload', guide: 'host-component' },
   },
   {
     id: 'pending-restart-cleanup', codes: ['USBIP-CLEAN-006', 'cleanup_pending_restart'], detect: '清理已被 Windows 接受，重启后才完成', repair: '说明原因并提供立即重启；同时保存计划（清理、检查），重启后继续；清理完成后要装的 USB/IP 要重新确认',
