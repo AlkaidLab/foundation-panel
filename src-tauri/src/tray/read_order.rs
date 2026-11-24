@@ -3,8 +3,13 @@
 //! Two things go wrong when readings run beside each other, and each has one rule here:
 //!   * a request that comes while a reading runs must not be lost when that reading ends: `Coalescer` is ONE atomic state, so "a request is noted" and "the reading ends" cannot pass each other;
 //!   * a reading that began before a slider was written must not replace one that began after it (and must not be shown after the write): `Latest` numbers the readings when they BEGIN and keeps
-//!     only the one that began last, never one that began before the last write finished.
+//!     only the one that began last, never one that began before the last write finished. A write holds the readings for its whole length (`hold` .. `release`): nothing that ends meanwhile is kept, and
+//!     the readings that began meanwhile are dropped too, because the system shows the new value only after it has settled;
+//!   * a state that was composed from an older reading must not be sent after one composed from a newer reading: every state carries the number of the reading it was made from (`Latest::snapshot`
+//!     gives it together with the value, under one lock), and `Outbox` sends a state only if it is not made from an older reading than the last one sent. States made from the same reading go out in the
+//!     order their composing began.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
@@ -59,11 +64,13 @@ pub(super) struct Latest<T> {
     kept: u64,
     /// how many readings were kept
     generation: u64,
+    /// slider writes that are under way: no reading is kept while there is one
+    holds: u32,
 }
 
 impl<T> Latest<T> {
     pub(super) const fn new() -> Self {
-        Latest { value: None, next: 1, floor: 0, kept: 0, generation: 0 }
+        Latest { value: None, next: 1, floor: 0, kept: 0, generation: 0, holds: 0 }
     }
 
     /// A reading begins: its number. Whatever it finds is as old as this moment.
@@ -75,7 +82,7 @@ impl<T> Latest<T> {
 
     /// A reading ended with `value`: kept (true) unless it began before the last write finished or a reading that began after it is kept already (false).
     pub(super) fn offer(&mut self, ticket: u64, value: T) -> bool {
-        if ticket < self.floor || ticket <= self.kept {
+        if self.holds > 0 || ticket < self.floor || ticket <= self.kept {
             return false;
         }
         self.kept = ticket;
@@ -84,9 +91,34 @@ impl<T> Latest<T> {
         true
     }
 
-    /// A write finished and its effect is in place: only readings that begin from now on show it.
-    pub(super) fn invalidate(&mut self) {
+    /// Only readings that begin from now on count: every reading that is under way holds what the write replaced, or what the system has not shown yet.
+    fn invalidate(&mut self) {
         self.floor = self.next;
+    }
+
+    /// A slider write begins (before the value is written): the readings that are under way are dropped, and so is everything that ends until `release`.
+    pub(super) fn hold(&mut self) {
+        self.holds += 1;
+        self.invalidate();
+    }
+
+    /// The write ended (its effect is in place, or it failed): only readings that begin from now on are kept.
+    pub(super) fn release(&mut self) {
+        self.holds = self.holds.saturating_sub(1);
+        self.invalidate();
+    }
+
+    /// A slider write is under way: the kept reading is not the state it will leave, so no state made from it is sent.
+    pub(super) fn writing(&self) -> bool {
+        self.holds > 0
+    }
+
+    /// The kept reading and its number (0: none is kept), taken together: a state made from the value says which reading it was made from.
+    pub(super) fn snapshot(&self) -> (Option<T>, u64)
+    where
+        T: Clone,
+    {
+        (self.value(), self.kept)
     }
 
     pub(super) fn generation(&self) -> u64 {
@@ -102,6 +134,46 @@ impl<T> Latest<T> {
 impl<T: Clone> Latest<T> {
     pub(super) fn value(&self) -> Option<T> {
         self.value.as_ref().map(|(value, _)| value.clone())
+    }
+}
+
+/// The order the states are sent to the menu in. A state is made from a reading (its number: `Latest::snapshot`, or the number a reading was kept under) and numbered when its composing begins. `deliver`
+/// sends it unless it is made from an older reading than the last state that was sent, or from the same reading and began composing before it: a state made from an older reading never lands after
+/// a newer one (the slider would jump back to the value it had), whatever the order the two paths took their numbers in.
+pub(super) struct Outbox(Mutex<OutboxState>);
+
+struct OutboxState {
+    /// the number the next state gets
+    next: u64,
+    /// (reading, number) of the last state that was sent
+    last: (u64, u64),
+}
+
+impl Outbox {
+    pub(super) const fn new() -> Self {
+        Outbox(Mutex::new(OutboxState { next: 1, last: (0, 0) }))
+    }
+
+    /// A state is about to be composed: its number.
+    pub(super) fn begin(&self) -> u64 {
+        let mut held = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let ticket = held.next;
+        held.next += 1;
+        ticket
+    }
+
+    /// Sends the state of `ticket`, made from the reading `reading`, with `send` (it returns whether it sent: a send that is held back changes nothing) unless a state that outranks it went out already.
+    /// Sends are one at a time, in the order they get here.
+    pub(super) fn deliver(&self, ticket: u64, reading: u64, send: impl FnOnce() -> bool) -> bool {
+        let mut held = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if (reading, ticket) <= held.last {
+            return false;
+        }
+        let sent = send();
+        if sent {
+            held.last = (reading, ticket);
+        }
+        sent
     }
 }
 
@@ -216,6 +288,187 @@ mod tests {
         assert!(latest.offer(after, "after"));
         assert_eq!(latest.value(), Some("after"));
         assert_eq!(latest.generation(), 2);
+    }
+
+    #[test]
+    fn a_reading_that_ends_during_the_settle_time_is_not_kept_though_it_began_before_the_write() {
+        let mut latest = Latest::new();
+        let before = latest.begin();
+        latest.hold(); // the write begins
+        // the value is written, the system is settling: the reading from before ends now with the old value
+        assert!(latest.writing());
+        assert!(!latest.offer(before, "slider at the old value"));
+        assert_eq!(latest.value(), None);
+        latest.release();
+        assert!(!latest.writing());
+        let after = latest.begin();
+        assert!(latest.offer(after, "slider at the new value"));
+    }
+
+    #[test]
+    fn a_reading_that_begins_while_the_system_settles_is_dropped_too() {
+        let mut latest = Latest::new();
+        latest.hold();
+        // it began after the value was written but before the system showed it: it may read the old one
+        let during = latest.begin();
+        assert!(!latest.offer(during, "settling"), "ended during the hold");
+        let during_late = latest.begin();
+        latest.release();
+        assert!(!latest.offer(during_late, "settling"), "ended after the release, began before it");
+        let after = latest.begin();
+        assert!(latest.offer(after, "settled"));
+        assert_eq!(latest.value(), Some("settled"));
+    }
+
+    #[test]
+    fn two_writes_hold_until_both_are_released() {
+        let mut latest: Latest<u8> = Latest::new();
+        latest.hold();
+        latest.hold();
+        latest.release();
+        assert!(latest.writing(), "the second write is still under way");
+        let t = latest.begin();
+        assert!(!latest.offer(t, 1));
+        latest.release();
+        assert!(!latest.writing());
+        latest.release(); // a release too many does not hold the readings for ever
+        assert!(!latest.writing());
+        let t = latest.begin();
+        assert!(latest.offer(t, 2));
+    }
+
+    #[test]
+    fn a_state_composed_from_an_older_reading_is_not_sent_after_a_newer_one() {
+        let outbox = Outbox::new();
+        // a background push begins composing from the old reading; the write ends and its state begins composing, and is sent first
+        let background = outbox.begin();
+        let after_write = outbox.begin();
+        let mut sent = Vec::new();
+        assert!(outbox.deliver(after_write, 2, || {
+            sent.push("new");
+            true
+        }));
+        assert!(
+            !outbox.deliver(background, 1, || {
+                sent.push("old");
+                true
+            }),
+            "the older state arrives last and is dropped"
+        );
+        assert_eq!(sent, ["new"]);
+        // the order the other way round is the normal one: both go out
+        let first = outbox.begin();
+        let second = outbox.begin();
+        assert!(outbox.deliver(first, 3, || true));
+        assert!(outbox.deliver(second, 4, || true));
+    }
+
+    #[test]
+    fn a_state_made_from_an_older_reading_is_dropped_though_it_took_a_later_number() {
+        // the order the review found: the state after a write keeps its reading (1), a background reading (2) is kept and sent at once, and only then does the first take its number
+        let outbox = Outbox::new();
+        let background = outbox.begin();
+        assert!(outbox.deliver(background, 2, || true), "the newer reading went out first");
+        let after_write = outbox.begin();
+        assert!(after_write > background, "it took the later number");
+        assert!(!outbox.deliver(after_write, 1, || panic!("sent the state of the older reading")), "its reading is older than the one that went out");
+        // a state made from the newer reading still goes out afterwards
+        let next = outbox.begin();
+        assert!(outbox.deliver(next, 2, || true));
+    }
+
+    #[test]
+    fn states_made_from_the_same_reading_go_out_in_the_order_their_composing_began() {
+        let outbox = Outbox::new();
+        let first = outbox.begin();
+        let second = outbox.begin();
+        assert!(outbox.deliver(second, 5, || true));
+        assert!(!outbox.deliver(first, 5, || true), "same reading, began before the one that went out");
+        let third = outbox.begin();
+        assert!(outbox.deliver(third, 5, || true));
+    }
+
+    #[test]
+    fn a_send_that_is_held_back_does_not_count_as_sent() {
+        let outbox = Outbox::new();
+        let held = outbox.begin();
+        let later = outbox.begin();
+        assert!(!outbox.deliver(later, 2, || false), "a write is under way: nothing was sent");
+        assert!(outbox.deliver(held, 1, || true), "the earlier state is still the newest that went out");
+    }
+
+    #[test]
+    fn a_send_that_runs_cannot_be_overtaken_by_another_send() {
+        // the send of one state is finished before the next one starts: while it runs, another thread's delivery waits for the lock
+        use std::sync::Arc;
+        use std::sync::mpsc;
+        let outbox = Arc::new(Outbox::new());
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let first = outbox.begin();
+        let second = outbox.begin();
+        let slow_sender = {
+            let outbox = outbox.clone();
+            std::thread::spawn(move || {
+                outbox.deliver(first, 1, || {
+                    inside_tx.send(()).unwrap();
+                    go_rx.recv().unwrap();
+                    true
+                })
+            })
+        };
+        inside_rx.recv().unwrap(); // the first send is under way
+        let waiting = {
+            let outbox = outbox.clone();
+            std::thread::spawn(move || outbox.deliver(second, 1, || true))
+        };
+        go_tx.send(()).unwrap();
+        assert!(slow_sender.join().unwrap());
+        assert!(waiting.join().unwrap(), "the later state goes out after the earlier one, not before it");
+    }
+
+    #[test]
+    fn states_sent_from_many_threads_never_go_out_in_an_older_order() {
+        use std::sync::Arc;
+        let outbox = Arc::new(Outbox::new());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut threads = Vec::new();
+        for thread in 0..4u64 {
+            let (outbox, log) = (outbox.clone(), log.clone());
+            threads.push(std::thread::spawn(move || {
+                for round in 0..5_000u64 {
+                    let ticket = outbox.begin();
+                    // the reading it is made from is not the order of the numbers: the threads see readings in turns
+                    let reading = (round + thread) / 3;
+                    outbox.deliver(ticket, reading, || {
+                        log.lock().unwrap().push((reading, ticket));
+                        true
+                    });
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        let log = log.lock().unwrap();
+        assert!(log.windows(2).all(|w| w[0] < w[1]), "a state went out after one that outranks it");
+    }
+
+    #[test]
+    fn a_snapshot_names_the_reading_its_value_is_from() {
+        let mut latest = Latest::new();
+        assert_eq!(latest.snapshot(), (None, 0));
+        let first = latest.begin();
+        let second = latest.begin();
+        assert!(latest.offer(second, "second"));
+        assert_eq!(latest.snapshot(), (Some("second"), second));
+        assert!(!latest.offer(first, "first"), "an older reading changes neither the value nor its number");
+        assert_eq!(latest.snapshot(), (Some("second"), second));
+        // a write holds the readings: the snapshot is still the kept one, and the number stays that of its reading
+        latest.hold();
+        let during = latest.begin();
+        assert!(!latest.offer(during, "during"));
+        assert_eq!(latest.snapshot(), (Some("second"), second));
     }
 
     #[test]

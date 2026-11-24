@@ -16,7 +16,7 @@ use crate::menu_place::Rect as PhysRect;
 use crate::dpi_scale_core::ScaleRange;
 use crate::tray_prefs::{self, Action, ClickGate, Decision, Gesture, Variant};
 use serde_json::{Value, json};
-use super::read_order::{self, Basis, Coalescer, Latest};
+use super::read_order::{self, Basis, Coalescer, Latest, Outbox};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use tauri::menu::Menu;
 
@@ -242,8 +242,27 @@ pub(super) fn push_state_if_open() {
 /// Sends the state of now (in-memory facts and the last reading) to the menu that is on screen, if any. Never waits for anything.
 fn push_now_if_open(app: &AppHandle) {
     if ctx_popup::tray_menu_open() {
-        ctx_popup::update_tray_state(app, state_now(app));
+        // numbered before it is composed, and it says which reading it is made from: a state made from an older reading is dropped when a newer one went out first (`Outbox`)
+        let ticket = OUTBOX.begin();
+        let (state, reading) = state_of_kept_reading(app);
+        deliver_state(app, ticket, reading, state);
     }
+}
+
+/// Sends a state composed after `ticket` began and made from the reading `reading`, in order (`Outbox`). While a slider is being written nothing is sent: what is kept is what the write replaces, and the
+/// state after the write follows. The check and the send are done under one hold of `SLOW`: a write that began before is seen, and one that begins now (`WriteHold::new` takes `SLOW` first) waits until the
+/// state is sent, so a state is never sent after a write has begun. Nothing in the send takes `SLOW` or waits for anything (it queues an event for the page), and the lock order is always `OUTBOX`, `SLOW`, the
+/// menu's own state.
+fn deliver_state(app: &AppHandle, ticket: u64, reading: u64, state: Value) -> bool {
+    OUTBOX.deliver(ticket, reading, || {
+        let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner());
+        if slow.writing() {
+            return false;
+        }
+        ctx_popup::update_tray_state(app, state);
+        drop(slow);
+        true
+    })
 }
 
 /// The pointer is on the icon: a reading older than this is made again now, so the click that follows finds a fresh one (a touch has no hover: its menu opens from the last reading and is corrected in place).
@@ -371,6 +390,8 @@ impl Default for Slow {
 static SLOW: Mutex<Latest<Slow>> = Mutex::new(Latest::new());
 /// One reader in the background at a time; a request that comes while it runs makes it read once more (what changed meanwhile is read too), and a request never waits on a reader that has ended.
 static READER: Coalescer = Coalescer::new();
+/// The order the states go to the menu in: one composed from an older reading never follows one composed from a newer one.
+static OUTBOX: Outbox = Outbox::new();
 /// The display the sliders of the menu on screen were drawn for (GDI device name), as of the last state sent to it: a slider write is for this display or for none.
 static SHOWN_TARGET: Mutex<Option<String>> = Mutex::new(None);
 
@@ -464,19 +485,42 @@ pub(super) fn refresh_in_background(app: &AppHandle) {
 
 /// The state for a menu NOW, with nothing awaited: what the native menu knows (in memory) and the last reading of the slow facts. The streams of an old reading are not trusted when the core says nothing streams.
 pub(super) fn state_now(app: &AppHandle) -> Value {
-    let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner()).value().unwrap_or_default();
-    compose_state(app, &slow, false)
+    state_of_kept_reading(app).0
 }
 
-/// The state, read afresh (after a slider was set: what the display has now). It is numbered like every other reading: when a later one is kept already, that one is the state.
-pub(super) async fn build_state(app: &AppHandle) -> Value {
-    let ticket = begin_reading();
-    let slow = read_slow().await;
-    if keep(ticket, slow.clone()) {
-        compose_state(app, &slow, true)
-    } else {
-        state_now(app)
+/// `state_now` and the number of the reading it is made from (0: none is kept yet), taken under one lock.
+fn state_of_kept_reading(app: &AppHandle) -> (Value, u64) {
+    let (slow, reading) = SLOW.lock().unwrap_or_else(|p| p.into_inner()).snapshot();
+    (compose_state(app, &slow.unwrap_or_default(), false), reading)
+}
+
+/// A slider write is under way (from before the value is written until the system has settled): no reading is kept and no state is sent, because everything that began or was kept meanwhile may hold the
+/// value the write replaces. Dropping it ends the write; readings that begin after that are the ones that count.
+struct WriteHold;
+
+impl WriteHold {
+    fn new() -> Self {
+        SLOW.lock().unwrap_or_else(|p| p.into_inner()).hold();
+        WriteHold
     }
+}
+
+impl Drop for WriteHold {
+    fn drop(&mut self) {
+        SLOW.lock().unwrap_or_else(|p| p.into_inner()).release();
+    }
+}
+
+/// Reads the state afresh after a slider was set (what the display has now) and sends it. The reading is numbered like every other: when a later one is kept already, that one is the state. The state
+/// is numbered after the reading is kept, so a state that another path began composing from the older reading cannot take its place.
+async fn push_fresh_state(app: &AppHandle) {
+    let reading = begin_reading();
+    let slow = read_slow().await;
+    let kept = keep(reading, slow.clone());
+    let ticket = OUTBOX.begin();
+    // the state says which reading it is made from: a newer reading that was kept and sent in the gap between `keep` and the number above is not overtaken by this one
+    let (state, made_from) = if kept { (compose_state(app, &slow, true), reading) } else { state_of_kept_reading(app) };
+    deliver_state(app, ticket, made_from, state);
 }
 
 /// The streams of a reading, when they can be shown: the core is connected, and the reading is fresh or the core says a session is on, streaming or paused (an old reading says "streaming" long after the stream ended).
@@ -750,21 +794,22 @@ pub(super) async fn set(app: &AppHandle, key: &str, value: &Value) -> Result<Val
         return Err("菜单已经关闭".to_string());
     }
     let shown = SHOWN_TARGET.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    // from before the value is written until the system has shown it, a reading that ends is not kept and no state is sent: a reading that began before the write holds the value it replaces, one that
+    // began during the settle time may still read it, and what a reading kept earlier says is the same
+    let hold = WriteHold::new();
     let (settle, notice) = match write_slider(key, value, Some(shown)).await {
         Ok(done) => done,
         Err(e) => {
-            if e == TARGET_CHANGED {
-                // the menu shows a display that is not the target now: it gets the state of now
-                refresh_in_background(app);
-            }
+            // nothing was written (or not all of it): the menu gets the state of now, from a reading that begins now (the target may be another display than the one on screen)
+            drop(hold);
+            refresh_in_background(app);
             return Err(e);
         }
     };
     tokio::time::sleep(settle).await;
     *OUTPUT_CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None; // what the display has now, not what it had
-    // a reading that began before this moment may hold the value the write replaced: it is not kept and not shown, whenever it ends
-    SLOW.lock().unwrap_or_else(|p| p.into_inner()).invalidate();
-    ctx_popup::update_tray_state(app, build_state(app).await);
+    drop(hold);
+    push_fresh_state(app).await;
     Ok(notice)
 }
 
@@ -857,7 +902,7 @@ pub(super) async fn set_layout(app: &AppHandle, tiles: Option<Vec<String>>, slid
         return Err("菜单已经关闭".to_string());
     }
     tray_prefs::save_layout(tiles, sliders)?;
-    ctx_popup::update_tray_state(app, state_now(app));
+    push_now_if_open(app);
     Ok(())
 }
 
@@ -1085,14 +1130,41 @@ mod tests {
     fn the_state_after_a_slider_write_is_ordered_after_every_reading_that_began_before_it() {
         let src = include_str!("popup_input.rs");
         let set_fn = &src[src.find("pub(super) async fn set(").unwrap()..src.find("// ---- the native menu's stepped sliders").unwrap()];
-        let invalidate = set_fn.find(".invalidate()").expect("a write does not invalidate the readings that began before it");
-        let state = set_fn.find("build_state(app)").unwrap();
-        assert!(invalidate < state, "the readings that began before the write are invalidated after the state is read");
-        // every reading takes a number when it begins, and the background reader and `build_state` both keep through it
+        // the readings are held from BEFORE the value is written until the system has settled, not only when it has
+        let hold = set_fn.find("WriteHold::new()").expect("a write does not hold the readings");
+        let write = set_fn.find("write_slider(key").unwrap();
+        let settle = set_fn.find("tokio::time::sleep(settle)").unwrap();
+        let release = set_fn.rfind("drop(hold)").expect("the hold is not ended");
+        let state = set_fn.find("push_fresh_state(app)").unwrap();
+        assert!(hold < write, "the readings that are under way are dropped only after the value was written");
+        assert!(write < settle && settle < release, "the readings are released before the system has settled");
+        assert!(release < state, "the state after the write is read while the readings are still held");
+        // every reading takes a number when it begins, and the background reader and the state after a write both keep through it
         let reading = &src[src.find("pub(super) fn refresh_in_background").unwrap()..src.find("/// The streams of a reading, when they can be shown").unwrap()];
         assert_eq!(reading.matches("begin_reading()").count(), 2);
-        assert_eq!(reading.matches("keep(ticket").count(), 2);
+        assert_eq!(reading.matches("keep(ticket").count() + reading.matches("keep(reading").count(), 2);
         assert!(!src.contains(&format!("fn keep(slo{}", "w")), "a reading is kept without its number again");
+    }
+
+    #[test]
+    fn every_state_that_goes_to_the_menu_goes_through_the_outbox_so_an_older_one_cannot_land_late() {
+        let src = include_str!("popup_input.rs");
+        let production = &src[..src.find("#[cfg(test)]").unwrap()];
+        // the only call that sends a state to the page is the one in `deliver_state`
+        assert_eq!(production.matches("update_tray_state(").count(), 1);
+        let deliver = &production[production.find("fn deliver_state").unwrap()..production.find("/// The pointer is on the icon").unwrap()];
+        assert!(deliver.contains("OUTBOX.deliver(") && deliver.contains(".writing()"));
+        // a state is numbered before the reading it is made from is looked at, never after it, and it carries the number of that reading
+        let push = &production[production.find("fn push_now_if_open").unwrap()..production.find("fn deliver_state").unwrap()];
+        assert!(push.find("OUTBOX.begin()").unwrap() < push.find("state_of_kept_reading(app)").unwrap());
+        let fresh = &production[production.find("async fn push_fresh_state").unwrap()..production.find("/// The streams of a reading, when they can be shown").unwrap()];
+        assert!(fresh.find("keep(reading").unwrap() < fresh.find("OUTBOX.begin()").unwrap() && fresh.find("OUTBOX.begin()").unwrap() < fresh.find("compose_state(").unwrap());
+        assert!(fresh.contains("deliver_state(app, ticket, made_from, state)"), "the state after a write does not say which reading it is made from");
+        // the check for a write under way and the send are under one hold of `SLOW`
+        let deliver = &production[production.find("fn deliver_state").unwrap()..production.find("/// The pointer is on the icon").unwrap()];
+        let held = deliver.find("let slow = SLOW.lock()").expect("the hold of SLOW is not kept across the send");
+        assert!(held < deliver.find("slow.writing()").unwrap() && deliver.find("slow.writing()").unwrap() < deliver.find("update_tray_state(").unwrap() && deliver.find("update_tray_state(").unwrap() < deliver.find("drop(slow)").unwrap());
+        assert!(!deliver.contains("SLOW.lock().unwrap_or_else(|p| p.into_inner()).writing()"), "the check lets go of SLOW before the send");
     }
 
     #[test]
