@@ -100,7 +100,7 @@ test('the sliders: tray_popup_set is registered, its answer reaches the page (a 
   await assert.rejects(() => refused.set(7, 'refresh', 144), /显示器不支持这个模式/)
   for (const key of ['resolution', 'refresh', 'dpi', 'bitrate']) assert.ok(inputRs.includes(`"${key}" =>`), `popup_input::set has no arm for ${key}`)
   // the host is the one that writes: the same lock and config round trip as the other config writers, DisplayConfig (dpi_scale::set_scale) for the scale, Win32 for the modes
-  assert.match(inputRs, /DEVICE_CONFIG_LOCK[\s\S]*read_full_sunshine_config[\s\S]*post_sunshine_config/); assert.ok(inputRs.includes('crate::dpi_scale::set_scale(scale_display().await, dpi)'))
+  assert.match(inputRs, /DEVICE_CONFIG_LOCK[\s\S]*read_full_sunshine_config[\s\S]*post_sunshine_config/); assert.ok(inputRs.includes('crate::dpi_scale::set_scale(device, dpi)') && inputRs.includes('let device = scale_display().await;'))
   assert.ok(sliderRs.includes('ChangeDisplaySettingsExW') && sliderRs.includes('CDS_TEST') && sliderRs.includes('EnumDisplaySettingsExW'))
   // the page sends exactly the keys the model draws
   assert.deepEqual([...SLIDER_KEYS], ['resolution', 'refresh', 'dpi', 'bitrate'])
@@ -137,7 +137,7 @@ test('the sliders are in all three menus from one list, and the native menu has 
   }
   const menuRs = read('src-tauri/src/tray/menu.rs'), prefsRs = read('src-tauri/src/tray_prefs.rs')
   // one writer: the quick page and the native steps both end in write_slider (the config key max_bitrate, the display's scale through DisplayConfig)
-  assert.match(inputRs, /async fn write_slider\(key: &str, value: &Value\)/); assert.match(inputRs, /let \(settle, notice\) = write_slider\(key, value\)\.await\?;/); assert.match(inputRs, /match write_slider\(key, &json!\(value\)\)\.await/)
+  assert.match(inputRs, /async fn write_slider\(key: &str, value: &Value, shown: Option<Option<String>>\)/); assert.match(inputRs, /write_slider\(key, value, Some\(shown\)\)\.await/); assert.match(inputRs, /match write_slider\(key, &json!\(value\), None\)\.await/)
   // the steps: the menu builds ids the handler parses; the labels are in three languages
   assert.match(menuRs, /format!\("slider_bitrate_\{mbps\}"\)/); assert.match(menuRs, /format!\("slider_dpi_\{pct\}"\)/)
   assert.match(menuRs, /popup_input::native_slider_keys\(\)/); assert.match(actionsRs, /_ if popup_input::native_slider_event\(app, menu_id\) => \{\}/)

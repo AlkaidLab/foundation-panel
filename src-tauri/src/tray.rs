@@ -26,6 +26,7 @@ mod main_panel;
 mod menu;
 mod notifications;
 pub(crate) mod popup_input;
+mod read_order;
 #[cfg(target_os = "windows")]
 mod touch_menu;
 #[cfg(target_os = "windows")]
@@ -1464,6 +1465,11 @@ pub fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
 pub(crate) fn menu_window_loaded<R: Runtime>(app: &AppHandle<R>) {
     popup_input::reset_failures();
     popup_input::apply_menu_mode(app);
+}
+
+/// The menu window can show menus: the slow facts of the state (streams, displays, controller, start-up, RTSS) are read once now, so the first menu opens from a reading and not from nothing.
+pub(crate) fn warm_menu_state(app: &AppHandle) {
+    popup_input::refresh_in_background(app);
 }
 
 /// The icon carries the native menu or none, as the settings and the state of the menu window say (see popup_input.rs).
