@@ -242,19 +242,25 @@ pub(super) fn push_state_if_open() {
 /// Sends the state of now (in-memory facts and the last reading) to the menu that is on screen, if any. Never waits for anything.
 fn push_now_if_open(app: &AppHandle) {
     if ctx_popup::tray_menu_open() {
-        // numbered before it is composed: a state made from an older reading is dropped when a newer one went out first (`Outbox`)
+        // numbered before it is composed, and it says which reading it is made from: a state made from an older reading is dropped when a newer one went out first (`Outbox`)
         let ticket = OUTBOX.begin();
-        deliver_state(app, ticket, state_now(app));
+        let (state, reading) = state_of_kept_reading(app);
+        deliver_state(app, ticket, reading, state);
     }
 }
 
-/// Sends a state composed after `ticket` began, in order (`Outbox`). While a slider is being written nothing is sent: what is kept is what the write replaces, and the state after the write follows.
-fn deliver_state(app: &AppHandle, ticket: u64, state: Value) -> bool {
-    OUTBOX.deliver(ticket, || {
-        if SLOW.lock().unwrap_or_else(|p| p.into_inner()).writing() {
+/// Sends a state composed after `ticket` began and made from the reading `reading`, in order (`Outbox`). While a slider is being written nothing is sent: what is kept is what the write replaces, and the
+/// state after the write follows. The check and the send are done under one hold of `SLOW`: a write that began before is seen, and one that begins now (`WriteHold::new` takes `SLOW` first) waits until the
+/// state is sent, so a state is never sent after a write has begun. Nothing in the send takes `SLOW` or waits for anything (it queues an event for the page), and the lock order is always `OUTBOX`, `SLOW`, the
+/// menu's own state.
+fn deliver_state(app: &AppHandle, ticket: u64, reading: u64, state: Value) -> bool {
+    OUTBOX.deliver(ticket, reading, || {
+        let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner());
+        if slow.writing() {
             return false;
         }
         ctx_popup::update_tray_state(app, state);
+        drop(slow);
         true
     })
 }
@@ -479,8 +485,13 @@ pub(super) fn refresh_in_background(app: &AppHandle) {
 
 /// The state for a menu NOW, with nothing awaited: what the native menu knows (in memory) and the last reading of the slow facts. The streams of an old reading are not trusted when the core says nothing streams.
 pub(super) fn state_now(app: &AppHandle) -> Value {
-    let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner()).value().unwrap_or_default();
-    compose_state(app, &slow, false)
+    state_of_kept_reading(app).0
+}
+
+/// `state_now` and the number of the reading it is made from (0: none is kept yet), taken under one lock.
+fn state_of_kept_reading(app: &AppHandle) -> (Value, u64) {
+    let (slow, reading) = SLOW.lock().unwrap_or_else(|p| p.into_inner()).snapshot();
+    (compose_state(app, &slow.unwrap_or_default(), false), reading)
 }
 
 /// A slider write is under way (from before the value is written until the system has settled): no reading is kept and no state is sent, because everything that began or was kept meanwhile may hold the
@@ -507,8 +518,9 @@ async fn push_fresh_state(app: &AppHandle) {
     let slow = read_slow().await;
     let kept = keep(reading, slow.clone());
     let ticket = OUTBOX.begin();
-    let state = if kept { compose_state(app, &slow, true) } else { state_now(app) };
-    deliver_state(app, ticket, state);
+    // the state says which reading it is made from: a newer reading that was kept and sent in the gap between `keep` and the number above is not overtaken by this one
+    let (state, made_from) = if kept { (compose_state(app, &slow, true), reading) } else { state_of_kept_reading(app) };
+    deliver_state(app, ticket, made_from, state);
 }
 
 /// The streams of a reading, when they can be shown: the core is connected, and the reading is fresh or the core says a session is on, streaming or paused (an old reading says "streaming" long after the stream ended).
@@ -1142,11 +1154,17 @@ mod tests {
         assert_eq!(production.matches("update_tray_state(").count(), 1);
         let deliver = &production[production.find("fn deliver_state").unwrap()..production.find("/// The pointer is on the icon").unwrap()];
         assert!(deliver.contains("OUTBOX.deliver(") && deliver.contains(".writing()"));
-        // a state is numbered before the reading it is made from is looked at, never after it
+        // a state is numbered before the reading it is made from is looked at, never after it, and it carries the number of that reading
         let push = &production[production.find("fn push_now_if_open").unwrap()..production.find("fn deliver_state").unwrap()];
-        assert!(push.find("OUTBOX.begin()").unwrap() < push.find("state_now(app)").unwrap());
+        assert!(push.find("OUTBOX.begin()").unwrap() < push.find("state_of_kept_reading(app)").unwrap());
         let fresh = &production[production.find("async fn push_fresh_state").unwrap()..production.find("/// The streams of a reading, when they can be shown").unwrap()];
         assert!(fresh.find("keep(reading").unwrap() < fresh.find("OUTBOX.begin()").unwrap() && fresh.find("OUTBOX.begin()").unwrap() < fresh.find("compose_state(").unwrap());
+        assert!(fresh.contains("deliver_state(app, ticket, made_from, state)"), "the state after a write does not say which reading it is made from");
+        // the check for a write under way and the send are under one hold of `SLOW`
+        let deliver = &production[production.find("fn deliver_state").unwrap()..production.find("/// The pointer is on the icon").unwrap()];
+        let held = deliver.find("let slow = SLOW.lock()").expect("the hold of SLOW is not kept across the send");
+        assert!(held < deliver.find("slow.writing()").unwrap() && deliver.find("slow.writing()").unwrap() < deliver.find("update_tray_state(").unwrap() && deliver.find("update_tray_state(").unwrap() < deliver.find("drop(slow)").unwrap());
+        assert!(!deliver.contains("SLOW.lock().unwrap_or_else(|p| p.into_inner()).writing()"), "the check lets go of SLOW before the send");
     }
 
     #[test]
