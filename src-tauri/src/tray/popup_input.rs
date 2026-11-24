@@ -322,6 +322,7 @@ pub(super) fn labels(s: &TrayStrings) -> Value {
 
 /// The state of the host for a menu: what the native menu knows (menu.rs) and what it does not show (streams, display mode, update, DS5).
 pub(super) async fn build_state(app: &AppHandle) -> Value {
+    let started = std::time::Instant::now();
     let s = get_tray_strings();
     let locale = get_current_locale();
     let (tray_state, connection, _) = TRAY_RUNTIME_STATE.lock().unwrap_or_else(|p| p.into_inner()).menu_snapshot();
@@ -359,7 +360,9 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
         None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
         None => None,
     };
+    let live_ms = started.elapsed().as_millis();
     let sliders = slider_state(connected, vdd_active, stream).await;
+    let sliders_ms = started.elapsed().as_millis() - live_ms;
     let notification = tray_state.as_ref().filter(|state| state.notification.active).map(|state| menu::tray_notification_label(s, state));
     let update_version = update::last_seen_update();
     #[cfg(target_os = "windows")]
@@ -368,6 +371,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
     let (auto_start, user_mode) = (false, false);
 
     let prefs = tray_prefs::current();
+    info!("[traylat] state built in {} ms (live {} ms, sliders {} ms, rest {} ms)", started.elapsed().as_millis(), live_ms, sliders_ms, started.elapsed().as_millis() - live_ms - sliders_ms);
     json!({
         "locale": locale,
         "connection": match connection { CoreConnectionState::Connected => "connected", CoreConnectionState::Connecting => "connecting", CoreConnectionState::Disconnected => "disconnected" },
