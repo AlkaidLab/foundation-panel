@@ -9,7 +9,6 @@ use axum::{
 use bytes::Bytes;
 use futures_util::StreamExt;
 use log::{debug, error, info, warn};
-use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -871,6 +870,109 @@ fn ai_proxy_error_response(error_kind: &str, error: &str) -> Response {
     proxy_error_response(true, status, message, Some(error))
 }
 
+/// The failure of the request that followed a failed HTTPS request (the host does not speak TLS?): kept apart so the log says the fallback was the one that failed.
+#[derive(Debug)]
+struct HttpFallbackFailed {
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for HttpFallbackFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP fallback failed")
+    }
+}
+
+impl std::error::Error for HttpFallbackFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+fn credential_failure_of(error: &(dyn std::error::Error + 'static)) -> Option<crate::local_credential::CredentialFailure> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if let Some(credential) = error.downcast_ref::<crate::local_credential::CredentialError>() {
+            return Some(credential.failure);
+        }
+        current = error.source();
+    }
+    None
+}
+
+/// A failed request as the log needs it: the whole chain as text, the cause in one word, and whether it is the failure of the HTTP fallback.
+struct ProxyFailure {
+    text: String,
+    kind: crate::proxy_failure::ProxyFailureKind,
+    http_fallback: bool,
+}
+
+impl ProxyFailure {
+    fn of(error: &(dyn std::error::Error + 'static)) -> Self {
+        let text = error_chain(error);
+        let (mut client_timeout, mut client_connect, mut http_fallback) = (false, false, false);
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(error) = current {
+            if let Some(client) = error.downcast_ref::<reqwest::Error>() {
+                client_timeout |= client.is_timeout();
+                client_connect |= client.is_connect();
+            }
+            http_fallback |= error.downcast_ref::<HttpFallbackFailed>().is_some();
+            current = error.source();
+        }
+        let kind = crate::proxy_failure::classify(&crate::proxy_failure::FailureFacts {
+            chain: &text,
+            client_timeout,
+            client_connect,
+            credential: credential_failure_of(error),
+        });
+        Self { text, kind, http_fallback }
+    }
+}
+
+/// Where and since when a request ran, for the line that says why a page was answered with the offline page.
+struct OfflineContext {
+    target: String,
+    path: String,
+    started: std::time::Instant,
+}
+
+/// The one line that says why the offline page was answered (throttled to one a minute per page and cause).
+fn log_offline_page(line: &crate::proxy_failure::OfflineLine<'_>) {
+    use std::sync::{LazyLock, Mutex};
+    static SEEN: LazyLock<Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>> =
+        LazyLock::new(Default::default);
+    let decision = SEEN
+        .lock()
+        .ok()
+        .and_then(|mut seen| throttle_log(&mut seen, &line.key(), std::time::Instant::now()));
+    match decision {
+        Some(0) => warn!("{}", line.text()),
+        Some(left_out) => warn!("{} (另有 {} 次同类未记录)", line.text(), left_out),
+        None => {}
+    }
+}
+
+fn answer_offline(
+    is_ai_api: bool,
+    is_api: bool,
+    error_kind: &str,
+    failure: &ProxyFailure,
+    context: &OfflineContext,
+) -> Response {
+    // an API call gets its JSON error and the AI entry its own answer; the offline page is the answer to a page request
+    if !is_api && !is_ai_api {
+        log_offline_page(&crate::proxy_failure::OfflineLine {
+            kind: failure.kind,
+            target: &context.target,
+            path: &context.path,
+            elapsed_ms: Some(context.started.elapsed().as_millis() as u64),
+            http_fallback: failure.http_fallback,
+            since_refusal_s: None,
+        });
+    }
+    connection_failure_response(is_ai_api, is_api, error_kind, &failure.text)
+}
+
 fn connection_failure_response(
     is_ai_api: bool,
     is_api: bool,
@@ -1174,10 +1276,25 @@ async fn proxy_handler(req: Request) -> Response {
     // AI 入口除外：它是用户显式触发的共享代理能力，需要真实尝试一次，
     // 否则会因为旧的全局不可用状态误报 "Sunshine service is unavailable"。
     if !is_ai_api && should_fast_fail() {
+        if !is_api {
+            log_offline_page(&crate::proxy_failure::OfflineLine {
+                kind: crate::proxy_failure::ProxyFailureKind::FastFail,
+                target: &crate::proxy_failure::origin_of(&target_url),
+                path: &crate::proxy_failure::path_of(&target_url),
+                elapsed_ms: None,
+                http_fallback: false,
+                since_refusal_s: Some(current_timestamp().saturating_sub(LAST_CHECK_TIME.load(Ordering::Relaxed))),
+            });
+        }
         return service_unavailable_response(is_api);
     }
 
     // 请求 Sunshine
+    let offline = OfflineContext {
+        target: crate::proxy_failure::origin_of(&target_url),
+        path: crate::proxy_failure::path_of(&target_url),
+        started: std::time::Instant::now(),
+    };
     match fetch_and_proxy(&target_url, &method, &headers, &body, is_ai_api).await {
         Ok(response) => {
             mark_available();
@@ -1207,7 +1324,8 @@ async fn proxy_handler(req: Request) -> Response {
             response
         }
         Err(e) => {
-            let error_str = error_chain(&*e);
+            let failure = ProxyFailure::of(&*e);
+            let error_str = failure.text.clone();
             let error_kind = proxy_error_kind(&error_str);
             if long_poll_timeout(&method, &target_url).is_some() && is_timeout_error(&error_str) {
                 // Sunshine did not answer within the wait it was given: the page asks again; the service is not marked unavailable and the target is not refreshed
@@ -1219,6 +1337,16 @@ async fn proxy_handler(req: Request) -> Response {
                     .into_response();
             }
             log_proxy_failure(&path, error_kind, &error_str);
+
+            if matches!(failure.kind, crate::proxy_failure::ProxyFailureKind::Credential(_)) {
+                // The credential cannot be read: the request never reached the host, so the host is not proven away (no cooldown, no new target). The readiness handshake asks again.
+                // A page request is answered with the offline page, which the panel reloads as soon as the host answers (the log line names the credential failure); an API call keeps its
+                // JSON error with the detail.
+                host_not_ready();
+                if !is_api && !is_ai_api {
+                    return answer_offline(is_ai_api, is_api, error_kind, &failure, &offline);
+                }
+            }
 
             if is_connection_error(&error_str) {
                 match refresh_sunshine_target_internal().await {
@@ -1237,28 +1365,28 @@ async fn proxy_handler(req: Request) -> Response {
                                 response
                             }
                             Err(retry_err) => {
-                                let retry_error = retry_err.to_string();
-                                let retry_kind = proxy_error_kind(&retry_error);
+                                let retry_failure = ProxyFailure::of(&*retry_err);
+                                let retry_kind = proxy_error_kind(&retry_failure.text);
                                 error!(
                                     "Proxy retry failed [{}] ({}): {}",
-                                    path, retry_kind, retry_error
+                                    path, retry_kind, retry_failure.text
                                 );
-                                connection_failure_response(
-                                    is_ai_api,
-                                    is_api,
-                                    retry_kind,
-                                    &retry_error,
-                                )
+                                let retry_context = OfflineContext {
+                                    target: crate::proxy_failure::origin_of(&refreshed_url),
+                                    path: offline.path.clone(),
+                                    started: offline.started,
+                                };
+                                answer_offline(is_ai_api, is_api, retry_kind, &retry_failure, &retry_context)
                             }
                         }
                     }
-                    Ok(_) => connection_failure_response(is_ai_api, is_api, error_kind, &error_str),
+                    Ok(_) => answer_offline(is_ai_api, is_api, error_kind, &failure, &offline),
                     Err(refresh_err) => {
                         warn!(
                             "Failed to refresh Sunshine target after proxy error: {}",
                             refresh_err
                         );
-                        connection_failure_response(is_ai_api, is_api, error_kind, &error_str)
+                        answer_offline(is_ai_api, is_api, error_kind, &failure, &offline)
                     }
                 }
             } else {
@@ -1457,21 +1585,16 @@ async fn handle_external_proxy(
     }
 }
 
-fn read_local_auth_token_from(path: &Path) -> Result<String, String> {
+fn read_local_auth_token_from(path: &Path) -> Result<String, crate::local_credential::CredentialError> {
     // The host publishes this file with an explicit Windows DACL or owner-only
     // POSIX mode. Read it for each upstream request so a host restart rotates
     // the credential without retaining an old value
     // [panel-rust-read-to-string] [panel-reqwest-request-builder].
-    let token =
-        fs::read_to_string(path).map_err(|_| "Local host credential is unavailable".to_string())?;
-    let token = token.trim();
-    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Local host credential is invalid".to_string());
-    }
-    Ok(token.to_string())
+    // A refusal that comes from the host's own replace of the file is read again at once, and every other failure is named (local_credential.rs).
+    crate::local_credential::read(path)
 }
 
-fn read_local_auth_token() -> Result<String, String> {
+fn read_local_auth_token() -> Result<String, crate::local_credential::CredentialError> {
     #[cfg(test)]
     if let Some(token) = TEST_LOCAL_AUTH_TOKEN.lock().unwrap().clone() {
         return Ok(token);
@@ -1603,7 +1726,7 @@ async fn send_local_authenticated_request(
     body: &Bytes,
     timeout: Option<std::time::Duration>,
 ) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
-    let token = read_local_auth_token().map_err(std::io::Error::other)?;
+    let token = read_local_auth_token()?;
     let response = send_request(client, url, method, headers, body, timeout, Some(&token)).await?;
     if response.status() != reqwest::StatusCode::UNAUTHORIZED {
         return Ok(response);
@@ -1612,7 +1735,7 @@ async fn send_local_authenticated_request(
     // The host rotates this credential when the active console user changes.
     // Re-read once so an in-flight request does not strand the Panel on a
     // stale value; a second 401 is returned to the normal error path.
-    let refreshed = read_local_auth_token().map_err(std::io::Error::other)?;
+    let refreshed = read_local_auth_token()?;
     Ok(send_request(
         client,
         url,
@@ -1739,7 +1862,12 @@ async fn fetch_and_proxy(
     .await
     {
         Ok(resp) => resp,
-        Err(e) if url.starts_with("https://") && !is_connection_error(&e.to_string()) => {
+        // the fallback is for a host that does not speak TLS: a credential that cannot be read is not that, and the HTTP request would read the same file again
+        Err(e)
+            if url.starts_with("https://")
+                && !is_connection_error(&e.to_string())
+                && credential_failure_of(&*e).is_none() =>
+        {
             let http_url = url.replace("https://", "http://");
             warn!("⚠️  HTTPS 连接失败，尝试 HTTP: {}", http_url);
             send_local_authenticated_request(
@@ -1750,7 +1878,8 @@ async fn fetch_and_proxy(
                 body,
                 upstream_timeout,
             )
-            .await?
+            .await
+            .map_err(|source| -> Box<dyn std::error::Error + Send + Sync> { Box::new(HttpFallbackFailed { source }) })?
         }
         Err(e) => return Err(e.into()),
     };
@@ -2743,5 +2872,114 @@ mod robustness_tests {
             Some("public, max-age=31536000, immutable")
         );
         assert!(asset_cache_get("/assets/Other-AbCdEfGh.js").is_none());
+    }
+}
+
+#[cfg(test)]
+mod offline_cause_tests {
+    use super::*;
+    use crate::local_credential::{CredentialError, CredentialFailure};
+    use crate::proxy_failure::ProxyFailureKind;
+    use tokio::io::AsyncReadExt;
+
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_port_nothing_listens_at_is_a_refused_connection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = client().get(format!("http://{address}/")).send().await.unwrap_err();
+        let failure = ProxyFailure::of(&error);
+        assert_eq!(failure.kind, ProxyFailureKind::Refused, "{}", failure.text);
+        assert!(!failure.http_fallback);
+        assert!(host_is_gone(&failure.text), "the refusal still starts the cooldown: {}", failure.text);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_accepts_and_does_not_answer_is_a_request_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut chunk = [0_u8; 256];
+            while stream.read(&mut chunk).await.unwrap_or(0) > 0 {}
+        });
+        let error = client()
+            .get(format!("http://{address}/"))
+            .timeout(std::time::Duration::from_millis(300))
+            .send()
+            .await
+            .unwrap_err();
+        let failure = ProxyFailure::of(&error);
+        assert_eq!(failure.kind, ProxyFailureKind::RequestTimeout, "{}", failure.text);
+        assert!(!host_is_gone(&failure.text));
+    }
+
+    #[tokio::test]
+    async fn a_host_that_closes_the_connection_under_the_request_is_a_reset() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut chunk = [0_u8; 256];
+            let _ = stream.read(&mut chunk).await;
+            drop(stream);
+        });
+        let error = client().get(format!("http://{address}/")).send().await.unwrap_err();
+        let failure = ProxyFailure::of(&error);
+        assert_eq!(failure.kind, ProxyFailureKind::Reset, "{}", failure.text);
+    }
+
+    #[tokio::test]
+    async fn the_failure_of_the_http_fallback_is_marked_and_keeps_the_cause_of_the_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = client().get(format!("http://{address}/")).send().await.unwrap_err();
+        let wrapped: Box<dyn std::error::Error + Send + Sync> = Box::new(HttpFallbackFailed { source: Box::new(error) });
+        let failure = ProxyFailure::of(&*wrapped);
+        assert!(failure.http_fallback);
+        assert_eq!(failure.kind, ProxyFailureKind::Refused, "{}", failure.text);
+    }
+
+    #[test]
+    fn an_unreadable_credential_is_named_through_every_wrapper_and_is_not_a_host_that_is_away() {
+        let credential = CredentialError { failure: CredentialFailure::Denied, os_code: Some(5) };
+        let plain: Box<dyn std::error::Error + Send + Sync> = Box::new(credential.clone());
+        assert_eq!(credential_failure_of(&*plain), Some(CredentialFailure::Denied));
+        let wrapped: Box<dyn std::error::Error + Send + Sync> = Box::new(HttpFallbackFailed { source: plain });
+        assert_eq!(credential_failure_of(&*wrapped), Some(CredentialFailure::Denied));
+        let failure = ProxyFailure::of(&*wrapped);
+        assert_eq!(failure.kind, ProxyFailureKind::Credential(CredentialFailure::Denied));
+        assert!(!host_is_gone(&failure.text), "no cooldown for a file that could not be read: {}", failure.text);
+        assert!(!is_connection_error(&failure.text), "and it is not the connection error that refreshes the target: {}", failure.text);
+        let io: Box<dyn std::error::Error + Send + Sync> = Box::new(std::io::Error::other("something else"));
+        assert_eq!(credential_failure_of(&*io), None);
+    }
+
+    #[tokio::test]
+    async fn a_page_request_is_answered_with_the_offline_page_and_an_api_request_with_json() {
+        let credential: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(CredentialError { failure: CredentialFailure::Missing, os_code: Some(2) });
+        let failure = ProxyFailure::of(&*credential);
+        let context = OfflineContext {
+            target: "https://localhost:47990".to_string(),
+            path: "/config".to_string(),
+            started: std::time::Instant::now(),
+        };
+        let page = answer_offline(false, false, "请求失败", &failure, &context);
+        assert_eq!(page.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(page.headers()[axum::http::header::CONTENT_TYPE], "text/html; charset=utf-8");
+        let body = axum::body::to_bytes(page.into_body(), 4 * 1024 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("wait-head"), "the offline page itself");
+        let api = answer_offline(false, true, "请求失败", &failure, &context);
+        assert_eq!(api.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(api.headers()[axum::http::header::CONTENT_TYPE], "application/json; charset=utf-8");
     }
 }
