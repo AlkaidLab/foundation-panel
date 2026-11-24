@@ -1291,13 +1291,7 @@ fn read_local_auth_token() -> Result<String, String> {
     // Read at client construction time so direct host callers follow a token
     // rotation without keeping the previous value in a process-wide client
     // [panel-rust-read-to-string] [panel-reqwest-request-builder].
-    let token = std::fs::read_to_string(config_dir().join("local-auth.token"))
-        .map_err(|_| "Local host credential is unavailable".to_string())?;
-    let token = token.trim();
-    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Local host credential is invalid".to_string());
-    }
-    Ok(token.to_string())
+    crate::local_credential::read(&config_dir().join("local-auth.token")).map_err(|error| error.to_string())
 }
 
 fn validate_config_save_response(body: &str) -> Result<(), String> {
