@@ -207,6 +207,7 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
         // answer is read at the same time and goes to the menu that is on screen when it is there (`refresh_in_background`), in place.
         let read_before = SLOW_GEN.load(Ordering::SeqCst);
         let state = state_now(&app);
+        info!("[traylat] menu asked for; press source {:?}, density preference {}", input_source::last_source(), tray_prefs::current().density);
         refresh_in_background(&app);
         match ctx_popup::open_tray(app.clone(), variant, state, TrayTarget { icon }).await {
             Ok(true) => {
