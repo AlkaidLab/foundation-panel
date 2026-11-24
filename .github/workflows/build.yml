@@ -30,9 +30,9 @@ permissions:
   contents: read
 
 jobs:
-  # Classifies the files a run touches. A skipped job reports success, so the jobs below are
-  # routed from these outputs and `ci-gate` stays the one check to require
-  # (panel-github-workflow-syntax: paths filters leave checks pending).
+  # Resolves the one version the run uses and classifies the files it touches. A skipped job
+  # reports success, so the jobs below are routed from these outputs and `ci-gate` stays the
+  # one check to require (panel-github-workflow-syntax: paths filters leave checks pending).
   changes:
     name: Changes
     runs-on: ubuntu-24.04
@@ -40,16 +40,34 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    # One version for the whole run: the tag for a tag push, a UTC date version for a manual
+    # release, and 0.0.0-dev otherwise. The release build injects this output and the release
+    # job tags with it, so a dispatch cannot publish a tag its GUI does not report
+    # (panel-gha-dispatch-version, panel-gha-job-outputs).
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       renderer: ${{ steps.classify.outputs.renderer }}
       code: ${{ steps.classify.outputs.code }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout the CI scripts
         uses: actions/checkout@v4
         with:
           sparse-checkout: scripts/ci
           persist-credentials: false
+
+      - name: Test and resolve the run version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          CREATE_RELEASE: ${{ github.event.inputs.create_release }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/test_resolve_version.py
+          version="$(bash scripts/ci/resolve-version.sh --event "$EVENT" --ref "$REF" --create-release "$CREATE_RELEASE")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Run version: $version"
 
       - name: Test and run the classifier
         id: classify
@@ -342,13 +360,14 @@ jobs:
       - name: Check the debug plugin configuration compiles
         run: cargo check --locked --workspace --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
 
-  # Tags and a manual run that asks for a release keep the shipped configuration: fat LTO and
-  # one codegen unit in src-tauri's release profile. It runs beside the tests, so the critical
-  # path of a tag is the slower of the two.
+  # Tags and every manual run use the shipped configuration: fat LTO and one codegen unit in
+  # src-tauri's release profile. A manual run without create_release builds the same package
+  # with 0.0.0-dev and publishes nothing (panel-gha-dispatch-version). The build runs beside
+  # the tests, so the critical path of a tag is the slower of the two.
   windows-release:
     name: Windows release build
     needs: changes
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -378,13 +397,17 @@ jobs:
       - name: Setup with the contributor entry point
         run: just setup
 
-      - name: Inject version from tag
+      # The version was resolved once in the `changes` job. Recomputing a date here would let
+      # the build and a later release step drift apart (panel-gha-dispatch-version).
+      - name: Inject the run version
         shell: bash
+        env:
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          else
-            VERSION="0.0.0-dev"
+          set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            echo 'The changes job did not resolve a version for this run' >&2
+            exit 1
           fi
           echo "Injecting version: $VERSION"
 
@@ -489,6 +512,46 @@ jobs:
           New-Item -ItemType Directory -Force -Path symbols | Out-Null
           Copy-Item $pdb.FullName "symbols/"
 
+      # The tag is only honest if the packaged executable reports the same version. The GUI
+      # version resource and the installer and bundle names all come from the injected
+      # manifests; compare them with the value the release job will tag
+      # (panel-gha-dispatch-version, panel-ms-fileversioninfo).
+      - name: Verify the packaged version
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ needs.changes.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $zip = Join-Path 'artifacts' 'sunshine-gui-windows-x64.zip'
+          if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) {
+            throw "Missing the GUI bundle: $zip"
+          }
+          $installer = Join-Path 'artifacts' "Sunshine-GUI-Setup-$env:EXPECTED_VERSION.exe"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Missing the installer named for version $env:EXPECTED_VERSION"
+          }
+
+          $stage = Join-Path $env:RUNNER_TEMP ("gui-version-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          try {
+            Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+            $exe = Join-Path $stage 'sunshine-gui.exe'
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              throw 'The GUI bundle has no sunshine-gui.exe'
+            }
+            $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+            foreach ($name in @('FileVersion', 'ProductVersion')) {
+              $actual = $info.$name
+              if ($actual -ne $env:EXPECTED_VERSION) {
+                throw "sunshine-gui.exe $name is '$actual', expected '$env:EXPECTED_VERSION'"
+              }
+            }
+            Write-Host "sunshine-gui.exe reports $($info.FileVersion); installer and bundle match $env:EXPECTED_VERSION"
+          } finally {
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -506,7 +569,9 @@ jobs:
 
   release:
     name: Create Release
-    needs: windows-release
+    needs:
+      - changes
+      - windows-release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     permissions:
@@ -526,14 +591,19 @@ jobs:
           name: sunshine-gui-windows-x64
           path: artifacts
 
+      # The tag is the same value the GUI build injected, not a second date
+      # (panel-gha-dispatch-version).
       - name: Determine version
         id: version
+        env:
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=v$(date +%Y.%m%d.%H%M%S)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            echo 'The changes job did not resolve a version for this run' >&2
+            exit 1
           fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       # The notes file of the tag is the body of the release; a tag without one gets the generated notes.
       - name: Find release notes
