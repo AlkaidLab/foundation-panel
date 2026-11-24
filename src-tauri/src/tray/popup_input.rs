@@ -132,7 +132,10 @@ pub(super) fn on_icon_event(event: TrayIconEvent) {
             run(&app, decision, physical_rect(&rect));
         }
         // the pointer is on the icon (the events repeat while it moves): a main window that was let go for memory is made again now, hidden, so that the click that follows finds it
-        TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => crate::mem_adaptive::prewarm_main(&app, "tray hover"),
+        TrayIconEvent::Enter { .. } | TrayIconEvent::Move { .. } => {
+            crate::mem_adaptive::prewarm_main(&app, "tray hover");
+            warm_if_stale(&app);
+        }
         TrayIconEvent::Click { button: MouseButton::Right, button_state: tauri::tray::MouseButtonState::Up, rect, .. } => {
             crate::mem_adaptive::note_click();
             // with the native menu on the icon, the system shows it by itself on this very event
@@ -200,9 +203,19 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
             let _ = app.run_on_main_thread(move || apply_menu_mode(&handle));
             return;
         }
-        let state = build_state(&app).await;
+        // the menu opens from what is known now and what was read at the last look (`state_now`): nothing before the window waits for the host, the displays, the controller or the registry. The fresh
+        // answer is read at the same time and goes to the menu that is on screen when it is there (`refresh_in_background`), in place.
+        let read_before = SLOW_GEN.load(Ordering::SeqCst);
+        let state = state_now(&app);
+        refresh_in_background(&app);
         match ctx_popup::open_tray(app.clone(), variant, state, TrayTarget { icon }).await {
-            Ok(true) => FAILURES.store(0, Ordering::SeqCst),
+            Ok(true) => {
+                FAILURES.store(0, Ordering::SeqCst);
+                // the answer came between the state of the menu and the menu being registered: the push of the reader found no menu then
+                if SLOW_GEN.load(Ordering::SeqCst) != read_before {
+                    push_now_if_open(&app);
+                }
+            }
             // closed or replaced before it was drawn (a second click, the focus went elsewhere): the person did it, nothing failed
             Ok(false) => {}
             Err(e) => {
@@ -217,17 +230,28 @@ fn open_menu(app: &AppHandle, variant: Variant, icon: PhysRect) {
     });
 }
 
-/// A menu of the tray is on screen: send it the state of now (called when the host state changes).
+/// The host state changed (called on every new tray state): an open menu gets what is known at once and the fresh reading when it is there; with no menu open the reading is only kept for the next one.
 pub(super) fn push_state_if_open() {
-    if !ctx_popup::tray_menu_open() {
-        return;
-    }
     let Some(app) = ctx_popup::app() else { return };
-    tauri::async_runtime::spawn(async move {
-        let state = build_state(&app).await;
-        ctx_popup::update_tray_state(&app, state);
-    });
+    push_now_if_open(&app);
+    refresh_in_background(&app);
 }
+
+/// Sends the state of now (in-memory facts and the last reading) to the menu that is on screen, if any. Never waits for anything.
+fn push_now_if_open(app: &AppHandle) {
+    if ctx_popup::tray_menu_open() {
+        ctx_popup::update_tray_state(app, state_now(app));
+    }
+}
+
+/// The pointer is on the icon: a reading older than this is made again now, so the click that follows finds a fresh one (a touch has no hover: its menu opens from the last reading and is corrected in place).
+pub(super) fn warm_if_stale(app: &AppHandle) {
+    let stale = SLOW.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_none_or(|(_, at)| at.elapsed() > WARM_AFTER);
+    if stale {
+        refresh_in_background(app);
+    }
+}
+const WARM_AFTER: Duration = Duration::from_secs(4);
 
 // ---- the state a menu is drawn from ---------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -320,11 +344,34 @@ pub(super) fn labels(s: &TrayStrings) -> Value {
     Value::Object(m)
 }
 
-/// The state of the host for a menu: what the native menu knows (menu.rs) and what it does not show (streams, display mode, update, DS5).
-pub(super) async fn build_state(app: &AppHandle) -> Value {
+/// What the menu shows and takes a while to find out: the streams (a call to the host), the controller (a probe), the displays (Win32 listings of every mode), the start-up item (the service manager) and
+/// whether RTSS is installed (a walk through the registry). The last reading is kept: a menu opens from it at once and is corrected in place when the fresh one is there.
+#[derive(Clone)]
+struct Slow {
+    live: Option<Vec<sunshine::SessionInfo>>,
+    ds5: bool,
+    sliders: Value,
+    auto_start: bool,
+    rtss: bool,
+}
+
+impl Default for Slow {
+    fn default() -> Self {
+        Slow { live: None, ds5: false, sliders: Value::Null, auto_start: false, rtss: false }
+    }
+}
+
+/// The last reading and when it was made.
+static SLOW: Mutex<Option<(Slow, std::time::Instant)>> = Mutex::new(None);
+/// Counts the readings kept: a menu that was opened before one was kept is sent it.
+static SLOW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// One reading at a time; a request that comes while one runs makes it read once more when it ends (what changed meanwhile is read too).
+static READING: AtomicBool = AtomicBool::new(false);
+static READ_AGAIN: AtomicBool = AtomicBool::new(false);
+
+/// The reading, made now: every slow fact of the state, read side by side.
+async fn read_slow() -> Slow {
     let started = std::time::Instant::now();
-    let s = get_tray_strings();
-    let locale = get_current_locale();
     let (tray_state, connection, _) = TRAY_RUNTIME_STATE.lock().unwrap_or_else(|p| p.into_inner()).menu_snapshot();
     let connected = connection == CoreConnectionState::Connected;
     let (live, ds5) = if connected {
@@ -338,9 +385,95 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
     } else {
         (None, false)
     };
-    let streams: Vec<Value> = match (&live, &tray_state) {
+    let live_ms = started.elapsed().as_millis();
+    let vdd_active = tray_state.as_ref().is_some_and(|state| state.vdd.active);
+    let stream = match live.as_ref().and_then(|rows| rows.first()) {
+        Some(x) => Some((x.width, x.height, x.fps)),
+        // the live list did not come: a stream is still on, its display is the one in use (the primary one when none matches)
+        None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
+        None => None,
+    };
+    let (sliders, auto_start, rtss) = tokio::join!(
+        slider_state(connected, vdd_active, stream),
+        tokio::task::spawn_blocking(start_up_item_enabled),
+        tokio::task::spawn_blocking(crate::rtss::is_rtss_installed),
+    );
+    let slow = Slow { live, ds5, sliders, auto_start: auto_start.unwrap_or(false), rtss: rtss.unwrap_or(false) };
+    info!("[traylat] state read in {} ms (streams and controller {} ms, then displays, start-up and RTSS {} ms)", started.elapsed().as_millis(), live_ms, started.elapsed().as_millis() - live_ms);
+    slow
+}
+
+fn start_up_item_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        desktop_settings::is_combined_auto_start_enabled()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+fn keep(slow: Slow) {
+    *SLOW.lock().unwrap_or_else(|p| p.into_inner()) = Some((slow, std::time::Instant::now()));
+    SLOW_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Reads the slow facts without anyone waiting for them, keeps them, and sends them to the menu that is on screen. One reading at a time.
+pub(super) fn refresh_in_background(app: &AppHandle) {
+    if READING.swap(true, Ordering::SeqCst) {
+        READ_AGAIN.store(true, Ordering::SeqCst);
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            READ_AGAIN.store(false, Ordering::SeqCst);
+            keep(read_slow().await);
+            push_now_if_open(&app);
+            if !READ_AGAIN.swap(false, Ordering::SeqCst) {
+                break;
+            }
+        }
+        READING.store(false, Ordering::SeqCst);
+        // a request that came between the last check and the release
+        if READ_AGAIN.swap(false, Ordering::SeqCst) {
+            refresh_in_background(&app);
+        }
+    });
+}
+
+/// The state for a menu NOW, with nothing awaited: what the native menu knows (in memory) and the last reading of the slow facts. The streams of an old reading are not trusted when the core says nothing streams.
+pub(super) fn state_now(app: &AppHandle) -> Value {
+    let slow = SLOW.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|(slow, _)| slow.clone()).unwrap_or_default();
+    compose_state(app, &slow, false)
+}
+
+/// The state, read afresh (after a slider was set: what the display has now).
+pub(super) async fn build_state(app: &AppHandle) -> Value {
+    let slow = read_slow().await;
+    keep(slow.clone());
+    compose_state(app, &slow, true)
+}
+
+/// The streams of a reading, when they can be shown: the core is connected, and the reading is fresh or the core says a stream is on (an old reading says "streaming" long after the stream ended).
+fn usable_live<T>(live: Option<&Vec<T>>, connected: bool, fresh: bool, streaming: bool) -> Option<&Vec<T>> {
+    live.filter(|_| connected && (fresh || streaming))
+}
+
+/// The state of the host for a menu: what the native menu knows (menu.rs) and what it does not show (streams, display mode, update, DS5). `fresh`: `slow` was read just now; otherwise it is the last reading.
+fn compose_state(app: &AppHandle, slow: &Slow, fresh: bool) -> Value {
+    let s = get_tray_strings();
+    let locale = get_current_locale();
+    let (tray_state, connection, _) = TRAY_RUNTIME_STATE.lock().unwrap_or_else(|p| p.into_inner()).menu_snapshot();
+    let connected = connection == CoreConnectionState::Connected;
+    // an old reading says "streaming" long after the stream ended: the core's own state, which is current, decides whether it is used
+    let streaming = tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming");
+    let live = usable_live(slow.live.as_ref(), connected, fresh, streaming);
+    let ds5 = connected && slow.ds5;
+    let streams: Vec<Value> = match (live, &tray_state) {
         (Some(rows), _) => session_rows(rows),
-        // the live list did not come in time: the names the core's own tray state has
+        // the live list is not there (it did not come in time, or the reading is old): the names the core's own tray state has
         (None, Some(state)) if connected => state
             .sessions
             .iter()
@@ -348,35 +481,26 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
             .collect(),
         _ => Vec::new(),
     };
-    let first = live.as_ref().and_then(|rows| rows.first());
+    let first = live.and_then(|rows| rows.first());
     let vdd_active = tray_state.as_ref().is_some_and(|state| state.vdd.active);
     let (vdd_mode, vdd_short) = match first {
         Some(x) if vdd_active && x.width > 0 && x.height > 0 => (format!("{}×{}@{}", x.width, x.height, x.fps), short_mode(x.height, x.fps)),
         _ => (String::new(), String::new()),
     };
-    let stream = match first {
-        Some(x) => Some((x.width, x.height, x.fps)),
-        // the live list did not come: a stream is still on, its display is the one in use (the primary one when none matches)
-        None if connected && tray_state.as_ref().is_some_and(|state| host_word(&state.status) == "streaming") => Some((0, 0, 0)),
-        None => None,
-    };
-    let live_ms = started.elapsed().as_millis();
-    let sliders = slider_state(connected, vdd_active, stream).await;
-    let sliders_ms = started.elapsed().as_millis() - live_ms;
     let notification = tray_state.as_ref().filter(|state| state.notification.active).map(|state| menu::tray_notification_label(s, state));
     let update_version = update::last_seen_update();
     #[cfg(target_os = "windows")]
-    let (auto_start, user_mode) = (desktop_settings::is_combined_auto_start_enabled(), *SUNSHINE_USER_MODE_STATE.lock().unwrap_or_else(|p| p.into_inner()));
+    let user_mode = *SUNSHINE_USER_MODE_STATE.lock().unwrap_or_else(|p| p.into_inner());
     #[cfg(not(target_os = "windows"))]
-    let (auto_start, user_mode) = (false, false);
+    let user_mode = false;
+    let auto_start = slow.auto_start;
 
     let prefs = tray_prefs::current();
-    info!("[traylat] state built in {} ms (live {} ms, sliders {} ms, rest {} ms)", started.elapsed().as_millis(), live_ms, sliders_ms, started.elapsed().as_millis() - live_ms - sliders_ms);
     json!({
         "locale": locale,
         "connection": match connection { CoreConnectionState::Connected => "connected", CoreConnectionState::Connecting => "connecting", CoreConnectionState::Disconnected => "disconnected" },
         "host": tray_state.as_ref().map(|state| host_word(&state.status)).unwrap_or("idle"),
-        "rtss": crate::rtss::is_rtss_installed(),
+        "rtss": slow.rtss,
         "dev": cfg!(any(debug_assertions, feature = "beta")),
         "sessions": streams,
         "vdd": {
@@ -396,7 +520,7 @@ pub(super) async fn build_state(app: &AppHandle) -> Value {
         "update": update_version.map(|version| json!({ "version": version })),
         "ds5": ds5,
         "notification": notification,
-        "sliders": sliders,
+        "sliders": slow.sliders,
         // what the press that opened the menu was, and the person's density choice: the page opens in touch density for a finger (input_source.rs; foundation-ui MTrayMenu)
         "touch": input_source::facts().to_json(),
         "density": prefs.density,
@@ -512,6 +636,12 @@ pub(super) fn act(app: &AppHandle, token: u64, id: &str) {
         return; // not the menu that is on screen (a late answer)
     }
     handle_tray_menu_event(app, id);
+    // a toggle or a mode the item changed is in the reading the next menu opens from a moment later (the item runs on its own)
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        refresh_in_background(&app);
+    });
 }
 
 /// Writes one slider's value to the machine (the display's mode, the scale, the bitrate cap) and returns how long the system needs to show it, and a notice for the page (null; for the scale, what came of a
@@ -667,7 +797,7 @@ pub(super) async fn set_layout(app: &AppHandle, tiles: Option<Vec<String>>, slid
         return Err("菜单已经关闭".to_string());
     }
     tray_prefs::save_layout(tiles, sliders)?;
-    ctx_popup::update_tray_state(app, build_state(app).await);
+    ctx_popup::update_tray_state(app, state_now(app));
     Ok(())
 }
 
@@ -693,6 +823,25 @@ mod tests {
         // one failed open is not the end of the menu window, two in a row are
         assert!(!wants_native(false, FAILURES_BEFORE_NATIVE - 1, Ready));
         assert!(wants_native(false, FAILURES_BEFORE_NATIVE, Ready));
+    }
+
+    #[test]
+    fn an_old_reading_shows_streams_only_while_the_core_says_one_is_on() {
+        let rows = vec![1u8, 2];
+        assert!(usable_live(Some(&rows), true, true, false).is_some(), "a reading made just now is shown whatever the core's state says");
+        assert!(usable_live(Some(&rows), true, false, true).is_some(), "an old reading while a stream is on");
+        assert!(usable_live(Some(&rows), true, false, false).is_none(), "an old reading after the stream ended");
+        assert!(usable_live(Some(&rows), false, true, true).is_none(), "no core, no streams");
+        assert!(usable_live::<u8>(None, true, true, true).is_none());
+    }
+
+    #[test]
+    fn the_menu_opens_from_the_last_reading_and_nothing_before_the_window_awaits_the_host() {
+        // open_menu must not await the slow reading before open_tray: that wait was the popup's delay (the host call, the controller probe, the display listings, the registry walk)
+        let src = include_str!("popup_input.rs");
+        let open = &src[src.find("fn open_menu").unwrap()..src.find("pub(super) fn push_state_if_open").unwrap()];
+        assert!(!open.contains("build_state"), "open_menu waits for a fresh reading again");
+        assert!(open.contains("state_now(&app)") && open.contains("refresh_in_background(&app)"));
     }
 
     #[test]

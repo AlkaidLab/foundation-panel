@@ -1466,6 +1466,11 @@ pub(crate) fn menu_window_loaded<R: Runtime>(app: &AppHandle<R>) {
     popup_input::apply_menu_mode(app);
 }
 
+/// The menu window can show menus: the slow facts of the state (streams, displays, controller, start-up, RTSS) are read once now, so the first menu opens from a reading and not from nothing.
+pub(crate) fn warm_menu_state(app: &AppHandle) {
+    popup_input::refresh_in_background(app);
+}
+
 /// The icon carries the native menu or none, as the settings and the state of the menu window say (see popup_input.rs).
 pub(crate) fn refresh_menu_mode<R: Runtime>(app: &AppHandle<R>) {
     popup_input::apply_menu_mode(app);
