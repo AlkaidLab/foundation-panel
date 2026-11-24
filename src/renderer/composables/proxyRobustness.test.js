@@ -13,7 +13,21 @@ test('one slow request does not turn the next three seconds of requests into 503
   assert.match(rs, /if host_is_gone\(error\) \{\s*mark_unavailable\(\);\s*\}/)
   assert.match(rs, /const FAST_FAIL_COOLDOWN_SECS: u64 = 1;/)
   // the error text of a failed request is the whole chain: reqwest says only "error sending request" and keeps "timed out" in its source
-  assert.match(rs, /let error_str = error_chain\(&\*e\);/)
+  assert.match(rs, /let text = error_chain\(error\);/)
+  assert.match(rs, /let failure = ProxyFailure::of\(&\*e\);\s*let error_str = failure\.text\.clone\(\);/)
+})
+
+test('a page answered with the offline page leaves one line that names the cause, and an unreadable credential is neither a fallback to HTTP nor a host that is away', () => {
+  // the line: cause, host address, path, time (proxy_failure.rs); every answer with the page goes through answer_offline, the fast answer logs its own
+  assert.match(rs, /fn answer_offline\([\s\S]*?log_offline_page\(/)
+  assert.equal((rs.match(/connection_failure_response\(is_ai_api, is_api/g) || []).length, 1, 'the one call is the one inside answer_offline')
+  assert.match(rs, /kind: crate::proxy_failure::ProxyFailureKind::FastFail,/)
+  // the credential: read by local_credential.rs (a refusal from the host's own replace of the file is read again), named in the log, never a reason for the HTTP fallback
+  assert.match(rs, /&& credential_failure_of\(&\*e\)\.is_none\(\) =>/)
+  assert.match(rs, /matches!\(failure\.kind, crate::proxy_failure::ProxyFailureKind::Credential\(_\)\) \{[\s\S]*?host_not_ready\(\);\s*if !is_api && !is_ai_api \{\s*return answer_offline\(/)
+  assert.match(rs, /crate::local_credential::read\(path\)/)
+  const sunshine = fs.readFileSync(new URL('../../../src-tauri/src/sunshine.rs', import.meta.url), 'utf8')
+  assert.match(sunshine, /crate::local_credential::read\(&config_dir\(\)\.join\("local-auth\.token"\)\)/)
 })
 
 test('the pairing long poll is carried by a client whose read timeout outlasts its wait', () => {

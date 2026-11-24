@@ -575,8 +575,13 @@ pub fn open_log_console<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// 打开全屏 PIN 输入窗口（见 pin_window.rs）。主面板里的「配对」页仍然保留：`open_main_panel_page(app, "pairing")`。
+/// 配对请求在哪里输入 PIN由主机配置的 `pin_prompt` 决定（pin_prompt.rs）：全屏输入窗口（默认），或主面板的「配对」页。托盘菜单、通知点击、`--url=…/pin` 都从这里进。
 pub fn open_pin_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
-    crate::pin_window::open(app).map_err(Into::into)
+    use crate::pin_window::Entry;
+    match crate::pin_window::route(crate::pin_prompt::PinPrompt::current(), None) {
+        Entry::FullScreen => crate::pin_window::open(app).map_err(Into::into),
+        Entry::PanelPage => open_main_panel_page(app, "pairing").map_err(Into::into),
+    }
 }
 
 pub fn open_main_panel_page<R: Runtime>(app: &AppHandle<R>, page: &str) -> Result<(), String> {

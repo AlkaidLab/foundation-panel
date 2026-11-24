@@ -105,6 +105,15 @@ pub(crate) enum Entry {
     PanelPage,
 }
 
+/// Where a pairing request is answered, from the setting (`pin_prompt.rs`) and what the host reports: the panel's own pairing page when the setting says so, otherwise the full-screen
+/// entry for as long as a request can still be answered (`entry_for_click`).
+pub(crate) fn route(prompt: crate::pin_prompt::PinPrompt, status: Option<&str>) -> Entry {
+    match prompt {
+        crate::pin_prompt::PinPrompt::Panel => Entry::PanelPage,
+        crate::pin_prompt::PinPrompt::Fullscreen => entry_for_click(status),
+    }
+}
+
 pub(crate) fn entry_for_click(status: Option<&str>) -> Entry {
     match status {
         // `None`: the host has not reported since this panel started (a click that started the panel), its request is likely still pending
@@ -153,27 +162,30 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     info!("[pin] making the full-screen PIN entry");
     let shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let page_shown = shown.clone();
-    let window = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
+    let builder = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         PIN_WINDOW_ID,
         tauri::WebviewUrl::App("pin/index.html".into()),
     ))
     .title("PIN")
-    .fullscreen(true)
     .decorations(false)
     .transparent(true)
     .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(false)
-    .disable_drag_drop_handler()
-    .on_page_load(move |window, payload| {
-        if payload.event() == PageLoadEvent::Finished {
-            reveal(&window, &page_shown, "page loaded");
-        }
-    })
-    .build()
-    .map_err(|e| format!("the PIN window could not be made: {e}"))?;
+    .disable_drag_drop_handler();
+    // A measurement instance (SUNSHINE_GUI_TEST_OFFSCREEN, windows.rs `test_offscreen`) opens its windows outside every monitor: nothing of it shows on the desk of whoever uses
+    // the machine. The entry is then a window of the size of a display, out of sight, instead of the display-covering one.
+    let builder = if crate::windows::test_offscreen() { builder.inner_size(1920.0, 1080.0).position(6000.0, 100.0) } else { builder.fullscreen(true) };
+    let window = builder
+        .on_page_load(move |window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                reveal(&window, &page_shown, "page loaded");
+            }
+        })
+        .build()
+        .map_err(|e| format!("the PIN window could not be made: {e}"))?;
 
     #[cfg(target_os = "windows")]
     crate::windows::configure_webview_security(&window);
@@ -246,6 +258,18 @@ fn end<R: Runtime>(app: &AppHandle<R>, reason: EndReason) {
 #[tauri::command]
 pub fn pin_pairing_client() -> String {
     crate::tray::current_pairing_client()
+}
+
+/// What a click on a pairing notification does, for the isolated test instance (test_isolation.rs): the isolation has no notifications and no second launch, so it cannot receive the click
+/// that opens the entry. Goes through the same door as the click, the tray's pairing item and `--url=…/pin` (`windows::open_pin_window`): the saved setting decides between the
+/// full-screen entry and the panel's pairing page. Answers with the setting it followed. Refused outside a test profile.
+#[tauri::command]
+pub fn pin_window_selftest(app: AppHandle) -> Result<String, String> {
+    if !crate::test_isolation::active() {
+        return Err("pin_window_selftest runs only in a test profile".into());
+    }
+    crate::windows::open_pin_window(&app).map_err(|error| error.to_string())?;
+    Ok(crate::pin_prompt::PinPrompt::current().as_str().to_owned())
 }
 
 /// The window event `Destroyed` of the entry.
@@ -325,6 +349,30 @@ mod tests {
         assert_eq!(entry_for_click(None), Entry::FullScreen, "a click that started the panel: the host has not reported yet");
         assert_eq!(entry_for_click(Some("idle")), Entry::PanelPage);
         assert_eq!(entry_for_click(Some("streaming")), Entry::PanelPage);
+    }
+
+    #[test]
+    fn the_setting_decides_where_a_pairing_request_is_answered() {
+        use crate::pin_prompt::PinPrompt::{Fullscreen, Panel};
+        // `panel`: the panel's pairing page, whatever the host reports
+        for status in [Some("pairing"), None, Some("idle"), Some("streaming")] {
+            assert_eq!(route(Panel, status), Entry::PanelPage, "{status:?}");
+        }
+        // `fullscreen` (the default): the full-screen entry while a request can be answered, the panel page for one that is over
+        assert_eq!(route(Fullscreen, Some("pairing")), Entry::FullScreen);
+        assert_eq!(route(Fullscreen, None), Entry::FullScreen);
+        assert_eq!(route(Fullscreen, Some("idle")), Entry::PanelPage);
+        // an unset or unreadable setting is `fullscreen`
+        assert_eq!(route(crate::pin_prompt::PinPrompt::from_config(None), Some("pairing")), Entry::FullScreen);
+    }
+
+    #[test]
+    fn the_selftest_is_for_a_test_profile_only() {
+        // no test profile is active in the unit tests: the selftest source refuses, and the isolation lets exactly this command and the client name through
+        assert!(!crate::test_isolation::active());
+        let source = include_str!("pin_window.rs");
+        assert!(source.contains("if !crate::test_isolation::active()"));
+        assert!(crate::test_isolation::allows_command("pin_window_selftest"));
     }
 
     #[test]

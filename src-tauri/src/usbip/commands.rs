@@ -33,6 +33,11 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     #[cfg(target_os = "windows")]
     super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
+    // Nothing is installed yet, so the bundled payload is what gets installed: say it is missing before a UAC prompt.
+    #[cfg(target_os = "windows")]
+    if matches!(super::installed_usbip_version(), Ok(None)) {
+        remember_payload_missing()?;
+    }
     #[cfg(target_os = "windows")]
     let mut kept = {
         let mut kept = super::journal::read();
@@ -114,6 +119,19 @@ pub async fn usbip_export_diagnostics() -> Result<String, String> {
     super::diagnostics::export().await
 }
 
+/// Fails with the missing-component error (and keeps it for the diagnostics) when the host has no USB/IP payload to install from.
+#[cfg(target_os = "windows")]
+fn remember_payload_missing() -> Result<(), String> {
+    let Some(error) = super::install::host_payload_missing() else {
+        return Ok(());
+    };
+    let mut kept = super::journal::read();
+    kept.last_install_error = error.clone();
+    kept.install_error_at = super::journal::now_secs();
+    super::journal::write(&kept);
+    Err(error)
+}
+
 /// An install or a replacement answers `reboot_recommended` (the installer asks for a restart) and/or the restart-pending answer (the
 /// controllers an older version left are accepted for removal at the restart). Only the second leaves a marker, so a restart that
 /// only the installer asked for does not bring a cleanup back. Returns whether a restart is advised at all.
@@ -192,6 +210,8 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     #[cfg(target_os = "windows")]
     super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
+    #[cfg(target_os = "windows")]
+    remember_payload_missing()?;
     let before = super::status::usbip_get_status().await?;
     if !before.replaceable {
         return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());

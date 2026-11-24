@@ -11,13 +11,13 @@ Object.defineProperty(globalThis, 'navigator', { value: { language: 'en-US' }, c
 
 const { t, setLocale, getDefaultLocale, supportedLocales } = await import('./index.js')
 
-test('t() reads the active locale with en fallback and key passthrough', async () => {
+test('t() reads the active locale with en fallback and never answers a key', async () => {
   setLocale('en')
   assert.equal(t('username'), 'Username')
   setLocale('zh')
   assert.notEqual(t('username'), 'Username')
-  // 当前语言缺失的键回退到 en，再缺失则原样返回键名
-  assert.equal(t('__missing_key__'), '__missing_key__')
+  // 当前语言缺失的键回退到 en，再回退到 zh；都缺失则返回空文本（并写日志），不返回键名
+  assert.equal(t('__missing_key__'), '')
 })
 
 test('setLocale persists and rejects unknown codes', () => {

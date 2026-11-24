@@ -1,0 +1,223 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import test from 'node:test'
+import vm from 'node:vm'
+
+// The standalone offline page (src-tauri/error-404.html) is the document the panel's proxy answers with when a page request of the frame fails. Its script is run here on a fake clock and a fake
+// network: what it asks, when it calls the host back and what it says while it waits. OFFLINE_PAGE_PATH points the same tests at another copy of the page (the one before a change).
+const file = process.env.OFFLINE_PAGE_PATH || new URL('../../../src-tauri/error-404.html', import.meta.url)
+const html = fs.readFileSync(file, 'utf8')
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
+
+/** One load of the page. `answer(url, atMs)` returns { status, delay } for a request of the page, or 'hang'. `store` is the page's sessionStorage (it survives a reload, like the frame's). */
+function loadPage({ path = '/downloads', search = '', answer, store = {}, startAt = 0, withPanel = false }) {
+  let now = startAt
+  // the panel above the page (the frame's parent): what it is sent, and what it can send back
+  const toPanel = []
+  const panel = { postMessage: (message, target) => toPanel.push({ at: now, message, target }) }
+  const messageListeners = []
+  const panelWindow = { parent: panel, addEventListener: (type, fn) => { if (type === 'message') messageListeners.push(fn) } }
+  let seq = 0
+  const timers = new Map()
+  const events = []
+  const elements = {}
+  const el = (id) => (elements[id] ||= { id, textContent: '', disabled: false, style: {}, classList: { set: new Set(), add(c) { this.set.add(c) }, remove(c) { this.set.delete(c) }, has(c) { return this.set.has(c) } }, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn } })
+  const requests = []
+  const location = { origin: 'http://127.0.0.1:48081', pathname: path, search, reloads: 0, reload() { this.reloads++; events.push({ at: now, event: 'reload' }) } }
+  const context = {
+    document: { getElementById: el },
+    location,
+    sessionStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v) } },
+    Date: { now: () => now },
+    AbortController,
+    AbortSignal: { timeout: (ms) => { const c = new AbortController(); context.setTimeout(() => c.abort(), ms); return c.signal } },
+    setTimeout: (fn, ms = 0) => { const id = ++seq; timers.set(id, { at: now + ms, fn, id }); return id },
+    clearTimeout: (id) => { timers.delete(id) },
+    setInterval: (fn, ms) => { const id = ++seq; timers.set(id, { at: now + ms, fn, every: ms, id }); return id },
+    clearInterval: (id) => { timers.delete(id) },
+    window: withPanel ? panelWindow : undefined,
+    fetch: (url, options = {}) => new Promise((resolve, reject) => {
+      const request = { url, at: now, cancelled: false }
+      requests.push(request)
+      const verdict = answer(String(url), now)
+      options.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      if (verdict === 'hang') return
+      context.setTimeout(() => resolve({ status: verdict.status, body: { cancel: () => { request.cancelled = true; return Promise.resolve() } } }), verdict.delay || 0)
+    }),
+    console,
+  }
+  vm.createContext(context)
+  vm.runInContext(script, context)
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+  return {
+    requests, location, events, el, store, toPanel,
+    /** a message to the page; `from` is the window that sent it (the panel above, or another) */
+    send(data, from = panel) { for (const fn of messageListeners) fn({ source: from, data }) },
+    panel,
+    head: () => el('wait-head').textContent,
+    async advance(ms) {
+      const end = now + ms
+      await settle()
+      for (;;) {
+        const next = [...timers.values()].filter((t) => t.at <= end).sort((a, b) => a.at - b.at || a.id - b.id)[0]
+        if (!next) break
+        now = next.at
+        if (next.every) next.at += next.every; else timers.delete(next.id)
+        next.fn()
+        await settle()
+      }
+      now = end
+      await settle()
+    },
+    now: () => now,
+  }
+}
+
+test('the page asks for its own address, not another one', async () => {
+  const page = loadPage({ path: '/downloads', search: '?a=1', answer: () => ({ status: 200 }) })
+  await page.advance(100)
+  assert.equal(page.requests[0].url, '/downloads?a=1')
+  assert.ok(page.requests.every((r) => r.url === '/downloads?a=1'), 'every probe is for the page that failed')
+})
+
+test('the host recovering for the page\'s address ends in one reload, with the probe body released', async () => {
+  let up = false
+  const page = loadPage({ answer: () => (up ? { status: 200 } : { status: 503 }) })
+  await page.advance(3000)
+  assert.equal(page.location.reloads, 0)
+  up = true
+  await page.advance(2000)
+  assert.equal(page.location.reloads, 1)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  assert.ok(page.requests.some((r) => r.cancelled), 'the probe body is cancelled, it is not left holding a connection')
+})
+
+test('a probe that is out is waited for: a host that answers in 3 s is seen as up in the first ten seconds', async () => {
+  const page = loadPage({ answer: () => ({ status: 200, delay: 3000 }) })
+  await page.advance(4500)
+  assert.equal(page.location.reloads, 1, 'a slow answer is an answer')
+})
+
+test('a gateway timeout is not an answer', async () => {
+  const page = loadPage({ answer: () => ({ status: 504 }) })
+  await page.advance(12000)
+  assert.equal(page.location.reloads, 0)
+})
+
+test('a page that is answered for its probe and fails again after every reload does not reload in a tight loop', async () => {
+  // the host answers the probe and then fails the document: the page is made again by each reload, with the same session storage
+  const store = {}
+  const delays = []
+  let clock = 0
+  for (let i = 0; i < 5; i++) {
+    const page = loadPage({ store, startAt: clock, answer: () => ({ status: 200 }) })
+    const loaded = page.now()
+    while (!page.events.length && page.now() - loaded < 20000) await page.advance(100)
+    assert.ok(page.events.length, 'the page returned')
+    delays.push(page.events[0].at - loaded)
+    clock = page.events[0].at + 800 // the next document is there 0.8 s after the reload
+  }
+  assert.ok(delays[0] < delays[1] && delays[1] < delays[2], `the wait before returning grows: ${delays}`)
+  assert.ok(delays[4] >= 5000, `and stops growing at 5 s: ${delays}`)
+})
+
+test('a return that does not replace the page stops claiming a return and counts its rounds again', async () => {
+  // the probe is answered, the reload of the document hangs (nothing replaces this page)
+  const page = loadPage({ answer: () => ({ status: 200 }) })
+  await page.advance(1000)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  await page.advance(21000)
+  assert.notEqual(page.head(), 'Sunshine 已恢复，正在返回…')
+  assert.match(page.head(), /次探测失败/)
+  assert.equal(page.el('retry').disabled, false, 'the button works again')
+  assert.equal(page.el('retry-label').textContent, '再试一次')
+})
+
+test('while the host is down it probes once a second for ten seconds, then every 5 s, then every 30 s', async () => {
+  const page = loadPage({ answer: () => ({ status: 503 }) })
+  await page.advance(10000)
+  assert.ok(page.requests.length >= 5 && page.requests.length <= 11, `${page.requests.length} probes in the first ten seconds`)
+  const before = page.requests.length
+  await page.advance(5200)
+  assert.equal(page.requests.length, before + 1)
+})
+
+test('in the panel\'s frame the page tells the panel it is up, at the start and at every round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(0)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.toPanel.map((m) => m.message))), [{ type: 'foundation-offline-page', path: '/downloads' }])
+  await page.advance(11000)
+  assert.ok(page.toPanel.length >= 2, 'it tells the panel again when it starts a round')
+  assert.ok(page.toPanel.every((m) => m.message.type === 'foundation-offline-page'))
+})
+
+test('a page that is not in a frame does not need a panel', async () => {
+  const page = loadPage({ answer: () => ({ status: 503 }) })
+  await page.advance(2000)
+  assert.deepEqual(page.toPanel, [])
+})
+
+test('the panel telling the page the host answers returns the page at once, with the same spacing as its own probe', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(1500)
+  page.send({ type: 'foundation-offline-host-up' })
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  await page.advance(299)
+  assert.equal(page.location.reloads, 0)
+  await page.advance(2)
+  assert.equal(page.location.reloads, 1, 'reloaded after the first spacing (0.3 s)')
+})
+
+test('a message that does not come from the panel above the page, or says something else, is ignored', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' }, { postMessage() {} })
+  page.send({ type: 'something-else' })
+  page.send(null)
+  await page.advance(2000)
+  assert.equal(page.location.reloads, 0)
+})
+
+test('the panel telling twice, or after the page already returns, reloads once', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 200 }) })
+  await page.advance(100)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…', 'its own probe answered')
+  page.send({ type: 'foundation-offline-host-up' })
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(3000)
+  assert.equal(page.location.reloads, 1)
+})
+
+test('a return the panel asked for that does not replace the page lets the page tell the panel again at its next round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(400)
+  assert.equal(page.location.reloads, 1)
+  const told = page.toPanel.length
+  await page.advance(21000)
+  assert.ok(page.toPanel.length > told, 'a round after the stalled return tells the panel again')
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(2000)
+  assert.equal(page.location.reloads, 2, 'and the panel can ask for another return')
+})
+
+test('the panel telling first and the page\'s own probe answering later, with the document not replaced, reloads once', async () => {
+  // the probe sent at the start is answered 200 only at 3 s; the panel says the host is up at 1 s
+  const page = loadPage({ withPanel: true, answer: (url, at) => (at < 100 ? { status: 200, delay: 3000 } : { status: 503 }) })
+  await page.advance(1000)
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(10000)
+  assert.equal(page.location.reloads, 1, 'one recovery, one reload')
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+})
+
+test('a probe that was out when the panel said the host is up cannot turn 已恢复 back into a failed round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => 'hang' })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' })
+  // the hanging probe is aborted at 5 s: its failure belongs to the round before the recovery
+  await page.advance(8000)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  assert.equal(page.location.reloads, 1)
+})

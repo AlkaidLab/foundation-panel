@@ -160,7 +160,9 @@ import { updateTile, noticeAfterTile, helpTileTexts, aboutLine } from 'foundatio
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
 import { panelVersion } from '../composables/panelVersion.js'
 import { SEARCH_INDEX } from '@settings-data'
-import { labelOf, settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsLabel } from '../composables/settingsLabel.js'
+import { ensureBaseLabels } from '../composables/settingsBase.js'
 import PanelHome from './PanelHome.vue'
 import PanelBusyLayer from './PanelBusyLayer.vue'
 import UpdateDownloadChip from './UpdateDownloadChip.vue'
@@ -366,7 +368,7 @@ const backChip = computed(() => showsChip(variant.value) && jumps.canBack.value)
 const backPage = computed(() => {
   const place = jumps.top.value
   if (!place) return ''
-  if (place.params?.tab) return labelOf(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
+  if (place.params?.tab) return settingsLabel(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
   const row = ['stream', 'input', 'audio', 'display', 'system', 'appearance', 'settings', 'help'].flatMap((r) => listItems(r)).find((i) => i.id === place.id)
   return row?.label || (place.id === ROUTES.HOME ? t.value.m3e.nav.overview : '') || railLabel(place.rail)
 })
@@ -497,7 +499,7 @@ const hostPort = ref(47990)
 onMounted(async () => { try { const port = Number(new URL(String(await sunshine.getUrl())).port); if (port) hostPort.value = port } catch { /* the default stays */ } })
 onMounted(async () => { try { announceVersion.value = (await sunshine.getVersion()) || '' } catch { /* the version only narrows version-bound notices */ } })
 const announcements = useAnnouncements({ locale, version: announceVersion })
-const appearanceLabel = computed(() => labelOf(locale.value, 'shell.appearance'))
+const appearanceLabel = computed(() => settingsLabel(locale.value, 'shell.appearance', t.value.settings.appearance))
 const announcementsUnread = announcements.unread
 // a dot on the help rail while an update is waiting (the about page checks and opens the update sheet)
 const rail = computed(() => railItems(t.value, { developer: devmodeTexts(locale.value).rail }).filter((item) => item.id !== 'developer' || developerMode.enabled.value).map((item) => (item.id === 'overview' && announcementsUnread.value ? { ...item, badge: announcementsUnread.value } : item.id === 'settings' && notice.value.dot ? { ...item, badge: 'dot' } : item.id === 'assistant' && mitaState.unread ? { ...item, badge: 'dot' } : item.id === 'developer' && devActivity.unseen.value ? { ...item, badge: 'dot' } : item)))
@@ -514,6 +516,8 @@ const hostConfig = ref(null)
 const dualsenseKeys = ref([])
 const hostClients = ref([])
 const hostApps = ref([])
+// the product's settings data is supplied (the imports above); the words of the categories the list below draws never come out as keys, whatever that data holds
+ensureBaseLabels()
 const settingsList = useSettingsList({ locale, config: hostConfig, dualsenseKeys, sources: { clients: hostClients, apps: hostApps, components: computed(() => componentStatus.rows.value), rtss: computed(() => ({ installed: rtssInstalled.value === true })), ds: computed(() => runtime.ds), mic: computed(() => runtime.mic), usb: computed(() => runtime.usb), audio: computed(() => audioDevicesChannel.data.value?.render || null) } })
 // the playback devices of the host: the audio row names the chosen device, the setting holds an id
 onMounted(() => { audioDevicesChannel.fetch().catch(() => null) })

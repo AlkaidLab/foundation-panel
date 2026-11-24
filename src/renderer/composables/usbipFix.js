@@ -69,6 +69,22 @@ const badSignature = (status) => ['unsigned', 'invalid'].includes(status.driver_
  *   steps in order; `detach` and `verify` are added around them
  */
 export function planUsbipFix(status = {}) {
+  const plan = planStatus(status)
+  // The repair installs from the host's own payload (scripts\usbip), which the Sunshine installer lays down only with its USB/IP
+  // component. Without it every step that installs would fail after the cleanup before it had already taken the old transport away,
+  // so the repair stops first and says which part is missing.
+  if (status.host_payload_missing && ['install', 'clean-install', 'replace'].includes(plan.kind)) {
+    return { steps: [], kind: 'blocked', id: 'host-payload-missing', reason: 'payload', guide: 'host-component', ids: ['host-payload-missing'] }
+  }
+  // A usbip-win2 another tool left behind without any uninstall entry: Installed apps has nothing to uninstall, so the instruction for
+  // an installation of the person's own would send them to an empty list.
+  if (status.unregistered_leftover && plan.id === 'external-incompatible-manual') {
+    return { steps: [], kind: 'blocked', id: 'unregistered-leftover', reason: 'leftover', guide: 'leftover', ids: ['unregistered-leftover'] }
+  }
+  return plan
+}
+
+function planStatus(status) {
   // `ids`: the rows of the inventory that this plan answers (attached devices are a row of their own, on top of the cause)
   const make = (patch) => ({ steps: [], ...patch, ids: [patch.id, ...(patch.attachedCount && patch.steps?.includes('detach') ? ['attached-ports'] : [])] })
   if (status.supported === false) return make({ kind: 'blocked', id: 'unsupported-os', reason: 'unsupported' })
@@ -120,6 +136,7 @@ export function guideFor(error) {
     case 'USBIP-SETUP-013': return 'usb-boot'
     case 'USBIP-SETUP-014': return 'guard'
     case 'USBIP-CLEAN-007': return 'access'
+    case 'USBIP-SETUP-019': return 'host-component'
     case 'USBIP-SETUP-008': case 'USBIP-REPLACE-001': case 'USBIP-CLEAN-005': return 'external'
     case 'USBIP-SETUP-010': case 'USBIP-SETUP-005': case 'USBIP-REPLACE-004': case 'USBIP-CLEAN-001': case 'USBIP-CLEAN-002':
     case 'USBIP-CLEAN-003': case 'USBIP-CLEAN-004': case 'USBIP-VERIFY-001': case 'USBIP-VERIFY-002': return 'generic'
@@ -399,6 +416,8 @@ export function describeFixResult(state, texts, friendly, version = '') {
     case 'reboot-cleanup': return { tone: 'warning', text: texts.fixRebootCleanup, action: 'restart', guide: '' }
     case 'reboot-install': return { tone: 'warning', text: fill(texts.fixRebootInstall, { version }), action: 'restart', guide: '' }
     case 'blocked-external': return guided(texts.externalDecision, 'external')
+    case 'blocked-payload': return guided(friendly('USBIP-SETUP-019: no USB/IP component files'), 'host-component')
+    case 'blocked-leftover': return guided(texts.fixLeftover, 'leftover')
     case 'blocked-unsupported': return { tone: 'warning', text: texts.transportUnsupported, action: '', guide: '' }
     case 'blocked-nothing': return { tone: 'warning', text: texts.fixNothing, action: 'diagnostics', guide: '' }
     case 'failed': {
@@ -522,11 +541,20 @@ export const FIX_GUIDE_KEYS = {
 
 /** The numbered steps of a guide, in the person's language; '' for an id that has none. */
 export function fixGuideText(id, texts, version = '') {
-  const key = FIX_GUIDE_KEYS[id]
+  const key = FIX_GUIDE_KEYS[id] || ADDED_GUIDE_KEYS[id]
   return key ? fill(texts[key], { version }) : ''
 }
 
 export const FIX_GUIDE_IDS = Object.keys(FIX_GUIDE_KEYS)
+
+/**
+ * The guides that come with the ownership messages (i18n/usbipOwnership.js: English, 简体中文, 繁體中文; every other language reads the English
+ * one). They stay out of FIX_GUIDE_IDS, which lists the guides every language table carries itself.
+ */
+export const ADDED_GUIDE_KEYS = {
+  'host-component': 'fixGuideHostComponent',
+  leftover: 'fixGuideLeftover',
+}
 
 function fill(text, values) {
   return String(text || '').replace(/\{(\w+)\}/g, (match, key) => (key in values ? String(values[key]) : match))

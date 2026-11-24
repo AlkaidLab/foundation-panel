@@ -3,7 +3,24 @@ const USBIP_VERSION = compatibility.usbip.version
 
 export const zh_TW = {
   windowTitles: { toolbar: '工具欄', toolWindow: '工具視窗' },
-  "pinEntry": { "keyboardHint": "可直接用鍵盤輸入 · Esc 取消" },
+  "pinEntry": {
+    "title": "PIN 配對",
+    "hint": "輸入用戶端上顯示的 4 位 PIN",
+    "named": "“{name}”請求配對",
+    "unnamed": "有裝置請求配對",
+    "keyboardHint": "可直接用鍵盤輸入 · Esc 取消",
+    "cancel": "取消",
+    "preparing": "正在連線主機…",
+    "pairing": "正在配對…",
+    "done": "配對成功",
+    "wrong": "PIN 不正確，請再試一次",
+    "unreachable": "無法連線主機，請確認 Sunshine 正在執行",
+    "failed": "配對未成功，請再試一次",
+    "endedFinished": "這個配對請求已結束",
+    "endedNoRequest": "目前沒有等待配對的請求",
+    "endedHostLost": "主機沒有回應",
+    "backspace": "刪除"
+  },
   "toolActions": {
     "adminRequiredTitle": "需要管理員許可權",
     "cleanupAdminRequired": "清理臨時檔案需要管理員許可權。\n\n是否以管理員身份重啟應用？",
@@ -264,6 +281,10 @@ export const zh_TW = {
     notifications: '通知',
     desktopNotifications: '桌面通知',
     desktopNotificationsDesc: '顯示配對請求、連線狀態和版本更新等系統通知',
+    pinPrompt: "配對請求",
+    pinPromptDesc: "用戶端請求配對時，在哪裡輸入 PIN",
+    pinPromptFullscreen: "全螢幕輸入 PIN（預設）",
+    pinPromptPanel: "在控制面板中輸入",
     connectionNotify: '連線通知',
     connectionNotifyDesc: '客戶端連入或斷開時顯示通知，並包含裝置名稱',
     updateNotify: '更新通知',
@@ -375,6 +396,7 @@ export const zh_TW = {
     remove: '移除',
     dropImage: '拖拽圖片到此處',
     chooseFile: '或點選選擇檔案',
+    importFailed: '匯入失敗',
     presets: '預設主題',
     presetNames: {
       cyberpunk: '賽博朋克',

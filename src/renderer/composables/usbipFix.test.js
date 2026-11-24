@@ -28,6 +28,8 @@ import {
 import { USBIP_FIX_INVENTORY } from './usbipFixInventory.js'
 import { en } from '../desktop/i18n/en.js'
 import { zh } from '../desktop/i18n/zh.js'
+import { zh_TW as zhTW } from '../desktop/i18n/zh_TW.js'
+import { de } from '../desktop/i18n/de.js'
 import { withUsbipOwnership } from '../desktop/i18n/usbipOwnership.js'
 
 globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
@@ -83,7 +85,7 @@ test('every row of the inventory is planned, or explained with the guide that it
   for (const id of ['not-installed', 'install-resume', 'damaged-install', 'old-version', 'mismatch-hash-abi', 'residual-broken', 'stale-controller', 'attached-ports', 'unsigned-driver', 'cleanup-resume', 'tool-failed',
     'external-incompatible-replaceable', 'external-incompatible-manual', 'external-stale-controller', 'external-compatible-healthy', 'pending-restart-cleanup', 'pending-restart-install', 'reboot-recommended',
     'healthy', 'unsupported-os', 'unexplained', 'stream-active', 'driver-op-busy', 'uac-cancelled', 'root-hub-rolled-back', 'root-hub-rollback-incomplete', 'usb-boot-disk', 'guard-could-not-run',
-    'driver-policy-blocked', 'smart-app-control', 'removal-access-denied', 'removal-in-use', 'installer-generic-failure', 'replace-rolled-back', 'verify-failed', 'windows-10', 'host-not-running']) {
+    'host-payload-missing', 'unregistered-leftover', 'driver-policy-blocked', 'smart-app-control', 'removal-access-denied', 'removal-in-use', 'installer-generic-failure', 'replace-rolled-back', 'verify-failed', 'windows-10', 'host-not-running']) {
     assert.ok(ids.has(id), `the inventory has ${id}`)
   }
 })
@@ -93,7 +95,7 @@ test('the codes of the Rust side each belong to a row of the inventory', () => {
   const covered = (code) => listed.has(code) || (code.startsWith('USBIP-REPLACE-') && listed.has('USBIP-REPLACE-*')) || code.startsWith('USBIP-INPUT-') || ['USBIP-EXEC-004', 'USBIP-EXEC-005', 'USBIP-DIAG-001', 'USBIP-RESTART-001', 'USBIP-SETUP-007', 'USBIP-REPLACE-001', 'USBIP-REPLACE-002', 'USBIP-REPLACE-003', 'USBIP-REPLACE-004', 'USBIP-REPLACE-005', 'USBIP-CLEAN-005', 'USBIP-CLEAN-006'].includes(code)
   for (const code of ['USBIP-CLEAN-001', 'USBIP-CLEAN-002', 'USBIP-CLEAN-003', 'USBIP-CLEAN-004', 'USBIP-CLEAN-006', 'USBIP-CLEAN-007', 'USBIP-CLEAN-008', 'USBIP-EXEC-001', 'USBIP-EXEC-002', 'USBIP-EXEC-003', 'USBIP-EXEC-006', 'USBIP-EXEC-007',
     'USBIP-SETUP-001', 'USBIP-SETUP-002', 'USBIP-SETUP-003', 'USBIP-SETUP-004', 'USBIP-SETUP-005', 'USBIP-SETUP-006', 'USBIP-SETUP-008', 'USBIP-SETUP-010', 'USBIP-SETUP-011', 'USBIP-SETUP-012', 'USBIP-SETUP-013', 'USBIP-SETUP-014',
-    'USBIP-SETUP-015', 'USBIP-SETUP-016', 'USBIP-SETUP-017', 'USBIP-SETUP-018', 'USBIP-UAC-001', 'USBIP-UAC-002', 'USBIP-UAC-003', 'USBIP-REPLACE-002', 'USBIP-REPLACE-003']) {
+    'USBIP-SETUP-015', 'USBIP-SETUP-016', 'USBIP-SETUP-017', 'USBIP-SETUP-018', 'USBIP-SETUP-019', 'USBIP-UAC-001', 'USBIP-UAC-002', 'USBIP-UAC-003', 'USBIP-REPLACE-002', 'USBIP-REPLACE-003']) {
     assert.ok(covered(code), `${code} is in a row`)
   }
 })
@@ -118,6 +120,47 @@ test('attached devices are released first, before anything is cleaned or replace
   assert.deepEqual(planUsbipFix({ ...mismatch, attached_devices: devices }).steps, ['detach', 'cleanup', 'install', 'verify'])
   assert.deepEqual(planUsbipFix({ ...base, ready: false, vhci_residual: true, residual_kind: 'stale', attached_devices: devices }).steps, ['remove-stale', 'verify'], 'a live controller stays: nothing attached is touched')
   assert.deepEqual(planUsbipFix({ ...base, attached_devices: devices }).kind, 'healthy', 'attached devices on a healthy transport are the person\'s own')
+})
+
+test('a host without the USB/IP payload stops the repair before the cleanup and names the missing part', async () => {
+  const lacking = { host_payload_missing: true }
+  // every plan that would install stops, the cleanup in front of it included: the old transport is not taken away for nothing
+  for (const status of [{ ...mismatch, ...lacking }, { ...base, installed: false, ready: false, ...lacking }, { ...base, ready: false, externally_managed: true, replaceable: true, version_valid: false, ...lacking }]) {
+    const plan = planUsbipFix(status)
+    assert.deepEqual([plan.kind, plan.id, plan.reason, plan.guide, plan.steps], ['blocked', 'host-payload-missing', 'payload', 'host-component', []])
+    assert.deepEqual(plan.ids, ['host-payload-missing'])
+  }
+  // what installs nothing keeps its plan
+  assert.equal(planUsbipFix({ ...base, ready: false, vhci_residual: true, residual_kind: 'stale', ...lacking }).kind, 'remove-stale')
+  assert.equal(planUsbipFix({ ...base, ...lacking }).kind, 'healthy')
+  const { deps, calls } = world({ status: { ...mismatch, ...lacking }, sessions: [] })
+  const state = await runUsbipFix(deps)
+  assert.equal(state.outcome, 'blocked-payload')
+  assert.deepEqual(calls.filter((call) => ['endStream', 'detach', 'cleanup', 'install', 'replace'].includes(call)), [], 'nothing was changed')
+  for (const [name, texts] of [...Object.entries(usb), ['zh_TW', withUsbipOwnership(zhTW, 'zh_TW').deviceHub.usb], ['de', withUsbipOwnership(de, 'de').deviceHub.usb]]) {
+    const result = describeFixResult(state, texts, friendly(texts), VERSION)
+    assert.deepEqual([result.action, result.guide], ['guide', 'host-component'], name)
+    assert.ok(result.text.includes(texts.errors['USBIP-SETUP-019']), `${name}: the sentence is the one of its code`)
+    assert.match(fixGuideText('host-component', texts, VERSION), /\n.*\n/, `${name}: a list of steps`)
+  }
+})
+
+test('a usbip-win2 left behind without an uninstall entry gets the manual steps, not the list of Installed apps', () => {
+  const leftover = { ...base, ready: false, externally_managed: true, replaceable: false, version_valid: false, unregistered_leftover: true }
+  const plan = planUsbipFix(leftover)
+  assert.deepEqual([plan.kind, plan.id, plan.reason, plan.guide, plan.steps], ['blocked', 'unregistered-leftover', 'leftover', 'leftover', []])
+  // an installation that is registered keeps the instruction of the person's own
+  assert.equal(planUsbipFix({ ...leftover, unregistered_leftover: false }).guide, 'external')
+  // a leftover that only has an extra controller is still repaired
+  assert.equal(planUsbipFix({ ...leftover, version_valid: true, vhci_residual: true, residual_kind: 'stale' }).kind, 'remove-stale')
+  assert.equal(usbipFixOfferedByStatus(leftover), true)
+  for (const [name, texts] of [...Object.entries(usb), ['zh_TW', withUsbipOwnership(zhTW, 'zh_TW').deviceHub.usb], ['de', withUsbipOwnership(de, 'de').deviceHub.usb]]) {
+    const result = describeFixResult({ ...initialFix(), outcome: 'blocked-leftover' }, texts, friendly(texts), VERSION)
+    assert.deepEqual([result.action, result.guide, result.text], ['guide', 'leftover', texts.fixLeftover], name)
+    const guide = fixGuideText('leftover', texts, VERSION)
+    for (const command of ['pnputil /enum-drivers', 'usbip2_ude.inf', 'usbip2_filter.inf', 'pnputil /delete-driver oemNN.inf /uninstall /force', 'sc.exe delete usbip2_ude', 'sc.exe delete usbip2_filter']) assert.ok(guide.includes(command), `${name}: ${command}`)
+    assert.ok(guide.includes(VERSION) && !guide.includes('{version}'), `${name}: the version is filled`)
+  }
 })
 
 test('the reducer walks check, plan, question, steps and an end, and keeps the log of every step', () => {
@@ -498,6 +541,8 @@ test('each failure that software cannot finish maps to a guide, and every guide 
     'USBIP-CLEAN-007: access denied': 'access',
     'USBIP-SETUP-008: externally managed': 'external',
     'USBIP-REPLACE-001: cannot be replaced from here': 'external',
+    'USBIP-SETUP-019: this Sunshine installation has no USB/IP component files': 'host-component',
+    'USBIP-SETUP-007: transport installation failed: USBIP-SETUP-019: no files': 'host-component',
     'USBIP-SETUP-010: installer failed': 'generic',
     'USBIP-REPLACE-004: failed': 'generic',
     'USBIP-CLEAN-003: timed out': 'generic',

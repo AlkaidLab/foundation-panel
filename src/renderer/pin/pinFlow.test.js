@@ -4,8 +4,12 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
-  ENDED_REASONS, MESSAGES, PAD_CELLS, PIN_LENGTH, PIN_ROWS, classifyAnswer, classifyFailure, endedKey, headingFor, keyAt, movePad, padEdges, stickDirection,
+  ENDED_REASONS, PAD_CELLS, PIN_TEXT_KEYS, PIN_LENGTH, PIN_ROWS, classifyAnswer, classifyFailure, endedKey, headingFor, keepWhileMounted, keyAt, movePad, padEdges, stickDirection,
 } from './pinFlow.js'
+import { en } from '../desktop/i18n/en.js'
+import { zh } from '../desktop/i18n/zh.js'
+
+const MESSAGES = { en: en.pinEntry, zh: zh.pinEntry }
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = (...parts) => readFileSync(join(here, ...parts), 'utf8')
@@ -34,9 +38,10 @@ test('an ended pairing says why, and an unknown reason reads as the general one'
   for (const reason of ENDED_REASONS) {
     assert.ok(MESSAGES.en[endedKey(reason)], reason)
     assert.ok(MESSAGES.zh[endedKey(reason)], reason)
+    assert.ok(PIN_TEXT_KEYS.includes(endedKey(reason)), reason)
   }
-  assert.equal(endedKey('something-newer'), 'ended-finished')
-  assert.equal(endedKey(undefined), 'ended-finished')
+  assert.equal(endedKey('something-newer'), 'endedFinished')
+  assert.equal(endedKey(undefined), 'endedFinished')
 })
 
 test('the reasons are the words the host sends', () => {
@@ -47,11 +52,6 @@ test('the reasons are the words the host sends', () => {
   assert.ok(event && source('PinApp.vue').includes(`'${event}'`), 'the page listens for the event the host emits')
   const label = /PIN_WINDOW_ID: &str = "([^"]+)"/.exec(rust)?.[1]
   assert.ok(label)
-})
-
-test('every message exists in both languages', () => {
-  assert.deepEqual(Object.keys(MESSAGES.zh).sort(), Object.keys(MESSAGES.en).sort())
-  for (const language of Object.values(MESSAGES)) for (const value of Object.values(language)) assert.ok(String(value).trim())
 })
 
 test('a controller moves over the keys that can be pressed and stops at the edges', () => {
@@ -108,4 +108,40 @@ test('the left stick is a d-pad past its dead zone', () => {
 test('the window page is built with the panel: an entry of the build and a page the host opens', () => {
   assert.ok(source('..', '..', '..', 'vite.config.js').includes("pin: resolve(rendererSrcPath, 'pin/index.html')"))
   assert.ok(source('..', '..', '..', 'src-tauri', 'src', 'pin_window.rs').includes('"pin/index.html"'))
+})
+
+test('a listener registered for a component that is gone is undone at once and starts nothing', async () => {
+  // still mounted: the undo is kept
+  let undone = 0
+  const kept = []
+  assert.equal(await keepWhileMounted(async () => () => { undone += 1 }, () => true, (undo) => kept.push(undo)), true)
+  assert.equal(kept.length, 1)
+  assert.equal(undone, 0)
+
+  // unmounted while the registration was waiting: undone at once, never kept, and the caller is told not to go on
+  let mounted = true
+  let release
+  const registration = () => new Promise((resolve) => { release = () => resolve(() => { undone += 1 }) })
+  const keptLate = []
+  const pending = keepWhileMounted(registration, () => mounted, (undo) => keptLate.push(undo))
+  mounted = false
+  release()
+  assert.equal(await pending, false)
+  assert.equal(undone, 1, 'the listener is undone as soon as it arrives')
+  assert.equal(keptLate.length, 0)
+
+  // no host to listen to (a browser preview): nothing to undo, and the answer is the mounted state
+  const noHost = async () => { throw new Error('no host') }
+  assert.equal(await keepWhileMounted(noHost, () => true, () => assert.fail('nothing to keep')), true)
+  assert.equal(await keepWhileMounted(noHost, () => false, () => assert.fail('nothing to keep')), false)
+})
+
+test('the page starts its client-name timer only after the listener is registered for a mounted page', () => {
+  const page = source('PinApp.vue')
+  const registered = page.indexOf('keepWhileMounted(')
+  const timer = page.indexOf('nameTimer = setInterval')
+  const guard = page.indexOf('if (!mounted) return')
+  assert.ok(registered > 0 && guard > registered && timer > guard, 'register, then check, then start the timer')
+  assert.match(page, /onBeforeUnmount\(\(\) => \{\s*unmounted = true/)
+  assert.match(page, /clearInterval\(nameTimer\)/)
 })

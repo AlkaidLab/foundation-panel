@@ -417,7 +417,15 @@ jobs:
 
           echo "Version injected into GUI and native plugin manifests"
 
+      # `just setup` fetched the pinned settings data, but its environment ends with it: the frontend build below needs the folder, and stops without it
+      # (the panel built without the data draws label keys and finds no setting).
+      - name: Pin the settings data for the frontend build
+        shell: bash
+        run: node scripts/dev-env.mjs settings-env
+
       - name: Build frontend
+        env:
+          PANEL_REQUIRE_SETTINGS_DATA: '1'
         run: npm run build:renderer
 
       - name: Build native tool plugins

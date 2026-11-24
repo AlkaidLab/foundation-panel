@@ -316,6 +316,7 @@ pub fn ctx_popup_loaded(app: AppHandle) {
     info!("[ctxpop] menu page ready");
     // the tray's own menu window is usable now: the native menu steps aside (unless the person asked for it), and a window that is loaded again has earned the failures it was blamed for
     crate::tray::menu_window_loaded(&app);
+    crate::tray::warm_menu_state(&app);
 }
 
 /// The window can show menus now: it exists and its page has loaded.

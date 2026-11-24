@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted } from 'vue'
 import { MPage, MGroup, MItem, MSection } from 'foundation-ui/vue'
 import '@settings-data'
-import { labelOf } from 'foundation-ui/settings/index.js'
+import { settingsLabel } from '../../composables/settingsLabel.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { pageItems, railItems } from '../../composables/panelNav.js'
 
@@ -17,7 +17,7 @@ const sections = computed(() => railItems(t.value).filter((r) => CATEGORIES.incl
   const items = rail.id === 'config' ? props.groups.flatMap((g) => g.items) : pageItems(t.value, rail.id, props.runtime)
   // a row marked `separated` (the 高级 of 显示与视频) is a group of its own at the end
   return { id: rail.id, label: rail.label, items: items.filter((i) => !i.separated), apart: items.filter((i) => i.separated) }
-}).concat([{ id: 'appearance', label: labelOf(locale.value, 'shell.appearance'), items: pageItems(t.value, 'appearance', props.runtime), apart: [] }]))
+}).concat([{ id: 'appearance', label: settingsLabel(locale.value, 'shell.appearance', t.value.settings.appearance), items: pageItems(t.value, 'appearance', props.runtime), apart: [] }]))
 onMounted(() => { if (props.focus) void nextTick(() => document.querySelector(`[data-hub-section="${props.focus}"]`)?.scrollIntoView({ block: 'start' })) })
 </script>
 

@@ -57,7 +57,13 @@ const compactDesktopLocales = () => ({
 // read at build time from that checkout (src_assets/common/assets/web/config/settingsData, one level up and over from this repository when it is the submodule, or
 // SETTINGS_DATA_DIR) and is not part of this repository. Without it the panel builds with an empty set and shows the label keys.
 const settingsDataDir = process.env.SETTINGS_DATA_DIR || join(__dirname, '..', 'assets', 'web', 'config', 'settingsData')
-const settingsData = existsSync(join(settingsDataDir, 'index.js')) ? join(settingsDataDir, 'index.js') : join(rendererSrcPath, 'composables', 'settingsDataEmpty.js')
+const hasSettingsData = existsSync(join(settingsDataDir, 'index.js'))
+const settingsData = hasSettingsData ? join(settingsDataDir, 'index.js') : join(rendererSrcPath, 'composables', 'settingsDataEmpty.js')
+// A build that ships (the release job) must carry the data: without it the panel draws label keys and finds no setting. The job sets PANEL_REQUIRE_SETTINGS_DATA=1 and the
+// build stops here instead of producing a panel whose texts are keys (v1.0.16 to v1.0.19 were built that way).
+if (process.env.PANEL_REQUIRE_SETTINGS_DATA === '1' && !hasSettingsData) {
+  throw new Error(`PANEL_REQUIRE_SETTINGS_DATA is set but ${join(settingsDataDir, 'index.js')} does not exist: run "node scripts/dev-env.mjs settings-env" and export SETTINGS_DATA_DIR`)
+}
 
 /**
  * https://vitejs.dev/config

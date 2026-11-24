@@ -200,10 +200,11 @@ fn handle_tray_notification_action<R: Runtime>(app: &AppHandle<R>) {
 /// Called from the single-instance hand-off and from the start, so it is safe on any thread.
 pub fn dispatch_notify_action<R: Runtime + 'static>(app: &AppHandle<R>, action: crate::notify_action::NotifyAction) {
     use crate::notify_action::NotifyAction;
-    use crate::pin_window::{Entry, entry_for_click};
+    use crate::pin_window::{Entry, route};
     info!("Notification click: {action:?}");
     match action {
-        NotifyAction::OpenPin => match entry_for_click(current_status().as_deref()) {
+        NotifyAction::OpenPin => match route(crate::pin_prompt::PinPrompt::current(), current_status().as_deref()) {
+            // open_pairing_window reads the setting again: `fullscreen` here is the full-screen entry
             Entry::FullScreen => open_pairing_window(app),
             // the request was answered or has expired since the toast was shown: the panel's pairing page, not an entry nothing can answer
             Entry::PanelPage => {
