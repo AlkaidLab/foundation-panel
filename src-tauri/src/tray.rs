@@ -29,6 +29,16 @@ pub(crate) mod popup_input;
 mod read_order;
 #[cfg(target_os = "windows")]
 mod touch_menu;
+
+/// The release of the click that is opening a tray menu is swallowed, whatever the click came
+/// from (touch_menu::arm_release_suppression).
+#[cfg(target_os = "windows")]
+pub(crate) fn arm_release_suppression() {
+    touch_menu::arm_release_suppression();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn arm_release_suppression() {}
 #[cfg(target_os = "windows")]
 mod vdd_confirmation;
 

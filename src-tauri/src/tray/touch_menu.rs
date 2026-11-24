@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, FindWindowExW, GWLP_WNDPROC, GetWindowThreadProcessId,
-    PostMessageW, SetWindowLongPtrW, WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONUP,
+    PostMessageW, SetWindowLongPtrW, WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -27,24 +27,39 @@ const TOUCH_IDLE: u8 = 0;
 const TOUCH_WAITING_FOR_REPLAY: u8 = 1;
 const TOUCH_SUPPRESSING_RELEASE: u8 = 2;
 const TOUCH_RELEASE_WINDOW_MS: u64 = 1000;
+/// A right-up ends a mouse click when its right-down is at most this old.
+const MOUSE_CLICK_SPAN_MS: u64 = 1500;
 
 /// The message window this process has hooked, 0 when none.
 static HOOKED: AtomicIsize = AtomicIsize::new(0);
 /// The window procedure that was on the window before the hook.
 static ORIGINAL: AtomicIsize = AtomicIsize::new(0);
-/// The touch context-menu gesture is waiting for our replay, or suppressing the physical release
-/// that follows it. Mouse clicks never change this state.
+/// The touch context-menu gesture is waiting for our replay, or suppressing the release that
+/// follows it. A mouse click on its own never changes this state. A tray menu that is opening
+/// arms the guard for a click of any kind (arm_release_suppression).
 static TOUCH_STATE: AtomicU8 = AtomicU8::new(TOUCH_IDLE);
 static TOUCH_SUPPRESS_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 /// Whether the gesture's own release was consumed while waiting for the replay; if it
 /// was, nothing follows the replay and the next click must reach tray-icon untouched.
 static TOUCH_LEFT_EATEN: AtomicBool = AtomicBool::new(false);
+/// When the tray callback last carried a right button down (0: never): a right-up without a
+/// recent one did not end a mouse click.
+static LAST_RIGHT_DOWN_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Arms the release guard for a tray menu that is opening now: the release of the opening
+/// gesture (the lift of a finger, or a stray mouse release) must not land on the icon as a
+/// second click. It is called for a click of any kind: the icon's callback of Windows 11 says
+/// nothing about where the click came from (input_source.rs).
+pub(crate) fn arm_release_suppression() {
+    TOUCH_SUPPRESS_UNTIL_MS.store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
+    TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
 }
 
 /// Installs the WM_CONTEXTMENU hook on the tray message window when it is not hooked yet. Call it
@@ -94,6 +109,9 @@ unsafe extern "system" fn hook_proc(
     unsafe {
         if message == TRAY_CALLBACK_MSG {
             let callback_kind = lparam.0 as u32;
+            if callback_kind == WM_RBUTTONDOWN {
+                LAST_RIGHT_DOWN_MS.store(now_millis(), Ordering::Release);
+            }
             let state = TOUCH_STATE.load(Ordering::Acquire);
             if state != TOUCH_IDLE || callback_kind == WM_RBUTTONUP || callback_kind == WM_LBUTTONUP {
                 debug!("[tray-touch] callback {:#x} state {} ({})", callback_kind, state, super::input_source::describe_message_source());
@@ -122,6 +140,18 @@ unsafe extern "system" fn hook_proc(
                 } else if callback_kind == WM_LBUTTONUP || callback_kind == WM_RBUTTONUP {
                     TOUCH_STATE.store(TOUCH_IDLE, Ordering::Release);
                     return LRESULT(0);
+                }
+            } else if state == TOUCH_IDLE && callback_kind == WM_RBUTTONUP {
+                // A right-up without the right-down of a physical mouse is the taskbar's own
+                // touch long-press synthesis (Windows 11 delivers it as this callback and no
+                // WM_CONTEXTMENU reaches the window). Let the menu open, then swallow the
+                // release of the same gesture.
+                let down = LAST_RIGHT_DOWN_MS.load(Ordering::Acquire);
+                if down == 0 || now_millis().saturating_sub(down) > MOUSE_CLICK_SPAN_MS {
+                    TOUCH_SUPPRESS_UNTIL_MS
+                        .store(now_millis() + TOUCH_RELEASE_WINDOW_MS, Ordering::Release);
+                    TOUCH_STATE.store(TOUCH_SUPPRESSING_RELEASE, Ordering::Release);
+                    info!("[tray-touch] right-up callback without a right-down: the menu is touch-opened");
                 }
             }
         }
