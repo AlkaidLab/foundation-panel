@@ -222,12 +222,18 @@ fn keep_fixed_size(window: &WebviewWindow) {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, STYLESTRUCT,
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+        WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE,
         WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
     const NON_CLIENT_STYLE: u32 =
         WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0;
+    // tao gives every Windows window WS_EX_WINDOWEDGE while it creates it. That extended edge
+    // survives decorations(false) and leaves a native line around the page, including above the
+    // page's own caption. Remove all extended border bits so the WebView is the whole surface.
+    const NON_CLIENT_EX_STYLE: u32 =
+        WS_EX_CLIENTEDGE.0 | WS_EX_DLGMODALFRAME.0 | WS_EX_STATICEDGE.0 | WS_EX_WINDOWEDGE.0;
     unsafe extern "system" fn proc(
         hwnd: HWND,
         msg: u32,
@@ -246,10 +252,16 @@ fn keep_fixed_size(window: &WebviewWindow) {
         }
         // The page owns the entire surface, including its title bar. Keep tao/WebView2 from restoring any
         // system caption or frame after the window has been created.
-        if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 {
+        if msg == WM_STYLECHANGING && (wparam.0 as i32 == GWL_STYLE.0 || wparam.0 as i32 == GWL_EXSTYLE.0) {
             let change = lparam.0 as *mut STYLESTRUCT;
             if !change.is_null() {
-                unsafe { (*change).styleNew &= !NON_CLIENT_STYLE };
+                unsafe {
+                    if wparam.0 as i32 == GWL_STYLE.0 {
+                        (*change).styleNew &= !NON_CLIENT_STYLE;
+                    } else {
+                        (*change).styleNew &= !NON_CLIENT_EX_STYLE;
+                    }
+                }
             }
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
@@ -259,6 +271,8 @@ fn keep_fixed_size(window: &WebviewWindow) {
             let _ = SetWindowSubclass(hwnd, Some(proc), 0x5e7, 0);
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(NON_CLIENT_STYLE as isize));
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style & !(NON_CLIENT_EX_STYLE as isize));
             let _ = SetWindowPos(
                 hwnd,
                 None,
@@ -581,5 +595,15 @@ mod tests {
             assert!(line.starts_with(&format!("{{\"type\":{}", v["type"])), "{line}");
             assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), v);
         }
+    }
+
+    #[test]
+    fn the_installer_removes_extended_window_edges_with_the_native_frame() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("GWL_EXSTYLE"));
+        assert!(source.contains("WS_EX_WINDOWEDGE"));
+        assert!(source.contains("NON_CLIENT_EX_STYLE"));
+        assert!(source.contains("styleNew &= !NON_CLIENT_EX_STYLE"));
+        assert!(source.contains("SetWindowLongPtrW(hwnd, GWL_EXSTYLE"));
     }
 }
