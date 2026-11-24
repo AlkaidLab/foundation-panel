@@ -38,7 +38,18 @@ done
 if [[ "$ref" == refs/tags/v* ]]; then
     printf '%s\n' "${ref#refs/tags/v}"
 elif [ "$event" = "workflow_dispatch" ] && [ "$create_release" = "true" ]; then
-    printf '%s\n' "$(date -u +%Y.%m%d.%H%M%S)"
+    # Same form as the release tags: the year, the month without a leading zero
+    # followed by the two-digit day, and the UTC time of day as a plain number,
+    # so no numeric component has a leading zero (SemVer 2.0.0, item 2). An
+    # instant in RESOLVE_VERSION_NOW (any form date -d reads) replaces the clock
+    # in tests.
+    if [ -n "${RESOLVE_VERSION_NOW-}" ]; then
+        stamp="$(date -u -d "$RESOLVE_VERSION_NOW" "+%Y %m %d %H%M%S")"
+    else
+        stamp="$(date -u "+%Y %m %d %H%M%S")"
+    fi
+    read -r year month day clock <<<"$stamp"
+    printf '%s.%d%s.%d\n' "$year" "$((10#$month))" "$day" "$((10#$clock))"
 else
     printf '%s\n' "0.0.0-dev"
 fi
