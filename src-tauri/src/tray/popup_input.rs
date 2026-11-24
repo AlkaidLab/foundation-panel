@@ -400,7 +400,7 @@ async fn read_slow() -> Slow {
         tokio::task::spawn_blocking(crate::rtss::is_rtss_installed),
     );
     let slow = Slow { live, ds5, sliders, auto_start: auto_start.unwrap_or(false), rtss: rtss.unwrap_or(false) };
-    info!("[traylat] state read in {} ms (streams and controller {} ms, then displays, start-up and RTSS {} ms)", started.elapsed().as_millis(), live_ms, started.elapsed().as_millis() - live_ms);
+    debug!("[traylat] state read in {} ms (streams and controller {} ms, then displays, start-up and RTSS {} ms)", started.elapsed().as_millis(), live_ms, started.elapsed().as_millis() - live_ms);
     slow
 }
 
