@@ -117,6 +117,12 @@
         const RETURN_STALL_MS = 20000;
         const RETURN_KEY = 'foundation-offline-returns';
         const SELF = location.pathname + location.search;
+        // The panel hosts this page in its frame. The page tells it that it is up (at the start and at every round), the panel asks the host with its own native probe, and tells the page the moment
+        // the host answers: the page then returns exactly as it does for its own probe (onSuccess), with the same spacing of returns that end on this page again.
+        const hostWindow = typeof window !== 'undefined' ? window : null;
+        function tellPanel() {
+            try { if (hostWindow && hostWindow.parent && hostWindow.parent !== hostWindow) hostWindow.parent.postMessage({ type: 'foundation-offline-page', path: SELF }, '*'); } catch { /* no panel above this page */ }
+        }
         let roundCount = 0;
         let countdown = 0;
         let interval = 0;
@@ -169,6 +175,8 @@
         }
         function scheduleNextRound() {
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            returnTimer = null;
+            tellPanel();
             roundCount++;
             interval = roundCount <= 1 + PHASE2_ROUNDS ? PHASE2_INTERVAL : PHASE3_INTERVAL;
             countdown = interval;
@@ -206,6 +214,14 @@
             roundCount = 0;
             phase1();
         });
+        if (hostWindow && hostWindow.addEventListener) {
+            hostWindow.addEventListener('message', (event) => {
+                if (event.source !== hostWindow.parent || !event.data || event.data.type !== 'foundation-offline-host-up') return;
+                // a return that is out already is not asked for twice
+                if (!returnTimer) onSuccess();
+            });
+        }
+        tellPanel();
         phase1();
     </script>
 </body>

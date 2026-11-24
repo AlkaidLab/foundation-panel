@@ -10,8 +10,13 @@ const html = fs.readFileSync(file, 'utf8')
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1]
 
 /** One load of the page. `answer(url, atMs)` returns { status, delay } for a request of the page, or 'hang'. `store` is the page's sessionStorage (it survives a reload, like the frame's). */
-function loadPage({ path = '/downloads', search = '', answer, store = {}, startAt = 0 }) {
+function loadPage({ path = '/downloads', search = '', answer, store = {}, startAt = 0, withPanel = false }) {
   let now = startAt
+  // the panel above the page (the frame's parent): what it is sent, and what it can send back
+  const toPanel = []
+  const panel = { postMessage: (message, target) => toPanel.push({ at: now, message, target }) }
+  const messageListeners = []
+  const panelWindow = { parent: panel, addEventListener: (type, fn) => { if (type === 'message') messageListeners.push(fn) } }
   let seq = 0
   const timers = new Map()
   const events = []
@@ -30,6 +35,7 @@ function loadPage({ path = '/downloads', search = '', answer, store = {}, startA
     clearTimeout: (id) => { timers.delete(id) },
     setInterval: (fn, ms) => { const id = ++seq; timers.set(id, { at: now + ms, fn, every: ms, id }); return id },
     clearInterval: (id) => { timers.delete(id) },
+    window: withPanel ? panelWindow : undefined,
     fetch: (url, options = {}) => new Promise((resolve, reject) => {
       const request = { url, at: now, cancelled: false }
       requests.push(request)
@@ -44,7 +50,10 @@ function loadPage({ path = '/downloads', search = '', answer, store = {}, startA
   vm.runInContext(script, context)
   const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
   return {
-    requests, location, events, el, store,
+    requests, location, events, el, store, toPanel,
+    /** a message to the page; `from` is the window that sent it (the panel above, or another) */
+    send(data, from = panel) { for (const fn of messageListeners) fn({ source: from, data }) },
+    panel,
     head: () => el('wait-head').textContent,
     async advance(ms) {
       const end = now + ms
@@ -131,4 +140,64 @@ test('while the host is down it probes once a second for ten seconds, then every
   const before = page.requests.length
   await page.advance(5200)
   assert.equal(page.requests.length, before + 1)
+})
+
+test('in the panel\'s frame the page tells the panel it is up, at the start and at every round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(0)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.toPanel.map((m) => m.message))), [{ type: 'foundation-offline-page', path: '/downloads' }])
+  await page.advance(11000)
+  assert.ok(page.toPanel.length >= 2, 'it tells the panel again when it starts a round')
+  assert.ok(page.toPanel.every((m) => m.message.type === 'foundation-offline-page'))
+})
+
+test('a page that is not in a frame does not need a panel', async () => {
+  const page = loadPage({ answer: () => ({ status: 503 }) })
+  await page.advance(2000)
+  assert.deepEqual(page.toPanel, [])
+})
+
+test('the panel telling the page the host answers returns the page at once, with the same spacing as its own probe', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(1500)
+  page.send({ type: 'foundation-offline-host-up' })
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…')
+  await page.advance(299)
+  assert.equal(page.location.reloads, 0)
+  await page.advance(2)
+  assert.equal(page.location.reloads, 1, 'reloaded after the first spacing (0.3 s)')
+})
+
+test('a message that does not come from the panel above the page, or says something else, is ignored', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' }, { postMessage() {} })
+  page.send({ type: 'something-else' })
+  page.send(null)
+  await page.advance(2000)
+  assert.equal(page.location.reloads, 0)
+})
+
+test('the panel telling twice, or after the page already returns, reloads once', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 200 }) })
+  await page.advance(100)
+  assert.equal(page.head(), 'Sunshine 已恢复，正在返回…', 'its own probe answered')
+  page.send({ type: 'foundation-offline-host-up' })
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(3000)
+  assert.equal(page.location.reloads, 1)
+})
+
+test('a return the panel asked for that does not replace the page lets the page tell the panel again at its next round', async () => {
+  const page = loadPage({ withPanel: true, answer: () => ({ status: 503 }) })
+  await page.advance(500)
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(400)
+  assert.equal(page.location.reloads, 1)
+  const told = page.toPanel.length
+  await page.advance(21000)
+  assert.ok(page.toPanel.length > told, 'a round after the stalled return tells the panel again')
+  page.send({ type: 'foundation-offline-host-up' })
+  await page.advance(2000)
+  assert.equal(page.location.reloads, 2, 'and the panel can ask for another return')
 })
