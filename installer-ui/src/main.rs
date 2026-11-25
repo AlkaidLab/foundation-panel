@@ -600,10 +600,23 @@ mod tests {
     #[test]
     fn the_installer_removes_extended_window_edges_with_the_native_frame() {
         let source = include_str!("main.rs");
-        assert!(source.contains("GWL_EXSTYLE"));
-        assert!(source.contains("WS_EX_WINDOWEDGE"));
-        assert!(source.contains("NON_CLIENT_EX_STYLE"));
-        assert!(source.contains("styleNew &= !NON_CLIENT_EX_STYLE"));
-        assert!(source.contains("SetWindowLongPtrW(hwnd, GWL_EXSTYLE"));
+        let body = source
+            .split("fn keep_fixed_size")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n\n/// It is an application window").next())
+            .expect("keep_fixed_size");
+        let style_change = body
+            .split("if msg == WM_STYLECHANGING")
+            .nth(1)
+            .and_then(|rest| rest.split("unsafe { DefSubclassProc").next())
+            .expect("WM_STYLECHANGING branch");
+        let setup = body
+            .split("if let Some(hwnd) = hwnd_of(window)")
+            .nth(1)
+            .expect("window style setup");
+        assert!(style_change.contains("GWL_EXSTYLE"));
+        assert!(style_change.contains("styleNew &= !NON_CLIENT_EX_STYLE"));
+        assert!(body.contains("WS_EX_WINDOWEDGE"));
+        assert!(setup.contains("SetWindowLongPtrW(hwnd, GWL_EXSTYLE"));
     }
 }
