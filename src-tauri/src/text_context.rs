@@ -35,9 +35,9 @@ use windows::Win32::UI::Accessibility::{
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GetClassNameW,
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowRect, GetWindowThreadProcessId, MSG,
-    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
-    TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    ES_READONLY, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect,
+    GetWindowThreadProcessId, GWL_STYLE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
 use windows::core::{BOOL, GUID, PCWSTR};
 
@@ -146,6 +146,7 @@ struct NativeFocus {
     caret_class: Option<String>,
     focus_rect: Option<WireRect>,
     caret_rect: Option<WireRect>,
+    read_only_edit: bool,
 }
 
 #[derive(Default)]
@@ -250,23 +251,39 @@ struct CaretState {
 fn inspect_caret(element: &IUIAutomationElement) -> CaretState {
     let pattern =
         unsafe { element.GetCachedPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }.ok();
+    // GetCaretRange's isActive reports keyboard focus on the caret owner, so
+    // it holds even when no bounding rectangle can be produced. Remember the
+    // verdict separately: the Win32 fallback may still add a rectangle, but
+    // when it cannot, the UIA verdict must survive instead of collapsing to
+    // active=false.
+    let mut uia_active = false;
     if let Some(pattern) = pattern {
         let mut active = BOOL::default();
         if let Ok(range) = unsafe { pattern.GetCaretRange(&mut active) } {
             if active.as_bool() {
+                uia_active = true;
                 let rect = unsafe { range.GetBoundingRectangles() }
                     .ok()
                     .and_then(|bounds| unsafe { take_last_bounding_rect(bounds) });
-                if rect.is_some() {
-                    return CaretState { active: true, rect };
+                if let Some(rect) = rect {
+                    return CaretState {
+                        active: true,
+                        rect: Some(rect),
+                    };
                 }
             }
         }
     }
-    caret_from_win32().map_or_else(CaretState::default, |rect| CaretState {
-        active: true,
-        rect: Some(rect),
-    })
+    caret_from_win32().map_or_else(
+        || CaretState {
+            active: uia_active,
+            rect: None,
+        },
+        |rect| CaretState {
+            active: true,
+            rect: Some(rect),
+        },
+    )
 }
 
 /// Win32 caret fallback: editors with self-drawn UI that skip UIA text
@@ -374,6 +391,8 @@ fn inspect_native_focus(event_thread: Option<u32>) -> Option<NativeFocus> {
             caret_class: window_class_name(info.hwndCaret),
             focus_rect: native_window_rect(info.hwndFocus),
             caret_rect,
+            read_only_edit: native_window_is_read_only_edit(info.hwndFocus)
+                || native_window_is_read_only_edit(info.hwndCaret),
         })
     }
 }
@@ -389,6 +408,19 @@ fn is_native_text_class(class: &str) -> bool {
         || class == "cascadia_hosting_window_class"
         || class.starts_with("chrome_renderwidgethosthwnd")
         || (class.starts_with("qt") && class.ends_with("qwindowicon"))
+}
+
+/// Only real Edit/RichEdit windows honor ES_READONLY; terminals and
+/// self-drawn controls ignore the style, so it is only consulted for those
+/// classes.
+fn native_window_is_read_only_edit(hwnd: HWND) -> bool {
+    let Some(class) = window_class_name(hwnd) else {
+        return false;
+    };
+    let class = class.trim().to_ascii_lowercase();
+    let is_edit_like =
+        class == "edit" || class.starts_with("richedit") || class.starts_with("windowsforms10.edit");
+    is_edit_like && unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } & (ES_READONLY as isize) != 0
 }
 
 fn native_text_evidence(native: Option<&NativeFocus>) -> bool {
@@ -488,10 +520,26 @@ fn inspect_focused_element(
     let should_inspect_caret = has_text_edit_pattern
         || (control_type == UIA_EditControlTypeId.0 && value_read_only != Some(true))
         || is_scintilla;
-    let caret = should_inspect_caret
+    let mut caret = should_inspect_caret
         .then(|| inspect_caret(&element))
         .unwrap_or_default();
     let native_text = native_text_evidence(native);
+    // Terminal and self-drawn editors (mintty, conhost, Qt, Chromium, ...)
+    // sit behind UIA containers that have neither a text pattern nor an Edit
+    // control type, so the UIA caret check above never runs for them. Their
+    // caret evidence is native; feed it into the same confirmation path
+    // because the observer loop never retries the native-only fallback while
+    // the UIA path already produced an observation.
+    if native_text {
+        if let Some(rect) = native.and_then(|native| native.caret_rect) {
+            if !caret.active {
+                caret.active = true;
+            }
+            if caret.rect.is_none() {
+                caret.rect = Some(rect);
+            }
+        }
+    }
     let editable = is_confirmed_editor(
         control_type,
         is_scintilla,
@@ -534,12 +582,17 @@ fn inspect_native_focused_element(
     if !native_text_evidence(Some(native)) {
         return None;
     }
+    // A focused caret alone does not imply editability: ES_READONLY Edit and
+    // RichEdit controls still own a caret. Reject them explicitly so the core
+    // sees the negative transition, while writable controls and terminals
+    // keep native support.
+    let editable = !native.read_only_edit;
     let rect = native.focus_rect.or(Some(caret_rect))?;
     let signature = FocusSignature {
         control_type: -1,
         rect,
         password: false,
-        editable: true,
+        editable,
         caret_rect: Some(caret_rect),
     };
     let observation = Observation {
@@ -548,7 +601,7 @@ fn inspect_native_focused_element(
         generation,
         source: "uia",
         active: true,
-        editable: true,
+        editable,
         password: false,
         multiline: false,
         pane_visible: false,

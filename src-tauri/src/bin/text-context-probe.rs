@@ -34,10 +34,23 @@ mod windows_probe {
         CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationCacheRequest,
         IUIAutomationElement, IUIAutomationTextEditPattern, IUIAutomationTextPattern2,
         IUIAutomationValuePattern, SetWinEventHook, UIA_BoundingRectanglePropertyId,
-        UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_HasKeyboardFocusPropertyId,
+        UIA_AppBarControlTypeId, UIA_ButtonControlTypeId, UIA_CalendarControlTypeId,
+        UIA_CheckBoxControlTypeId, UIA_ClassNamePropertyId, UIA_ComboBoxControlTypeId,
+        UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DataGridControlTypeId,
+        UIA_DataItemControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        UIA_GroupControlTypeId, UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId,
+        UIA_HasKeyboardFocusPropertyId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
         UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
-        UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId,
-        UIA_ValuePatternId, UnhookWinEvent,
+        UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
+        UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_PaneControlTypeId,
+        UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
+        UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId, UIA_SliderControlTypeId,
+        UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+        UIA_TabControlTypeId, UIA_TableControlTypeId, UIA_TabItemControlTypeId,
+        UIA_TextControlTypeId, UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ThumbControlTypeId,
+        UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId,
+        UIA_TreeControlTypeId, UIA_TreeItemControlTypeId, UIA_ValueIsReadOnlyPropertyId,
+        UIA_ValuePatternId, UIA_WindowControlTypeId, UnhookWinEvent,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO,
@@ -277,47 +290,57 @@ mod windows_probe {
     }
 
     fn control_type_name(value: i32) -> &'static str {
-        match value {
-            50000 => "Button",
-            50001 => "Calendar",
-            50002 => "CheckBox",
-            50003 => "ComboBox",
-            50004 => "Edit",
-            50005 => "Hyperlink",
-            50006 => "Text",
-            50007 => "Group",
-            50008 => "Image",
-            50009 => "ListItem",
-            50010 => "List",
-            50011 => "Menu",
-            50012 => "MenuBar",
-            50013 => "MenuItem",
-            50014 => "ProgressBar",
-            50015 => "RadioButton",
-            50016 => "ScrollBar",
-            50017 => "Slider",
-            50018 => "Spinner",
-            50019 => "StatusBar",
-            50020 => "Tab",
-            50021 => "TabItem",
-            50022 => "TextBox",
-            50023 => "Thumb",
-            50024 => "Tree",
-            50025 => "TreeItem",
-            50026 => "Custom",
-            50027 => "ListView",
-            50028 => "TreeView",
-            50029 => "Window",
-            50030 => "Document",
-            50031 => "Pane",
-            50032 => "Header",
-            50033 => "HeaderItem",
-            50034 => "Table",
-            50035 => "TitleBar",
-            50036 => "Separator",
-            50037 => "SemanticZoom",
-            _ => "Unknown",
-        }
+        // Derived from the windows crate constants, which match the values
+        // UIA actually reports (verified: the desktop pane is 50033). A
+        // hand-written numeric table drifted through the middle of the list
+        // and mislabelled Custom/Group/TreeItem.
+        const CONTROL_TYPE_NAMES: &[(i32, &str)] = &[
+            (UIA_AppBarControlTypeId.0, "AppBar"),
+            (UIA_ButtonControlTypeId.0, "Button"),
+            (UIA_CalendarControlTypeId.0, "Calendar"),
+            (UIA_CheckBoxControlTypeId.0, "CheckBox"),
+            (UIA_ComboBoxControlTypeId.0, "ComboBox"),
+            (UIA_CustomControlTypeId.0, "Custom"),
+            (UIA_DataGridControlTypeId.0, "DataGrid"),
+            (UIA_DataItemControlTypeId.0, "DataItem"),
+            (UIA_DocumentControlTypeId.0, "Document"),
+            (UIA_EditControlTypeId.0, "Edit"),
+            (UIA_GroupControlTypeId.0, "Group"),
+            (UIA_HeaderControlTypeId.0, "Header"),
+            (UIA_HeaderItemControlTypeId.0, "HeaderItem"),
+            (UIA_HyperlinkControlTypeId.0, "Hyperlink"),
+            (UIA_ImageControlTypeId.0, "Image"),
+            (UIA_ListControlTypeId.0, "List"),
+            (UIA_ListItemControlTypeId.0, "ListItem"),
+            (UIA_MenuBarControlTypeId.0, "MenuBar"),
+            (UIA_MenuControlTypeId.0, "Menu"),
+            (UIA_MenuItemControlTypeId.0, "MenuItem"),
+            (UIA_PaneControlTypeId.0, "Pane"),
+            (UIA_ProgressBarControlTypeId.0, "ProgressBar"),
+            (UIA_RadioButtonControlTypeId.0, "RadioButton"),
+            (UIA_ScrollBarControlTypeId.0, "ScrollBar"),
+            (UIA_SemanticZoomControlTypeId.0, "SemanticZoom"),
+            (UIA_SeparatorControlTypeId.0, "Separator"),
+            (UIA_SliderControlTypeId.0, "Slider"),
+            (UIA_SpinnerControlTypeId.0, "Spinner"),
+            (UIA_SplitButtonControlTypeId.0, "SplitButton"),
+            (UIA_StatusBarControlTypeId.0, "StatusBar"),
+            (UIA_TabControlTypeId.0, "Tab"),
+            (UIA_TableControlTypeId.0, "Table"),
+            (UIA_TabItemControlTypeId.0, "TabItem"),
+            (UIA_TextControlTypeId.0, "Text"),
+            (UIA_ThumbControlTypeId.0, "Thumb"),
+            (UIA_TitleBarControlTypeId.0, "TitleBar"),
+            (UIA_ToolBarControlTypeId.0, "ToolBar"),
+            (UIA_ToolTipControlTypeId.0, "ToolTip"),
+            (UIA_TreeControlTypeId.0, "Tree"),
+            (UIA_TreeItemControlTypeId.0, "TreeItem"),
+            (UIA_WindowControlTypeId.0, "Window"),
+        ];
+        CONTROL_TYPE_NAMES
+            .iter()
+            .find(|(id, _)| *id == value)
+            .map_or("Unknown", |(_, name)| name)
     }
 
     fn is_native_text_class(class: &str) -> bool {
@@ -622,6 +645,12 @@ mod windows_probe {
             }
             thread::sleep(interval);
         }
+        // Release the WinEvent hooks and COM objects before CoUninitialize
+        // tears down the apartment; otherwise their destructors run after COM
+        // has already shut down on this thread.
+        drop(_hooks);
+        drop(cache);
+        drop(automation);
         unsafe { CoUninitialize() };
     }
 }
