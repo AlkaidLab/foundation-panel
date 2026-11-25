@@ -614,9 +614,14 @@ mod tests {
             .split("if let Some(hwnd) = hwnd_of(window)")
             .nth(1)
             .expect("window style setup");
+        let mask = body
+            .split("const NON_CLIENT_EX_STYLE: u32 =")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("NON_CLIENT_EX_STYLE mask");
         assert!(style_change.contains("GWL_EXSTYLE"));
         assert!(style_change.contains("styleNew &= !NON_CLIENT_EX_STYLE"));
-        assert!(body.contains("WS_EX_WINDOWEDGE"));
+        assert!(mask.contains("WS_EX_WINDOWEDGE"));
         assert!(setup.contains("SetWindowLongPtrW(hwnd, GWL_EXSTYLE"));
     }
 }
