@@ -5,7 +5,7 @@
 - 文本观察器仅在视频串流活动期间运行；暂停、结束或确认 Core 断开时停止。新 Core 用 `sessions-v1` 排除纯控制会话，旧 Core 保留 streaming 状态兼容。
 - `text_context/agent.rs` 持有观察器和唯一的网络任务，先提交 capability，再发送同一代观察结果；`agent_id/generation` 隔离重启、迟到回调和旧观察结果。COM 调用不占用生命周期状态锁；停止时撤销代次并发出取消，不等待提供方返回。
 
-- UIA 在已有焦点、启用、非离屏及有效矩形检查通过后判定：明确 Value.IsReadOnly 拒绝优先；Edit 控件按 IsReadOnly 或活动光标确认；TextEditPattern 配合活动光标确认，Document 控件额外要求光标矩形；Chromium/Qt 把 contenteditable 暴露为 Custom 控件时，TextEditPattern 即提供方的可编辑契约。
+- UIA 在已有焦点、启用、非离屏及有效矩形检查通过后判定：明确 Value.IsReadOnly 拒绝优先；Edit 控件按 IsReadOnly 或活动光标确认；TextEditPattern 配合活动光标确认，Document 控件额外要求光标矩形；Chromium 等提供方把 contenteditable 暴露为 Custom 或 Group 控件时，TextEditPattern 即提供方的可编辑契约。读取的属性与模式、判定顺序和各应用的实测状态见 [text_context_uia_support.md](text_context_uia_support.md)。
 - 原生通道补充 UIA 无文本模式的输入面：GUITHREADINFO 焦点/光标窗口类命中清单（Win32 Edit/RichEdit、WinForms Edit、Scintilla、mintty、conhost、Windows Terminal、Chromium 渲染窗口、Qt）且存在光标时确认；PuTTY、gVim、Sublime 与 Xshell 终端区这类自绘窗口本身就是打字面，仅按焦点类名确认。UIA 读取后复查焦点窗口，原生证据与当前焦点不一致时丢弃，等待下一次重扫。
 - 只读与密码：UIA Value.IsReadOnly 优先，UIA 无值时原生 ES_READONLY 视为只读；原生回退对单行 Edit 读取 ES_PASSWORD，密码框按密码上报，不再固定为普通文本。
 - TextEditPattern 可以存在于只读 Chrome Document，不作为可编辑证明；缺失/失败按未知处理，不读取输入内容。
