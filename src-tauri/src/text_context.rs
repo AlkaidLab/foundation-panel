@@ -22,7 +22,10 @@ use windows::Win32::System::Ole::{
     SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
     SafeArrayUnaccessData,
 };
-use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+use windows::Win32::System::Threading::{
+    CreateEventW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, SetEvent,
+};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
     IUIAutomationTextEditPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
@@ -30,8 +33,8 @@ use windows::Win32::UI::Accessibility::{
     UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
     UIA_EditControlTypeId, UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId,
     UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
-    UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
-    UnhookWinEvent,
+    UIA_ProcessIdPropertyId, UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId,
+    UIA_ValuePatternId, UnhookWinEvent,
 };
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -41,7 +44,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
     TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
-use windows::core::{BOOL, GUID, PCWSTR};
+use windows::core::{BOOL, GUID, PCWSTR, PWSTR};
 
 use crate::sunshine::{create_https_client, get_local_sunshine_url};
 
@@ -54,6 +57,11 @@ const PANE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const EDITOR_CARET_POLL: Duration = Duration::from_millis(200);
 // Focus-event bursts (menu traversal, Alt+Tab) collapse into one snapshot.
 const RESCAN_DEBOUNCE: Duration = Duration::from_millis(40);
+// The system caret hides between blink flashes (530 ms per phase by default).
+// Editors confirmed by that caret alone would flip to "not editable" on
+// every other snapshot, so a caret that just vanished from the same element
+// is treated as a blink for this long after the last confirming snapshot.
+const CARET_BLINK_GRACE: Duration = Duration::from_millis(1000);
 // Some applications do not raise UIA focus events. During an active stream,
 // this watchdog refreshes the focused element so those windows can still
 // trigger the remote IME. Keep it below Sunshine's 1.2 s touch-to-focus
@@ -115,6 +123,12 @@ impl WireRect {
     }
 }
 
+impl std::fmt::Display for WireRect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{}-{},{}", self.left, self.top, self.right, self.bottom)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct Observation {
     version: u8,
@@ -142,6 +156,53 @@ struct FocusSignature {
     caret_rect: Option<WireRect>,
 }
 
+/// Identity of the focused element for the focus log. Caret movement inside
+/// one editor changes the signature but is not a focus transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocusLogKey {
+    control_type: i32,
+    rect: WireRect,
+    password: bool,
+    editable: bool,
+    has_caret: bool,
+}
+
+impl From<&FocusSignature> for FocusLogKey {
+    fn from(signature: &FocusSignature) -> Self {
+        Self {
+            control_type: signature.control_type,
+            rect: signature.rect,
+            password: signature.password,
+            editable: signature.editable,
+            has_caret: signature.caret_rect.is_some(),
+        }
+    }
+}
+
+/// Whether a snapshot without a caret is the hidden phase of a caret blink.
+/// Scintilla and Qt editors are confirmed by the Win32 caret alone: while
+/// that caret blinks they must stay editors instead of publishing a
+/// retraction and a new confirmation twice per second.
+fn is_caret_blink(
+    previous: Option<&FocusSignature>,
+    current: &FocusSignature,
+    confirmed_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    previous
+        .zip(confirmed_at)
+        .is_some_and(|(previous, confirmed_at)| {
+            previous.editable
+                && previous.caret_rect.is_some()
+                && !current.editable
+                && current.caret_rect.is_none()
+                && previous.control_type == current.control_type
+                && previous.rect == current.rect
+                && previous.password == current.password
+                && now.duration_since(confirmed_at) <= CARET_BLINK_GRACE
+        })
+}
+
 #[derive(Clone, Debug, Default)]
 struct NativeFocus {
     focus_class: Option<String>,
@@ -151,6 +212,44 @@ struct NativeFocus {
     read_only_edit: bool,
     password_edit: bool,
     focus_hwnd: Option<HWND>,
+}
+
+/// Field-diagnosis facts for one focus log line. They never take part in the
+/// focus signature, so a change in them alone publishes nothing.
+#[derive(Default)]
+struct FocusDetails {
+    process: Option<String>,
+    class: Option<String>,
+    text_edit: Option<bool>,
+    value_read_only: Option<bool>,
+}
+
+fn flag(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "n/a",
+    }
+}
+
+/// Executable file name of a process, for the focus log line only.
+fn process_name(pid: u32) -> Option<String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let queried =
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut length);
+        let _ = CloseHandle(handle);
+        queried.ok()?;
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        Some(
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or(path),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -561,6 +660,7 @@ fn inspect_focused_element(
     cache: &IUIAutomationCacheRequest,
     generation: u64,
     native: Option<&NativeFocus>,
+    details: &mut FocusDetails,
 ) -> Option<(FocusSignature, Observation)> {
     // BuildCache fetches every property and pattern in one cross-process
     // round trip instead of one per Current* call.
@@ -580,9 +680,16 @@ fn inspect_focused_element(
         return None;
     }
     let control_type = unsafe { element.CachedControlType() }.ok()?.0;
-    let is_scintilla = unsafe { element.CachedClassName() }
+    let class_name = unsafe { element.CachedClassName() }
         .ok()
-        .is_some_and(|name| name.to_string().eq_ignore_ascii_case("Scintilla"));
+        .map(|name| name.to_string());
+    let is_scintilla = class_name
+        .as_deref()
+        .is_some_and(|name| name.eq_ignore_ascii_case("Scintilla"));
+    let process = unsafe { element.CachedProcessId() }
+        .ok()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .and_then(process_name);
     let password = unsafe { element.CachedIsPassword() }
         .map(|v| v.as_bool())
         .unwrap_or(false);
@@ -638,6 +745,12 @@ fn inspect_focused_element(
         password,
         editable,
         caret_rect: caret.rect,
+    };
+    *details = FocusDetails {
+        process,
+        class: class_name,
+        text_edit: Some(has_text_edit_pattern),
+        value_read_only,
     };
     let observation = Observation {
         version: 1,
@@ -838,6 +951,7 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
             let _ = request.AddProperty(UIA_ControlTypePropertyId);
             let _ = request.AddProperty(UIA_ClassNamePropertyId);
             let _ = request.AddProperty(UIA_IsPasswordPropertyId);
+            let _ = request.AddProperty(UIA_ProcessIdPropertyId);
             let _ = request.AddProperty(UIA_ValueIsReadOnlyPropertyId);
             let _ = request.AddPattern(UIA_ValuePatternId);
             let _ = request.AddPattern(UIA_TextEditPatternId);
@@ -873,6 +987,10 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
 
     let mut previous_pane_visible = false;
     let mut previous_focus: Option<FocusSignature> = None;
+    // When the focused element was last confirmed with a visible caret, and
+    // which element the last focus log line described.
+    let mut caret_confirmed_at: Option<Instant> = None;
+    let mut logged_focus: Option<FocusLogKey> = None;
     let mut editor_focused = false;
     // A stream can start while an editor already has focus, so request a
     // baseline snapshot even when no focus event is raised.
@@ -937,38 +1055,85 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
             last_snapshot = now;
             let event_thread = RESCAN_THREAD.with(|slot| slot.take());
             let native = inspect_native_focus(event_thread);
+            let mut details = FocusDetails::default();
             let focused = match (automation.as_ref(), cache.as_ref()) {
                 (Some(automation), Some(cache)) => {
-                    inspect_focused_element(automation, cache, generation, native.as_ref())
-                        .or_else(|| inspect_native_focused_element(native.as_ref(), generation))
+                    inspect_focused_element(
+                        automation,
+                        cache,
+                        generation,
+                        native.as_ref(),
+                        &mut details,
+                    )
+                    .or_else(|| inspect_native_focused_element(native.as_ref(), generation))
                 }
                 _ => inspect_native_focused_element(native.as_ref(), generation),
             };
+            // The native fallback inspects a window instead of a UIA element.
+            if details.class.is_none() {
+                if let Some(native) = native.as_ref() {
+                    details.class = native.focus_class.clone();
+                    details.process = native
+                        .focus_hwnd
+                        .filter(|hwnd| !hwnd.is_invalid())
+                        .map(|hwnd| unsafe { GetWindowThreadProcessId(hwnd, None) })
+                        .and_then(process_name);
+                }
+            }
             match focused {
                 Some((signature, observation)) => {
-                    editor_focused = signature.editable;
-                    if previous_focus != Some(signature) {
-                        // One line per focus transition: field diagnosis of
-                        // which editors the observer recognizes, and whether
-                        // the negative transitions are published too.
-                        info!(
-                            "text context focus: source={} active={} editable={} password={} control_type={} caret={}",
-                            observation.source,
-                            observation.active,
-                            observation.editable,
-                            observation.password,
-                            signature.control_type,
-                            signature.caret_rect.is_some()
-                        );
-                        // Publish non-editable focus too. The core caches UIA as
-                        // level-triggered state, so explicit negative transitions
-                        // prevent a previously focused editor from going stale.
-                        shared.publish(observation);
-                        previous_focus = Some(signature);
+                    if is_caret_blink(
+                        previous_focus.as_ref(),
+                        &signature,
+                        caret_confirmed_at,
+                        now,
+                    ) {
+                        // The caret returns with the next flash: keep the
+                        // confirmed state instead of publishing a retraction.
+                        editor_focused = true;
+                    } else {
+                        editor_focused = signature.editable;
+                        if previous_focus != Some(signature) {
+                            // One line per focus transition: field diagnosis of
+                            // which editors the observer recognizes, which process
+                            // and control the verdict came from, and where its
+                            // element is, so a remote tap can be checked against
+                            // the rectangle the core matches it with.
+                            let logged = FocusLogKey::from(&signature);
+                            if logged_focus != Some(logged) {
+                                info!(
+                                    "text context focus: source={} active={} editable={} password={} control_type={} caret={} process={} class={} rect={} text_edit={} value_read_only={}",
+                                    observation.source,
+                                    observation.active,
+                                    observation.editable,
+                                    observation.password,
+                                    signature.control_type,
+                                    signature.caret_rect.is_some(),
+                                    details.process.as_deref().unwrap_or("?"),
+                                    details.class.as_deref().unwrap_or("-"),
+                                    observation
+                                        .element_rect
+                                        .map(|rect| rect.to_string())
+                                        .unwrap_or_default(),
+                                    flag(details.text_edit),
+                                    flag(details.value_read_only),
+                                );
+                                logged_focus = Some(logged);
+                            }
+                            // Publish non-editable focus too. The core caches UIA as
+                            // level-triggered state, so explicit negative transitions
+                            // prevent a previously focused editor from going stale.
+                            shared.publish(observation);
+                            previous_focus = Some(signature);
+                        }
+                        caret_confirmed_at =
+                            (signature.editable && signature.caret_rect.is_some()).then_some(now);
                     }
                 }
                 None if previous_focus.take().is_some() => {
                     editor_focused = false;
+                    caret_confirmed_at = None;
+                    logged_focus = None;
                     shared.publish(Observation {
                         version: 1,
                         agent_id: agent_id(),
@@ -1063,6 +1228,73 @@ mod tests {
             observer_wait(now, false, false, now, start, Some(now)),
             RESCAN_DEBOUNCE
         );
+    }
+
+    #[test]
+    fn caret_blink_keeps_a_caret_confirmed_editor() {
+        let start = Instant::now();
+        let rect = WireRect {
+            left: 0,
+            top: 0,
+            right: 10,
+            bottom: 10,
+        };
+        let confirmed = FocusSignature {
+            control_type: UIA_PaneControlTypeId.0,
+            rect,
+            password: false,
+            editable: true,
+            caret_rect: Some(WireRect {
+                left: 1,
+                top: 1,
+                right: 2,
+                bottom: 9,
+            }),
+        };
+        // The same element as seen between two flashes of its caret.
+        let mut blink = confirmed;
+        blink.editable = false;
+        blink.caret_rect = None;
+        assert!(is_caret_blink(
+            Some(&confirmed),
+            &blink,
+            Some(start),
+            start + Duration::from_millis(600),
+        ));
+
+        // A caret that stays away for longer than a blink phase is gone.
+        assert!(!is_caret_blink(
+            Some(&confirmed),
+            &blink,
+            Some(start),
+            start + CARET_BLINK_GRACE + Duration::from_millis(1),
+        ));
+        // Nothing confirmed this element with a caret, or no element precedes it.
+        assert!(!is_caret_blink(Some(&confirmed), &blink, None, start));
+        assert!(!is_caret_blink(None, &blink, Some(start), start));
+
+        // Another element is a real focus change, even without a caret.
+        let mut other = blink;
+        other.rect = WireRect {
+            left: 20,
+            top: 0,
+            right: 30,
+            bottom: 10,
+        };
+        assert!(!is_caret_blink(Some(&confirmed), &other, Some(start), start));
+
+        // A caret that only moved, for example after typing, is still the same editor.
+        let mut typed = confirmed;
+        typed.caret_rect = Some(WireRect {
+            left: 3,
+            top: 1,
+            right: 4,
+            bottom: 9,
+        });
+        assert!(!is_caret_blink(Some(&confirmed), &typed, Some(start), start));
+        // Such movement updates the published caret but is not logged again.
+        assert_eq!(FocusLogKey::from(&confirmed), FocusLogKey::from(&typed));
+        assert_ne!(FocusLogKey::from(&confirmed), FocusLogKey::from(&blink));
     }
 
     #[test]
