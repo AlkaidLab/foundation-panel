@@ -72,6 +72,8 @@
 7. **TextEditPattern + 活动光标**。Document 控件额外要求光标有矩形，避免浏览器光标浏览被当成编辑。
 8. 以上都不满足时判为不可编辑。不可编辑的结论同样上报，Core 据此撤销之前的激活。
 
+密码标记独立于可编辑结论。UIA 的 `IsPassword` 为 true，或焦点窗口是带 `ES_PASSWORD` 的单行 Edit 时，观察结果按密码上报。
+
 光标优先取 `TextPattern2`，取不到时读 Win32 `GUITHREADINFO` 的光标。UIA 读取完成后会用 `GetGUIThreadInfo` 复查焦点窗口，原生证据与当前焦点不一致时丢弃。
 
 Scintilla 和 Qt 编辑器只靠 Win32 光标确认，而光标每次闪烁会消失约 530 ms。同一个元素在带光标确认后的 1 秒内失去光标按闪烁处理，观察器保持原结论，不发布撤销。

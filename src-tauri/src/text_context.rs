@@ -692,7 +692,12 @@ fn inspect_focused_element(
         .and_then(process_name);
     let password = unsafe { element.CachedIsPassword() }
         .map(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        // UIA reports false both for ordinary text and for a provider that
+        // does not expose IsPassword, so the two cannot be told apart. A
+        // password style on the focus window, already verified to be the
+        // current focus, is password evidence on its own.
+        || native.is_some_and(|native| native.password_edit);
     let value_read_only =
         unsafe { element.GetCachedPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
             .ok()
