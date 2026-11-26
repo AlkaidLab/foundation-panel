@@ -825,6 +825,7 @@ fn initialize_tray_locale() {
         .unwrap_or_else(|| normalize_tray_locale(&locale));
     *NOTIFICATION_LOCALE.lock().unwrap() = Some(notification_locale);
     *CURRENT_LOCALE.lock().unwrap() = Some(locale);
+    crate::proxy_server::set_panel_locale(&locale);
 }
 
 fn build_owned_system_tray<R: Runtime + 'static>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -1381,6 +1382,8 @@ fn init_sunshine_user_mode_state<R: Runtime + 'static>(app: &AppHandle<R>) {
 
 fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64, String) {
     let locale = normalize_tray_locale(locale).to_string();
+    // 语言 cookie 跟着面板语言走，GUI 内嵌的 WebUI 页面据此解析界面语言
+    crate::proxy_server::set_panel_locale(&locale);
     let (revision, changed) = {
         let mut current_locale = CURRENT_LOCALE.lock().unwrap();
         let revision = next_locale_change_revision();

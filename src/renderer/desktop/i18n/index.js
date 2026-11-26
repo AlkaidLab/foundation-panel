@@ -219,11 +219,23 @@ window.addEventListener('storage', (event) => {
   updateCurrentLocale(event.newValue)
 })
 
+// 面板语言变化后，让已打开的内嵌 WebUI 页面立即跟随（代理上的语言 cookie 已同步更新）。
+function notifyEmbeddedPages(locale) {
+  document.querySelectorAll('iframe').forEach((iframe) => {
+    try {
+      iframe.contentWindow?.postMessage({ type: 'locale-sync', locale }, '*')
+    } catch {
+      // 跨域限制，忽略
+    }
+  })
+}
+
 // 用户明确切换时，通过同一条命令更新 Sunshine UI 和托盘语言。
 async function syncLocalePreferences(locale, requestId) {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('set_locale_preferences', { locale, requestId })
+    notifyEmbeddedPages(locale)
   } catch (error) {
     console.warn('Failed to sync locale preferences:', error)
   }
@@ -274,8 +286,9 @@ export function useI18n() {
   return { t, locale, toggleLocale, choice, setChoice: setLocaleChoice, systemLocale }
 }
 
-if (currentChoice.value === LOCALE_SYSTEM) {
-  try {
-    if (localStorage.getItem('language') !== currentLocale.value) { localStorage.setItem('language', currentLocale.value); syncLocalePreferences(currentLocale.value, createLocaleRequestId()) }
-  } catch { /* storage unavailable */ }
-}
+// 面板语言是 GUI 内嵌 WebUI 的权威：启动时把解析出的语言交给主机与托盘（跟随系统时即使存储的
+// 语言与解析结果一致也要交，否则主机/托盘可能停在别的语言上，内嵌页面就会显示错语言）。
+try {
+  if (localStorage.getItem('language') !== currentLocale.value) localStorage.setItem('language', currentLocale.value)
+  syncLocalePreferences(currentLocale.value, createLocaleRequestId())
+} catch { /* storage unavailable */ }
