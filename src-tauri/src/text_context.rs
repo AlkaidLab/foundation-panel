@@ -28,9 +28,10 @@ use windows::Win32::UI::Accessibility::{
     IUIAutomationTextEditPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
     SetWinEventHook, UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId,
     UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
-    UIA_EditControlTypeId, UIA_HasKeyboardFocusPropertyId, UIA_IsEnabledPropertyId,
-    UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId, UIA_TextEditPatternId, UIA_TextPattern2Id,
-    UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId, UnhookWinEvent,
+    UIA_EditControlTypeId, UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId,
+    UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
+    UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
+    UnhookWinEvent,
 };
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -516,10 +517,14 @@ fn is_confirmed_editor(
         return false;
     }
 
-    // Chromium and Qt providers may expose a contenteditable editor as a
-    // Custom control. TextEditPattern is the provider's explicit editability
-    // contract in that case, even when TextPattern2 has no caret range.
-    if control_type == UIA_CustomControlTypeId.0 && has_text_edit_pattern {
+    // Chromium and Qt providers expose focused contenteditable editors as
+    // Custom or Group controls: QQ's ProseMirror editor arrives as a Group
+    // with TextEditPattern but no ValuePattern, TextPattern2 caret, or Win32
+    // caret. TextEditPattern is the provider's explicit editability contract
+    // there; an explicit Value.IsReadOnly result still rejects first.
+    if (control_type == UIA_CustomControlTypeId.0 || control_type == UIA_GroupControlTypeId.0)
+        && has_text_edit_pattern
+    {
         return true;
     }
 
@@ -943,6 +948,18 @@ fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shar
                 Some((signature, observation)) => {
                     editor_focused = signature.editable;
                     if previous_focus != Some(signature) {
+                        // One line per focus transition: field diagnosis of
+                        // which editors the observer recognizes, and whether
+                        // the negative transitions are published too.
+                        info!(
+                            "text context focus: source={} active={} editable={} password={} control_type={} caret={}",
+                            observation.source,
+                            observation.active,
+                            observation.editable,
+                            observation.password,
+                            signature.control_type,
+                            signature.caret_rect.is_some()
+                        );
                         // Publish non-editable focus too. The core caches UIA as
                         // level-triggered state, so explicit negative transitions
                         // prevent a previously focused editor from going stale.
@@ -1149,6 +1166,26 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
+            ),
+            // QQ's ProseMirror editor: a Group with TextEditPattern and no
+            // other evidence. Read-only still rejects.
+            (
+                UIA_GroupControlTypeId.0,
+                false,
+                None,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                UIA_GroupControlTypeId.0,
+                false,
+                Some(true),
+                true,
+                true,
+                true,
                 false,
             ),
         ] {
