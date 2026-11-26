@@ -74,7 +74,6 @@
           <MItem action icon="tv" :title="t.sidebar.openBigScreen" :text="t.sidebar.openBigScreenHelp" data-help-row="bigScreen" @click="openDesktop" />
           <MItem action icon="lightbulb" :title="coach.rerun" @click="startCoach" />
           <MItem action icon="public" :title="remote.openText" @click="emit('open-remote')" />
-          <MItem action icon="checklist" :title="startText.guideTitle" :text="startText.guideSub" @click="startCard.reopen()" />
         </MGroup>
       </MSection>
       <MSection>
@@ -93,7 +92,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, MSwitch, useNotify, aboutTexts, coachTexts, guideTexts, homeTexts, remoteTexts, useGuideCard, MHelpTiles } from 'foundation-ui/vue'
+import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, MSwitch, useNotify, aboutTexts, coachTexts, guideTexts, remoteTexts, MHelpTiles } from 'foundation-ui/vue'
 import { helpTileTexts, aboutLine } from 'foundation-ui/help-tiles'
 import { SPONSORS } from '../config/sponsors.js'
 import ShortcutsSheet from './m3e/ShortcutsSheet.vue'
@@ -151,9 +150,6 @@ const coach = computed(() => coachTexts(props.locale))
 const startCoach = () => window.dispatchEvent(new CustomEvent('foundation-coach-start'))
 const aboutText = computed(() => aboutTexts(props.locale))
 const aboutSub = computed(() => aboutLine(props.currentVersion || props.update.installed, props.update, helpTileTexts(props.locale)))
-// the get started card of the overview comes back from here
-const startText = computed(() => homeTexts(props.locale))
-const startCard = useGuideCard('panel-home', () => [])
 const heading = computed(() => {
   const s = t.value.sidebar
   if (props.page === ROUTES.TOOLBOX) return { title: s.toolbox, description: s.toolboxDescription }

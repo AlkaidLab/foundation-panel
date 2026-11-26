@@ -1,12 +1,11 @@
-//! The sliders of the tray's quick panel (V3): resolution, refresh rate, scale, bitrate cap.
+//! The sliders of the tray's quick panel (V3): resolution, refresh rate, scale, current stream bitrate.
 //!
 //! The menu page draws what `state.sliders` says and sends back `tray_popup_set(token, key, value)` when a slider is released (popup_input.rs `set`). Where each value goes:
 //!   resolution, refresh  Win32 on the TARGET display: EnumDisplaySettingsExW lists its modes, ChangeDisplaySettingsExW (CDS_TEST first, then CDS_UPDATEREGISTRY) sets one. The Panel had no
 //!                        call for this, and the host has no endpoint for it (its display_device module changes modes only for a stream's start and end), so it is done here, in the Panel.
 //!   scale                `dpi_scale::set_scale` (DisplayConfigSetDeviceInfo, dpi_scale.rs) on the TARGET display, the call of the 桌面缩放 section. The steps offered are what Windows lets that display take now without
 //!                        signing out (`dpi_scale::read_range`; a phone-sized display stops at 200 %), read at every state, so they follow the display and its resolution.
-//!   bitrate cap          `max_bitrate` (Kbps, 0 = 自动) in the host's configuration: the same read-modify-write as `save_microphone_backend` (DEVICE_CONFIG_LOCK, vdd::read_full_sunshine_config,
-//!                        sunshine::post_sunshine_config), because the config API replaces the whole table. It applies to the next connection (the host's own table calls it a client setting).
+//!   current bitrate      the selected RUNNING session's target bitrate, applied through the host's runtime bitrate endpoint.
 //!
 //! The target of the mode sliders: the display that is being streamed; when nothing is streamed, the display a stream would go to: the virtual display (基地虚拟显示器) while it exists and Windows lists it,
 //! else the primary display of the desktop. None only when Windows lists no display at all.
@@ -138,9 +137,8 @@ fn mode_text(m: Mode) -> String {
     format!("{}×{}@{}", m.width, m.height, m.hz)
 }
 
-/// The `sliders` of the menu state. `dpi` is the desktop's scale in percent (None: unknown; it is not tied to the target), `bitrate_kbps` the cap (None: the host is not connected, no slider).
-pub(super) fn sliders_json(outputs: &[Output], target: Option<(usize, Kind)>, dpi: Option<&ScaleRange>, bitrate_kbps: Option<u64>) -> Value {
-    let bitrate = bitrate_kbps.map(|kbps| json!({ "kbps": kbps }));
+/// The `sliders` of the menu state. `dpi` is the desktop's scale in percent (None: unknown; it is not tied to the target), `bitrate` is the current stream target (None: the host is not connected, no slider).
+pub(super) fn sliders_json(outputs: &[Output], target: Option<(usize, Kind)>, dpi: Option<&ScaleRange>, bitrate: Option<Value>) -> Value {
     // the steps are what Windows lets the target display take now without signing out (a phone-sized display stops at 200 %): the slider offers those and no others
     let scale = dpi.map(|r| json!({ "value": r.current, "options": r.options, "recommended": r.recommended }));
     let Some((at, kind)) = target.filter(|(i, _)| *i < outputs.len()) else {
@@ -393,15 +391,16 @@ mod tests {
     #[test]
     fn the_slider_state_names_the_target_and_hides_what_has_no_target() {
         let outputs = desk();
-        let none = sliders_json(&outputs, None, Some(&range(150, 300)), Some(0));
+        let none = sliders_json(&outputs, None, Some(&range(150, 300)), Some(json!({ "kbps": 0, "enabled": false })));
         assert!(none["target"].is_null() && none["resolution"].is_null() && none["refresh"].is_null());
         assert_eq!(none["dpi"]["value"], 150, "the scale needs no target to be shown: the primary display's range is read");
-        assert_eq!(none["bitrate"]["kbps"], 0, "the bitrate cap needs no display");
-        assert!(sliders_json(&outputs, None, None, Some(0))["dpi"].is_null(), "a scale that cannot be read is no slider");
+        assert_eq!(none["bitrate"]["kbps"], 0, "the current bitrate is disabled without a stream");
+        assert!(!none["bitrate"]["enabled"].as_bool().unwrap(), "the current bitrate is disabled without a stream");
+        assert!(sliders_json(&outputs, None, None, Some(json!({ "kbps": 0, "enabled": false })))["dpi"].is_null(), "a scale that cannot be read is no slider");
         let offline = sliders_json(&outputs, None, None, None);
         assert!(offline["bitrate"].is_null(), "no connection, no bitrate slider");
 
-        let vdd = sliders_json(&outputs, Some((2, Kind::Virtual)), Some(&range(150, 200)), Some(80000));
+        let vdd = sliders_json(&outputs, Some((2, Kind::Virtual)), Some(&range(150, 200)), Some(json!({ "kbps": 80000, "enabled": true })));
         assert_eq!(vdd["target"]["kind"], "vdd");
         assert_eq!(vdd["target"]["name"], "", "the menu names the virtual display itself");
         assert_eq!(vdd["target"]["mode"], "2560×1440@120");
@@ -411,8 +410,9 @@ mod tests {
         assert_eq!(vdd["resolution"]["options"], json!(["1920x1080", "2560x1440", "3840x2160"]));
         assert_eq!(vdd["refresh"]["value"], 120);
         assert_eq!(vdd["bitrate"]["kbps"], 80000);
+        assert!(vdd["bitrate"]["enabled"].as_bool().unwrap());
 
-        let primary = sliders_json(&outputs, Some((0, Kind::Stream)), Some(&range(150, 300)), Some(0));
+        let primary = sliders_json(&outputs, Some((0, Kind::Stream)), Some(&range(150, 300)), Some(json!({ "kbps": 0, "enabled": false })));
         assert_eq!(primary["target"]["kind"], "stream");
         assert_eq!(primary["target"]["name"], "DISPLAY1");
         assert_eq!(primary["dpi"]["value"], 150);

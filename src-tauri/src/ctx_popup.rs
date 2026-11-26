@@ -39,6 +39,9 @@ const MEASURE_WIDTH_CSS: f64 = 360.0;
 const READY_TIMEOUT: Duration = Duration::from_millis(900);
 /// A window that was shown and did not take the focus within this time is given up (the focus rules of the system, or a window that never rendered).
 const FOCUS_GIVE_UP: Duration = Duration::from_millis(1500);
+/// How long after the tray menu opened a loss of the focus does not end it: the taskbar takes the
+/// focus back once the opening gesture is over (the lift of a finger does it).
+const OPEN_FOCUS_GRACE: Duration = Duration::from_millis(1500);
 
 static LOADED: AtomicBool = AtomicBool::new(false);
 /// The window could not be made (or made again): the tray falls back to its native menu until it can.
@@ -76,6 +79,9 @@ struct Open {
     /// The window has had the focus: from then on losing it ends the menu.
     armed: bool,
     shown_at: Option<Instant>,
+    /// Until when the menu takes the focus back instead of ending when it loses it. Set when the
+    /// tray menu opens, never for the menus of the pages.
+    focus_grace_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +322,7 @@ pub fn ctx_popup_loaded(app: AppHandle) {
     info!("[ctxpop] menu page ready");
     // the tray's own menu window is usable now: the native menu steps aside (unless the person asked for it), and a window that is loaded again has earned the failures it was blamed for
     crate::tray::menu_window_loaded(&app);
+    crate::tray::warm_menu_state(&app);
 }
 
 /// The window can show menus now: it exists and its page has loaded.
@@ -435,7 +442,7 @@ pub async fn ctx_popup_open(owner: WebviewWindow, request: OpenRequest) -> Resul
     let (_, room_h) = room_css(monitor.work, monitor.scale, MARGIN_CSS);
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    *state() = Some(Open { token: request.token, tray: None, owner: owner.label().to_string(), anchor, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None });
+    *state() = Some(Open { token: request.token, tray: None, owner: owner.label().to_string(), anchor, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: None });
 
     // the window waits on the monitor of the pointer, as large as the work area allows, cloaked: the page lays the menu out in a window that renders, at the scale it will have
     let measure = Rect::new(
@@ -514,7 +521,10 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
 
     let token = TRAY_TOKEN.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    *state() = Some(Open { token, tray: Some(TrayAnchor { icon, edge }), owner: String::new(), anchor: centre, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None });
+    // the release of the opening gesture (touch lift, or a stray mouse release) must not land on
+    // the icon as a second click now that the menu is coming up
+    crate::tray::arm_release_suppression();
+    *state() = Some(Open { token, tray: Some(TrayAnchor { icon, edge }), owner: String::new(), anchor: centre, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: Some(Instant::now() + OPEN_FOCUS_GRACE) });
 
     // the window waits on the icon's monitor, as large as the work area allows and cloaked, while the page lays the card out at the scale it will have
     let measure = Rect::new(
@@ -610,6 +620,10 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
         let _ = popup.set_focus();
         if let Some(open) = state().as_mut().filter(|o| o.token == token) {
             open.shown_at = Some(Instant::now());
+            // the grace counts from the moment the menu is on screen, not from the request to open it
+            if open.tray.is_some() {
+                open.focus_grace_until = Some(Instant::now() + OPEN_FOCUS_GRACE);
+            }
         }
     }
     if first && SELFTEST.load(Ordering::SeqCst) {
@@ -698,7 +712,7 @@ fn finish(app: &AppHandle, path: Option<Vec<u32>>, reason: Reason) -> bool {
         }
         let _ = app.emit_to(open.owner.as_str(), "ctx-popup:result", json!({ "token": open.token, "path": path, "reason": format!("{reason:?}") }));
     }
-    debug!("[ctxpop] closed token {} ({reason:?}) path {path:?}", open.token);
+    info!("[ctxpop] closed token {} ({reason:?}) path {path:?}", open.token);
     true
 }
 
@@ -723,8 +737,8 @@ fn watch(app: AppHandle, token: u64) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(120)).await;
-            let (owner_label, armed, shown_at) = match state().as_ref().filter(|o| o.token == token) {
-                Some(o) => (o.owner.clone(), o.armed, o.shown_at),
+            let (owner_label, armed, shown_at, focus_grace_until) = match state().as_ref().filter(|o| o.token == token) {
+                Some(o) => (o.owner.clone(), o.armed, o.shown_at, o.focus_grace_until),
                 None => return,
             };
             // the tray's menu has no owner window to keep an eye on
@@ -739,6 +753,10 @@ fn watch(app: AppHandle, token: u64) {
             };
             let focused = popup.is_focused().unwrap_or(false);
             let age = shown_at.map(|t| t.elapsed()).unwrap_or_default();
+            if !focused && focus_grace_until.is_some_and(|until| Instant::now() < until) {
+                let _ = popup.set_focus();
+                continue;
+            }
             if focused {
                 if let Some(open) = state().as_mut().filter(|o| o.token == token) {
                     open.armed = true;
@@ -770,6 +788,11 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) -> bool {
                 }
             }
             WindowEvent::Focused(false) => {
+                if state().as_ref().is_some_and(|o| o.focus_grace_until.is_some_and(|until| Instant::now() < until)) {
+                    info!("[ctxpop] the focus went back to the taskbar right after the menu opened: the menu takes it again");
+                    let _ = window.set_focus();
+                    return true;
+                }
                 let armed = state().as_ref().is_some_and(|o| o.armed);
                 if armed {
                     finish(window.app_handle(), None, Reason::FocusLost);

@@ -89,6 +89,12 @@ pub struct UsbipStatus {
     pub externally_managed: bool,
     /// An external installation the person may ask to replace with the host's own package (host `status`).
     pub replaceable: bool,
+    /// The Sunshine installation has no `scripts\usbip` payload (its installer was run without the USB/IP component), so
+    /// nothing can be installed from it. The repair says so before it removes anything.
+    pub host_payload_missing: bool,
+    /// Driver services, files or controllers of a usbip-win2 are there but no uninstall entry owns them (another tool
+    /// removed its copy and left them): Installed apps has nothing to uninstall, so the repair names the manual steps.
+    pub unregistered_leftover: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

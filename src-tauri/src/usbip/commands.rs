@@ -33,6 +33,11 @@ pub async fn usbip_install_transport() -> Result<UsbipStatus, String> {
     #[cfg(target_os = "windows")]
     super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
+    // Nothing is installed yet, so the bundled payload is what gets installed: say it is missing before a UAC prompt.
+    #[cfg(target_os = "windows")]
+    if matches!(super::installed_usbip_version(), Ok(None)) {
+        remember_payload_missing()?;
+    }
     #[cfg(target_os = "windows")]
     let mut kept = {
         let mut kept = super::journal::read();
@@ -114,6 +119,19 @@ pub async fn usbip_export_diagnostics() -> Result<String, String> {
     super::diagnostics::export().await
 }
 
+/// Fails with the missing-component error (and keeps it for the diagnostics) when the host has no USB/IP payload to install from.
+#[cfg(target_os = "windows")]
+fn remember_payload_missing() -> Result<(), String> {
+    let Some(error) = super::install::host_payload_missing() else {
+        return Ok(());
+    };
+    let mut kept = super::journal::read();
+    kept.last_install_error = error.clone();
+    kept.install_error_at = super::journal::now_secs();
+    super::journal::write(&kept);
+    Err(error)
+}
+
 /// An install or a replacement answers `reboot_recommended` (the installer asks for a restart) and/or the restart-pending answer (the
 /// controllers an older version left are accepted for removal at the restart). Only the second leaves a marker, so a restart that
 /// only the installer asked for does not bring a cleanup back. Returns whether a restart is advised at all.
@@ -192,6 +210,8 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     #[cfg(target_os = "windows")]
     super::elevated::check_driver_operation()?;
     let _fresh = super::status::fresh();
+    #[cfg(target_os = "windows")]
+    remember_payload_missing()?;
     let before = super::status::usbip_get_status().await?;
     if !before.replaceable {
         return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());
@@ -224,6 +244,59 @@ pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
     let mut status = super::status::usbip_get_status().await?;
     status.reboot_recommended |= reboot_recommended;
     Ok(status)
+}
+
+/// When this Windows session started, in seconds since the Unix epoch (0 where there is no such thing): the clock the cleanup's restart
+/// marker uses. A repair that waited for a restart continues only in a panel that runs after this is later than when the plan was kept.
+#[tauri::command]
+pub fn usbip_boot_secs() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        super::journal::boot_secs()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        0
+    }
+}
+
+/// The signature verdict of the registered driver (`signed`, `unsigned`, `invalid`, `unknown`), kept per driver file like the status's own
+/// reading, so the repair is offered for a driver Windows would refuse even when the transport reads ready.
+#[tauri::command]
+pub async fn usbip_driver_signature() -> String {
+    super::signature::driver_signature().await.state
+}
+
+/// Restarts Windows after 30 seconds that the person can still cancel with `shutdown /a`. Only the panel's own confirmation calls
+/// it, and neither the program nor the delay is an argument.
+#[tauri::command]
+pub async fn usbip_restart_windows() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or("USBIP-RESTART-001: Windows directory is unavailable")?;
+        let program = std::path::PathBuf::from(system_root)
+            .join("System32")
+            .join("shutdown.exe");
+        let mut command = tokio::process::Command::new(program);
+        command.args(["/r", "/t", "30"]);
+        command
+            .as_std_mut()
+            .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+        let status = command
+            .status()
+            .await
+            .map_err(|error| format!("USBIP-RESTART-001: unable to start shutdown.exe: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("USBIP-RESTART-001: shutdown.exe failed: {status}"))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err("USBIP-SETUP-004: USB/IP passthrough is only supported on Windows".to_string())
 }
 
 #[tauri::command]

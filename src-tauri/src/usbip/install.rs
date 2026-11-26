@@ -244,6 +244,28 @@ pub(crate) fn parse_host_replaceable(output: &str) -> bool {
     parse_host_answer(output).unwrap_or(false)
 }
 
+/// The error of a Sunshine installation that carries no USB/IP payload, or `None` when `payload.json` is there. The installer
+/// puts `scripts\usbip` on disk only when its USB/IP component was chosen; the lifecycle script beside it is always installed,
+/// so a missing payload would otherwise surface as "cannot verify the shared transport (os error 3)" after the repair had
+/// already cleaned the old transport. Pure, so the Linux tests walk it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn payload_missing_in(scripts: &std::path::Path) -> Option<String> {
+    if scripts.join("usbip").join("payload.json").is_file() {
+        None
+    } else {
+        Some(
+            "USBIP-SETUP-019: this Sunshine installation has no USB/IP component files (scripts\\usbip is missing); nothing was changed"
+                .to_string(),
+        )
+    }
+}
+
+/// `payload_missing_in` for the installation this panel manages.
+#[cfg(target_os = "windows")]
+pub(crate) fn host_payload_missing() -> Option<String> {
+    payload_missing_in(&crate::sunshine::install_dir().join("scripts"))
+}
+
 /// Directory next to the Sunshine installation where the installer is staged.
 #[cfg(target_os = "windows")]
 pub(crate) fn staging_root() -> std::path::PathBuf {
@@ -377,6 +399,9 @@ pub(super) async fn run_host_package(action: &str) -> Result<InstallResult, Stri
     }
     // `replace` takes over an installation the person confirmed; it needs the same verified payload as an install.
     if action == "install" || action == "replace" {
+        if let Some(error) = host_payload_missing() {
+            return Err(error);
+        }
         super::manager::verify_slim_payload(
             &crate::sunshine::install_dir().join("scripts").join("usbip"),
         )?;
@@ -624,6 +649,24 @@ mod tests {
         }
         assert_eq!(parse_host_answer(r#"{"ownership":"managed"}"#), Some(false));
         assert_eq!(parse_host_answer(external), Some(true));
+    }
+
+    #[test]
+    fn a_host_without_the_usb_ip_component_is_named_before_anything_changes() {
+        let root = std::env::temp_dir().join(format!("usbip-payload-{}", std::process::id()));
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        // the lifecycle script is always installed; the payload only with the component
+        std::fs::write(scripts.join("usbip-package.ps1"), b"x").unwrap();
+        let error = payload_missing_in(&scripts).expect("no payload directory");
+        assert!(error.starts_with("USBIP-SETUP-019:"), "{error}");
+        assert!(!error.contains(root.to_str().unwrap()), "the person's paths stay out of the code line");
+        // a directory without the receipt is not a payload either
+        std::fs::create_dir_all(scripts.join("usbip").join("driver")).unwrap();
+        assert!(payload_missing_in(&scripts).is_some());
+        std::fs::write(scripts.join("usbip").join("payload.json"), b"{}").unwrap();
+        assert!(payload_missing_in(&scripts).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

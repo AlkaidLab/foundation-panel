@@ -4,7 +4,7 @@
     <MCaption bem="panel-caption" more bar-more :more-label="t.m3e.nav.moreTitle" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart" @more="moreOpen = true">
       <template v-if="backButton" #back><MCaptionBack :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #version><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="openUpdates" /></template>
-      <template #brand><MBrand class="panel-caption__brand" :size="20" data-tauri-drag-region /></template>
+      <template #brand><MBrand class="panel-caption__brand" :name="PRODUCT_NAME" :size="20" data-tauri-drag-region /></template>
       <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MFeedbackButton :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
       <template #search><div class="panel-caption__search" data-tauri-drag-region><MUnifiedSearch :search="uni" :texts="searchT" :compact="compactSearch || caption.tight.value" :height="38" /></div></template>
       <template #connect><button type="button" class="m-caption-connect" :aria-label="connectT.title" :data-tip="connectT.title" :disabled="hostUnusable" @click="connect.show('pair')"><MIcon name="person_add" /><span>{{ connectT.title }}</span></button></template>
@@ -15,7 +15,7 @@
       </div></template>
     </MCaption>
     <div class="panel-body">
-    <MScene :nav="nav" :caption-height="48" :jumps="jumps" :chip="backChip" :rail-items="rail" :bar-items="bar" :bar-current="barCur" :texts="sceneTexts" :overlay="isWebPage || offlineShown" :status="offlineShown" storage-key="foundation-ui.panel.list" @rail="onRail">
+    <MScene :nav="nav" :caption-height="48" :jumps="jumps" :chip="backChip" :rail-items="rail" :bar-items="bar" :bar-current="barCur" :texts="sceneTexts" :brand-name="PRODUCT_NAME" :overlay="isWebPage || offlineShown" :status="offlineShown" storage-key="foundation-ui.panel.list" @rail="onRail">
       <template #back-chip><MBackChip :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #rail-foot><MIconButton icon="palette" :label="appearanceLabel" :current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)" /><MIconButton icon="info" :label="aboutTexts(locale).title" :current="router.currentRoute.value === ROUTES.ABOUT" :badge="notice.dot ? 'dot' : ''" @click="router.navigate(ROUTES.ABOUT, undefined, { root: true })" /><MSponsorButton :label="t.m3e.home.sponsor" :title="t.m3e.home.sponsorTitle" :sections="sponsorSections" :close-label="t.m3e.home.done" @open="(it) => actions_openExternal(it.url)" /></template>
       <template #list="{ entry, scene }">
@@ -106,7 +106,7 @@
     <MErrorHost :locale="locale" report-sheet :can-go-back="nav.canPop.value" :host-online="hostConn.state.status === 'online'" :restart="() => hostConn.restart('service')" :doctor="openDoctor" :open-url="actions_openExternal" @back="errorBack" />
     <!-- 更多 of the bottom bar: what the bar has no room for -->
     <MSheet v-model="moreOpen" :title="t.m3e.nav.moreTitle" side="end" :close-label="t.m3e.home.done">
-      <div class="panel-more-version"><MBrand :size="20" /><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="moreGo(openUpdates)" /></div>
+      <div class="panel-more-version"><MBrand :name="PRODUCT_NAME" :size="20" /><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="moreGo(openUpdates)" /></div>
       <MGroup>
         <!-- what the caption bar has no room for (its tier, MCaption): in the order it has there -->
         <MItem v-if="caption.tier.value >= 5" action icon="person_add" :title="connectT.title" :disabled="hostUnusable" @click="moreGo(() => connect.show('pair'))" />
@@ -160,7 +160,9 @@ import { updateTile, noticeAfterTile, helpTileTexts, aboutLine } from 'foundatio
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
 import { panelVersion } from '../composables/panelVersion.js'
 import { SEARCH_INDEX } from '@settings-data'
-import { labelOf, settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsLabel } from '../composables/settingsLabel.js'
+import { ensureBaseLabels } from '../composables/settingsBase.js'
 import PanelHome from './PanelHome.vue'
 import PanelBusyLayer from './PanelBusyLayer.vue'
 import UpdateDownloadChip from './UpdateDownloadChip.vue'
@@ -219,6 +221,7 @@ import { rtssInstalled, readRtssInstall } from '../composables/rtssInstall.js'
 import { rowKeywords, parseSettingsHash } from 'foundation-ui/settings/index.js'
 import { hasUpdate } from '../composables/updateCheckError.js'
 import { useI18n } from '../desktop/i18n/index.js'
+import { PRODUCT_NAME } from '../config/brand.js'
 import { useDualSenseStatus } from '../composables/useDualSenseStatus.js'
 import { useDualSenseText } from '../composables/useDualSenseText.js'
 let rtssRefresh = 0
@@ -366,7 +369,7 @@ const backChip = computed(() => showsChip(variant.value) && jumps.canBack.value)
 const backPage = computed(() => {
   const place = jumps.top.value
   if (!place) return ''
-  if (place.params?.tab) return labelOf(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
+  if (place.params?.tab) return settingsLabel(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
   const row = ['stream', 'input', 'audio', 'display', 'system', 'appearance', 'settings', 'help'].flatMap((r) => listItems(r)).find((i) => i.id === place.id)
   return row?.label || (place.id === ROUTES.HOME ? t.value.m3e.nav.overview : '') || railLabel(place.rail)
 })
@@ -497,7 +500,7 @@ const hostPort = ref(47990)
 onMounted(async () => { try { const port = Number(new URL(String(await sunshine.getUrl())).port); if (port) hostPort.value = port } catch { /* the default stays */ } })
 onMounted(async () => { try { announceVersion.value = (await sunshine.getVersion()) || '' } catch { /* the version only narrows version-bound notices */ } })
 const announcements = useAnnouncements({ locale, version: announceVersion })
-const appearanceLabel = computed(() => labelOf(locale.value, 'shell.appearance'))
+const appearanceLabel = computed(() => settingsLabel(locale.value, 'shell.appearance', t.value.settings.appearance))
 const announcementsUnread = announcements.unread
 // a dot on the help rail while an update is waiting (the about page checks and opens the update sheet)
 const rail = computed(() => railItems(t.value, { developer: devmodeTexts(locale.value).rail }).filter((item) => item.id !== 'developer' || developerMode.enabled.value).map((item) => (item.id === 'overview' && announcementsUnread.value ? { ...item, badge: announcementsUnread.value } : item.id === 'settings' && notice.value.dot ? { ...item, badge: 'dot' } : item.id === 'assistant' && mitaState.unread ? { ...item, badge: 'dot' } : item.id === 'developer' && devActivity.unseen.value ? { ...item, badge: 'dot' } : item)))
@@ -514,6 +517,8 @@ const hostConfig = ref(null)
 const dualsenseKeys = ref([])
 const hostClients = ref([])
 const hostApps = ref([])
+// the product's settings data is supplied (the imports above); the words of the categories the list below draws never come out as keys, whatever that data holds
+ensureBaseLabels()
 const settingsList = useSettingsList({ locale, config: hostConfig, dualsenseKeys, sources: { clients: hostClients, apps: hostApps, components: computed(() => componentStatus.rows.value), rtss: computed(() => ({ installed: rtssInstalled.value === true })), ds: computed(() => runtime.ds), mic: computed(() => runtime.mic), usb: computed(() => runtime.usb), audio: computed(() => audioDevicesChannel.data.value?.render || null) } })
 // the playback devices of the host: the audio row names the chosen device, the setting holds an id
 onMounted(() => { audioDevicesChannel.fetch().catch(() => null) })

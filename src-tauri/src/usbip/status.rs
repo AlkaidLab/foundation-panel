@@ -58,6 +58,8 @@ pub async fn usbip_get_status() -> Result<UsbipStatus, String> {
     return Ok(UsbipStatus {
         externally_managed: false,
         replaceable: false,
+        host_payload_missing: false,
+        unregistered_leftover: false,
         supported: false,
         installed: false,
         ready: false,
@@ -163,11 +165,18 @@ async fn probe_status() -> Result<(UsbipStatus, super::device::Residual), String
     let externally_managed = super::manager::externally_managed();
     // Only an external installation can be offered for replacement; the host's helper decides which ones.
     let replaceable = externally_managed && super::install::host_replaceable().await;
+    // The payload the repair installs from is read off the disk, never from the status of an installed copy.
+    let host_payload_missing = super::install::host_payload_missing().is_some();
+    // An external verdict with no uninstall entry behind it: Installed apps has nothing to remove (an unreadable
+    // registry is not this state, `installed_usbip_version` fails there).
+    let unregistered_leftover = externally_managed && matches!(super::installed_usbip_version(), Ok(None));
     let interfaces = super::device::enumerate_vhci_interfaces()?;
     let nodes = super::device::enumerate_transport_nodes()?;
     let base = |installed: bool, version: String, version_valid: bool, vhci_residual: bool| UsbipStatus {
         externally_managed,
         replaceable,
+        host_payload_missing,
+        unregistered_leftover,
         supported: true,
         installed,
         ready: false,
