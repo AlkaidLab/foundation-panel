@@ -2,7 +2,7 @@
 //! Window focus/visibility never participates in this lifecycle.
 
 use super::{Observation, ObservationQueue, StopSignal, agent_id, observer_loop, post_json};
-use log::{debug, warn};
+use log::warn;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
@@ -275,7 +275,7 @@ where
         let snapshot = shared.snapshot();
         if presence_due || sent != Some(snapshot) {
             if let Err(error) = post("/api/v1/text-context/capability", snapshot.body()).await {
-                debug!("Text context capability failed: {error}");
+                warn!("Text context capability failed: {error}");
                 sent = None;
                 let retry_at = tokio::time::Instant::now() + backoff;
                 loop {
@@ -323,7 +323,7 @@ where
             )
             .await
             {
-                debug!("Text context observation failed: {error}");
+                warn!("Text context observation failed: {error}");
                 sent = None;
                 if shared.snapshot() == snapshot {
                     shared.queue.requeue_if_empty(observation);
