@@ -303,6 +303,25 @@ mod windows_probe {
         }
     }
 
+    fn gui_thread_info(thread: u32) -> Option<GUITHREADINFO> {
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        (thread != 0 && unsafe { GetGUIThreadInfo(thread, &mut info) }.is_ok()).then_some(info)
+    }
+
+    /// Whether the Win32 focus identity changed between two reads of one GUI
+    /// thread. The caret window only counts while both reads saw one: a
+    /// blinking caret disappears from GUITHREADINFO between flashes, which is
+    /// not a focus change.
+    fn focus_identity_changed(before: &GUITHREADINFO, after: &GUITHREADINFO) -> bool {
+        before.hwndFocus != after.hwndFocus
+            || (!before.hwndCaret.is_invalid()
+                && !after.hwndCaret.is_invalid()
+                && before.hwndCaret != after.hwndCaret)
+    }
+
     fn control_type_name(value: i32) -> &'static str {
         // Derived from the windows crate constants, which match the values
         // UIA actually reports (verified: the desktop pane is 50033). A
@@ -558,13 +577,17 @@ mod windows_probe {
         // The UIA element reflects whatever has focus when it is read, while
         // the foreground, PID, and caret above describe the window captured at
         // snapshot start. If focus switched in between, the evidence mixes two
-        // applications; mark it and drop the UIA focus result instead of
-        // publishing a merged state.
-        let focus_switch_during_capture = unsafe { GetForegroundWindow() } != foreground;
+        // focus owners; mark it and drop the UIA focus result instead of
+        // publishing a merged state. The Win32 focus window is read again for
+        // that check: moving focus between controls of one foreground window
+        // leaves the foreground itself unchanged.
+        let focus_switch_during_capture = unsafe { GetForegroundWindow() } != foreground
+            || gui_thread_info(thread)
+                .is_some_and(|after| focus_identity_changed(&info, &after));
         let uia = if focus_switch_during_capture {
             json!({
                 "available": true,
-                "skipped": "foreground changed during capture",
+                "skipped": "focus changed during capture",
             })
         } else {
             uia
@@ -722,6 +745,34 @@ mod windows_probe {
         drop(cache);
         drop(automation);
         unsafe { CoUninitialize() };
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn gui_info(focus: usize, caret: usize) -> GUITHREADINFO {
+            GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                hwndFocus: HWND(focus as _),
+                hwndCaret: HWND(caret as _),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn focus_identity_covers_the_focus_window_and_a_stable_caret() {
+            let before = gui_info(1, 2);
+            // The same focus and caret.
+            assert!(!focus_identity_changed(&before, &gui_info(1, 2)));
+            // Focus moved to another control of the same window.
+            assert!(focus_identity_changed(&before, &gui_info(3, 2)));
+            // The caret belongs to another window now.
+            assert!(focus_identity_changed(&before, &gui_info(1, 4)));
+            // A blinking caret that is hidden, or shows up again, is not a focus change.
+            assert!(!focus_identity_changed(&before, &gui_info(1, 0)));
+            assert!(!focus_identity_changed(&gui_info(1, 0), &gui_info(1, 2)));
+        }
     }
 }
 
