@@ -34,10 +34,11 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GetClassNameW,
-    ES_READONLY, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, GWL_STYLE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
-    PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    DispatchMessageW, ES_MULTILINE, ES_PASSWORD, ES_READONLY, EVENT_OBJECT_FOCUS,
+    EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GWL_STYLE, GetClassNameW, GetForegroundWindow,
+    GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, MSG,
+    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
 use windows::core::{BOOL, GUID, PCWSTR};
 
@@ -147,6 +148,8 @@ struct NativeFocus {
     focus_rect: Option<WireRect>,
     caret_rect: Option<WireRect>,
     read_only_edit: bool,
+    password_edit: bool,
+    focus_hwnd: Option<HWND>,
 }
 
 #[derive(Default)]
@@ -393,6 +396,9 @@ fn inspect_native_focus(event_thread: Option<u32>) -> Option<NativeFocus> {
             caret_rect,
             read_only_edit: native_window_is_read_only_edit(info.hwndFocus)
                 || native_window_is_read_only_edit(info.hwndCaret),
+            password_edit: native_window_is_password_edit(info.hwndFocus)
+                || native_window_is_password_edit(info.hwndCaret),
+            focus_hwnd: (!info.hwndFocus.is_invalid()).then_some(info.hwndFocus),
         })
     }
 }
@@ -410,6 +416,19 @@ fn is_native_text_class(class: &str) -> bool {
         || (class.starts_with("qt") && class.ends_with("qwindowicon"))
 }
 
+/// Terminals and self-drawn editors whose focused window is itself the typing
+/// surface. They paint their own caret, so GUITHREADINFO never carries caret
+/// evidence for them and the focused class name is the whole signal. Dialogs
+/// in these apps are standard dialog or Edit windows, which never match, so
+/// the focused-window condition cannot report a dialog as an editor.
+fn is_self_drawn_text_class(class: &str) -> bool {
+    let class = class.trim().to_ascii_lowercase();
+    class == "putty"
+        || class == "vim"
+        || class == "px_window_class"
+        || (class.starts_with("xshell") && class.ends_with("::coreapp"))
+}
+
 /// Only real Edit/RichEdit windows honor ES_READONLY; terminals and
 /// self-drawn controls ignore the style, so it is only consulted for those
 /// classes.
@@ -418,15 +437,62 @@ fn native_window_is_read_only_edit(hwnd: HWND) -> bool {
         return false;
     };
     let class = class.trim().to_ascii_lowercase();
-    let is_edit_like =
-        class == "edit" || class.starts_with("richedit") || class.starts_with("windowsforms10.edit");
+    let is_edit_like = class == "edit"
+        || class.starts_with("richedit")
+        || class.starts_with("windowsforms10.edit");
     is_edit_like && unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } & (ES_READONLY as isize) != 0
+}
+
+/// ES_PASSWORD is only honored by single-line Edit controls, so the style is
+/// only consulted there. The native fallback otherwise reports every control
+/// as a plain text field, including password boxes.
+fn native_window_is_password_edit(hwnd: HWND) -> bool {
+    let Some(class) = window_class_name(hwnd) else {
+        return false;
+    };
+    let class = class.trim().to_ascii_lowercase();
+    if class != "edit" {
+        return false;
+    }
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    style & (ES_PASSWORD as isize) != 0 && style & (ES_MULTILINE as isize) == 0
+}
+
+/// The native focus snapshot is captured before the UIA element is read. If
+/// focus moved to another window between the two reads, the caret and class
+/// evidence describe the previous focus while the UIA element belongs to the
+/// new one. Re-check the live focus window and drop stale native evidence;
+/// the focus event that triggered the switch schedules a clean rescan.
+fn native_focus_is_current(native: &NativeFocus) -> bool {
+    let Some(captured) = native.focus_hwnd else {
+        return false;
+    };
+    unsafe {
+        // GetGUIThreadInfo(0) reports the foreground thread, which owns the
+        // keyboard focus in the normal editor case.
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(0, &mut info)
+            .is_ok_and(|_| !info.hwndFocus.is_invalid() && info.hwndFocus == captured)
+    }
 }
 
 fn native_text_evidence(native: Option<&NativeFocus>) -> bool {
     let Some(native) = native else {
         return false;
     };
+    // Self-drawn terminals and editors match on the focused window class
+    // alone: the window itself is the typing surface and its caret is painted
+    // by the application instead of the system.
+    if native
+        .focus_class
+        .as_deref()
+        .is_some_and(is_self_drawn_text_class)
+    {
+        return true;
+    }
     native.caret_rect.is_some()
         && [native.focus_class.as_deref(), native.caret_class.as_deref()]
             .into_iter()
@@ -461,7 +527,10 @@ fn is_confirmed_editor(
         return true;
     }
 
-    if native_text && caret_active {
+    // native_text is already the full native verdict: either a class-list
+    // window with caret evidence, or a self-drawn terminal whose focused
+    // window is the typing surface. Read-only rejection happened earlier.
+    if native_text {
         return true;
     }
 
@@ -491,6 +560,10 @@ fn inspect_focused_element(
     // BuildCache fetches every property and pattern in one cross-process
     // round trip instead of one per Current* call.
     let element = unsafe { automation.GetFocusedElementBuildCache(cache) }.ok()?;
+    // The element reflects the focus as of this read. Focus may have moved
+    // between the native capture and here; stale native evidence must not
+    // confirm the element that has focus now.
+    let native = native.filter(|native| native_focus_is_current(native));
     let has_focus = unsafe { element.CachedHasKeyboardFocus() }.ok()?.as_bool();
     let enabled = unsafe { element.CachedIsEnabled() }.ok()?.as_bool();
     let offscreen = unsafe { element.CachedIsOffscreen() }.ok()?.as_bool();
@@ -513,6 +586,11 @@ fn inspect_focused_element(
             .ok()
             .and_then(|pattern| unsafe { pattern.CachedIsReadOnly() }.ok())
             .map(|value| value.as_bool());
+    // Without UIA read-only evidence, an ES_READONLY native Edit is read-only;
+    // UIA-provided values keep priority.
+    let value_read_only = value_read_only.or(native
+        .is_some_and(|native| native.read_only_edit)
+        .then_some(true));
     let has_text_edit_pattern = unsafe {
         element.GetCachedPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
     }
@@ -578,7 +656,16 @@ fn inspect_native_focused_element(
     generation: u64,
 ) -> Option<(FocusSignature, Observation)> {
     let native = native?;
-    let caret_rect = native.caret_rect?;
+    if !native_focus_is_current(native) {
+        return None;
+    }
+    build_native_observation(native, generation)
+}
+
+fn build_native_observation(
+    native: &NativeFocus,
+    generation: u64,
+) -> Option<(FocusSignature, Observation)> {
     if !native_text_evidence(Some(native)) {
         return None;
     }
@@ -587,13 +674,19 @@ fn inspect_native_focused_element(
     // sees the negative transition, while writable controls and terminals
     // keep native support.
     let editable = !native.read_only_edit;
-    let rect = native.focus_rect.or(Some(caret_rect))?;
+    // ES_PASSWORD marks single-line Edit controls as password boxes instead
+    // of ordinary text.
+    let password = native.password_edit;
+    // Self-drawn terminals paint their own caret, so caret_rect can be empty;
+    // the window rectangle carries the element geometry in that case.
+    let caret_rect = native.caret_rect;
+    let rect = native.focus_rect.or(caret_rect)?;
     let signature = FocusSignature {
         control_type: -1,
         rect,
-        password: false,
+        password,
         editable,
-        caret_rect: Some(caret_rect),
+        caret_rect,
     };
     let observation = Observation {
         version: 1,
@@ -602,12 +695,12 @@ fn inspect_native_focused_element(
         source: "uia",
         active: true,
         editable,
-        password: false,
+        password,
         multiline: false,
         pane_visible: false,
         auto_show: false,
         element_rect: Some(rect),
-        caret_rect: Some(caret_rect),
+        caret_rect,
     };
     Some((signature, observation))
 }
@@ -1114,6 +1207,131 @@ mod tests {
         for class in ["Button", "Static", "Chrome_WidgetWin_0"] {
             assert!(!is_native_text_class(class), "{class}");
         }
+    }
+
+    #[test]
+    fn self_drawn_text_classes_cover_terminal_hosts() {
+        for class in [
+            "PuTTY",
+            "Vim",
+            "PX_WINDOW_CLASS",
+            "Xshell7::CoreApp",
+            "Xshell6::CoreApp",
+        ] {
+            assert!(is_self_drawn_text_class(class), "{class}");
+        }
+        // The Xshell main frame hosts toolbars and the session manager; only
+        // the terminal surface itself is a typing surface. Dialogs never match.
+        for class in [
+            "Xshell7::MainFrame_0",
+            "#32770",
+            "Chrome_WidgetWin_1",
+            "VimViewer",
+        ] {
+            assert!(!is_self_drawn_text_class(class), "{class}");
+        }
+    }
+
+    fn native_focus(focus_class: &str, caret_rect: Option<WireRect>) -> NativeFocus {
+        NativeFocus {
+            focus_class: Some(focus_class.to_string()),
+            caret_class: None,
+            focus_rect: Some(WireRect {
+                left: 0,
+                top: 0,
+                right: 400,
+                bottom: 300,
+            }),
+            caret_rect,
+            read_only_edit: false,
+            password_edit: false,
+            focus_hwnd: None,
+        }
+    }
+
+    #[test]
+    fn self_drawn_hosts_confirm_without_a_native_caret() {
+        for class in ["PuTTY", "Vim", "PX_WINDOW_CLASS", "Xshell7::CoreApp"] {
+            assert!(
+                native_text_evidence(Some(&native_focus(class, None))),
+                "{class}"
+            );
+        }
+        // Caret-based classes still need caret evidence; class alone is not
+        // enough for them.
+        assert!(!native_text_evidence(Some(&native_focus("mintty", None))));
+        assert!(native_text_evidence(Some(&native_focus(
+            "mintty",
+            Some(WireRect {
+                left: 4,
+                top: 4,
+                right: 5,
+                bottom: 24,
+            })
+        ))));
+    }
+
+    #[test]
+    fn self_drawn_classes_match_the_focused_window_only() {
+        let mut caret_host = native_focus("Button", None);
+        caret_host.caret_class = Some("PuTTY".to_string());
+        caret_host.caret_rect = Some(WireRect {
+            left: 4,
+            top: 4,
+            right: 5,
+            bottom: 24,
+        });
+        // A self-drawn class on the caret window while focus is elsewhere is
+        // not an editor: only the focused terminal window is the typing
+        // surface.
+        assert!(!native_text_evidence(Some(&caret_host)));
+    }
+
+    #[test]
+    fn native_fallback_reports_password_and_missing_caret() {
+        let terminal = native_focus("PuTTY", None);
+        let (_, observation) =
+            build_native_observation(&terminal, 1).expect("terminal observation");
+        assert!(observation.editable);
+        assert!(!observation.password);
+        assert_eq!(observation.caret_rect, None);
+        assert!(observation.element_rect.is_some());
+
+        let mut password_box = native_focus("Edit", None);
+        password_box.caret_rect = Some(WireRect {
+            left: 4,
+            top: 4,
+            right: 5,
+            bottom: 24,
+        });
+        password_box.password_edit = true;
+        let (_, observation) =
+            build_native_observation(&password_box, 1).expect("edit observation");
+        assert!(observation.editable);
+        assert!(observation.password);
+    }
+
+    #[test]
+    fn native_text_evidence_confirms_without_uia_caret() {
+        assert!(is_confirmed_editor(
+            UIA_PaneControlTypeId.0,
+            false,
+            true,
+            None,
+            false,
+            false,
+            false,
+        ));
+        // The read-only rejection still wins over native evidence.
+        assert!(!is_confirmed_editor(
+            UIA_PaneControlTypeId.0,
+            false,
+            true,
+            Some(true),
+            false,
+            false,
+            false,
+        ));
     }
 
     pub(super) fn observation(source: &'static str, active: bool) -> Observation {

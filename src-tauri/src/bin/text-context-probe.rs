@@ -33,24 +33,27 @@ mod windows_probe {
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationCacheRequest,
         IUIAutomationElement, IUIAutomationTextEditPattern, IUIAutomationTextPattern2,
-        IUIAutomationValuePattern, SetWinEventHook, UIA_BoundingRectanglePropertyId,
-        UIA_AppBarControlTypeId, UIA_ButtonControlTypeId, UIA_CalendarControlTypeId,
+        IUIAutomationValuePattern, SetWinEventHook, UIA_AppBarControlTypeId,
+        UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CalendarControlTypeId,
         UIA_CheckBoxControlTypeId, UIA_ClassNamePropertyId, UIA_ComboBoxControlTypeId,
         UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DataGridControlTypeId,
         UIA_DataItemControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
-        UIA_GroupControlTypeId, UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId,
-        UIA_HasKeyboardFocusPropertyId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
+        UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId, UIA_HeaderControlTypeId,
+        UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
         UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
         UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
         UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_PaneControlTypeId,
         UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
         UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId, UIA_SliderControlTypeId,
         UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
-        UIA_TabControlTypeId, UIA_TableControlTypeId, UIA_TabItemControlTypeId,
+        UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TableControlTypeId,
         UIA_TextControlTypeId, UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ThumbControlTypeId,
         UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId,
         UIA_TreeControlTypeId, UIA_TreeItemControlTypeId, UIA_ValueIsReadOnlyPropertyId,
         UIA_ValuePatternId, UIA_WindowControlTypeId, UnhookWinEvent,
+    };
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO,
@@ -95,7 +98,8 @@ mod windows_probe {
     }
 
     thread_local! {
-        static LAST_EVENT: Cell<Option<EventInfo>> = const { Cell::new(None) };
+        static LAST_FOREGROUND_EVENT: Cell<Option<EventInfo>> = const { Cell::new(None) };
+        static LAST_FOCUS_EVENT: Cell<Option<EventInfo>> = const { Cell::new(None) };
     }
 
     unsafe extern "system" fn win_event_proc(
@@ -107,7 +111,14 @@ mod windows_probe {
         thread: u32,
         time: u32,
     ) {
-        LAST_EVENT.with(|slot| {
+        // Keep one bounded slot per event kind: a single slot lets a focus
+        // event overwrite the foreground switch that preceded it in the same
+        // message burst.
+        let slot = match event {
+            EVENT_SYSTEM_FOREGROUND => &LAST_FOREGROUND_EVENT,
+            _ => &LAST_FOCUS_EVENT,
+        };
+        slot.with(|slot| {
             slot.set(Some(EventInfo {
                 event,
                 hwnd,
@@ -119,8 +130,11 @@ mod windows_probe {
         });
     }
 
-    fn take_event() -> Option<EventInfo> {
-        LAST_EVENT.with(Cell::take)
+    fn take_events() -> (Option<EventInfo>, Option<EventInfo>) {
+        (
+            LAST_FOCUS_EVENT.with(Cell::take),
+            LAST_FOREGROUND_EVENT.with(Cell::take),
+        )
     }
 
     fn pump_messages() {
@@ -356,6 +370,14 @@ mod windows_probe {
             || (class.starts_with("qt") && class.ends_with("qwindowicon"))
     }
 
+    fn is_self_drawn_text_class(class: &str) -> bool {
+        let class = class.trim().to_ascii_lowercase();
+        class == "putty"
+            || class == "vim"
+            || class == "px_window_class"
+            || (class.starts_with("xshell") && class.ends_with("::coreapp"))
+    }
+
     fn ui_element_json(element: &IUIAutomationElement, inspect_caret: bool) -> Value {
         let control_type = unsafe { element.CachedControlType() }
             .ok()
@@ -381,22 +403,24 @@ mod windows_probe {
             )
         }
         .ok();
-        let (caret_active, caret_rect) = if inspect_caret {
+        // caret_active is null unless GetCaretRange was actually queried, so
+        // "not sampled" stays distinguishable from "sampled and inactive".
+        let (caret_active, caret_rect): (Option<bool>, Option<WireRect>) = if inspect_caret {
             if let Some(ref pattern) = text_pattern2 {
                 let mut active = windows::core::BOOL::default();
                 if let Ok(range) = unsafe { pattern.GetCaretRange(&mut active) } {
                     let rect = unsafe { range.GetBoundingRectangles() }
                         .ok()
                         .and_then(|bounds| unsafe { last_bounding_rect(bounds) });
-                    (active.as_bool(), rect)
+                    (Some(active.as_bool()), rect)
                 } else {
-                    (false, None)
+                    (None, None)
                 }
             } else {
-                (false, None)
+                (None, None)
             }
         } else {
-            (false, None)
+            (None, None)
         };
         let value_read_only = value_pattern
             .as_ref()
@@ -506,7 +530,7 @@ mod windows_probe {
     fn snapshot(
         automation: Option<&IUIAutomation>,
         cache: Option<&IUIAutomationCacheRequest>,
-        event: Option<EventInfo>,
+        events: (Option<EventInfo>, Option<EventInfo>),
     ) -> Value {
         let foreground = unsafe { GetForegroundWindow() };
         let mut pid = 0u32;
@@ -531,6 +555,20 @@ mod windows_probe {
         let focus_class = class_name(info.hwndFocus);
         let caret_class = class_name(info.hwndCaret);
         let uia = uia_snapshot(automation, cache, &info);
+        // The UIA element reflects whatever has focus when it is read, while
+        // the foreground, PID, and caret above describe the window captured at
+        // snapshot start. If focus switched in between, the evidence mixes two
+        // applications; mark it and drop the UIA focus result instead of
+        // publishing a merged state.
+        let focus_switch_during_capture = unsafe { GetForegroundWindow() } != foreground;
+        let uia = if focus_switch_during_capture {
+            json!({
+                "available": true,
+                "skipped": "foreground changed during capture",
+            })
+        } else {
+            uia
+        };
         let uia_focused = uia.get("focused_element");
         let uia_edit = uia_focused
             .and_then(|value| value.get("control_type_name"))
@@ -551,10 +589,11 @@ mod windows_probe {
         let native_text_class = [focus_class.as_deref(), caret_class.as_deref()]
             .into_iter()
             .flatten()
-            .any(is_native_text_class);
+            .any(|class| is_native_text_class(class) || is_self_drawn_text_class(class));
         json!({
             "foreground": window_json(foreground),
             "foreground_pid": pid,
+            "focus_switch_during_capture": focus_switch_during_capture,
             "gui_thread": gui_info,
             "capture_evidence": {
                 "uia_edit_control": uia_edit,
@@ -567,7 +606,10 @@ mod windows_probe {
                 "caret_class": caret_class,
             },
             "uia": uia,
-            "event": event_json(event),
+            "events": {
+                "focus": event_json(events.0),
+                "foreground": event_json(events.1),
+            },
         })
     }
 
@@ -575,15 +617,27 @@ mod windows_probe {
         let mut once = false;
         let mut interval_ms = 250u64;
         let mut args = std::env::args().skip(1);
+        let invalid_interval = |value: &str| -> ! {
+            eprintln!("invalid --interval-ms value: {value}");
+            std::process::exit(2)
+        };
         while let Some(arg) = args.next() {
             if arg == "--once" {
                 once = true;
             } else if let Some(value) = arg.strip_prefix("--interval-ms=") {
-                interval_ms = value.parse().unwrap_or(interval_ms).clamp(50, 5000);
+                interval_ms = value
+                    .parse::<u64>()
+                    .unwrap_or_else(|_| invalid_interval(value))
+                    .clamp(50, 5000);
             } else if arg == "--interval-ms" {
-                if let Some(value) = args.next() {
-                    interval_ms = value.parse().unwrap_or(interval_ms).clamp(50, 5000);
-                }
+                // Consume the value slot explicitly: swallowing a following
+                // option such as --once as the interval would turn a one-shot
+                // run into endless polling.
+                let value = args.next().unwrap_or_else(|| invalid_interval("<missing>"));
+                interval_ms = value
+                    .parse::<u64>()
+                    .unwrap_or_else(|_| invalid_interval(&value))
+                    .clamp(50, 5000);
             } else if arg == "--help" || arg == "-h" {
                 println!("text-context-probe [--once] [--interval-ms N]");
                 println!(
@@ -596,8 +650,18 @@ mod windows_probe {
     }
 
     pub fn run() {
+        // Per-monitor DPI awareness makes GetWindowRect return physical pixels,
+        // the same coordinate space as CachedBoundingRectangle, so the two
+        // rectangles in one snapshot can be compared directly.
+        if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+            .is_err()
+        {
+            eprintln!(
+                "could not enable per-monitor DPI awareness; window rectangles stay virtualized"
+            );
+        }
         let (once, interval) = parse_args();
-        println!("Focus QQ, MSYS2, Notepad++, or another editor. Press Ctrl+C to stop.");
+        eprintln!("Focus QQ, MSYS2, Notepad++, or another editor. Press Ctrl+C to stop.");
         let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         if !initialized {
             eprintln!("COM initialization failed");
@@ -617,6 +681,9 @@ mod windows_probe {
                 WINEVENT_OUTOFCONTEXT,
             )
         });
+        if hook_focus.0.is_invalid() {
+            eprintln!("failed to register the EVENT_OBJECT_FOCUS WinEvent hook");
+        }
         let hook_foreground = FocusHook(unsafe {
             SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
@@ -628,11 +695,14 @@ mod windows_probe {
                 WINEVENT_OUTOFCONTEXT,
             )
         });
+        if hook_foreground.0.is_invalid() {
+            eprintln!("failed to register the EVENT_SYSTEM_FOREGROUND WinEvent hook");
+        }
         let _hooks = (hook_focus, hook_foreground);
         let mut previous = None;
         loop {
             pump_messages();
-            let current = snapshot(automation.as_ref(), cache.as_ref(), take_event());
+            let current = snapshot(automation.as_ref(), cache.as_ref(), take_events());
             if previous.as_ref() != Some(&current) {
                 println!(
                     "{}",
