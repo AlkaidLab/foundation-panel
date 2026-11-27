@@ -19,9 +19,10 @@ use std::time::Duration;
 use windows::core::{implement, w, Interface, Ref, BOOL, HRESULT, PWSTR};
 use windows::Win32::Foundation::{
     CLIPBRD_E_CANT_OPEN, DATA_S_SAMEFORMATETC, DV_E_DVASPECT, DV_E_FORMATETC, DV_E_LINDEX,
-    DV_E_TYMED, E_INVALIDARG, E_NOTIMPL, E_OUTOFMEMORY, FILETIME, HGLOBAL, LPARAM,
-    OLE_E_ADVISENOTSUPPORTED, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER,
-    STG_E_READFAULT, STG_E_WRITEFAULT, S_FALSE, S_OK, WPARAM,
+    DV_E_TYMED, ERROR_FILE_INVALID, ERROR_FILE_NOT_FOUND, ERROR_TIMEOUT, ERROR_UNEXP_NET_ERR,
+    E_INVALIDARG, E_NOTIMPL, E_OUTOFMEMORY, FILETIME, HGLOBAL, LPARAM, OLE_E_ADVISENOTSUPPORTED,
+    STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER, STG_E_READFAULT,
+    STG_E_WRITEFAULT, S_FALSE, S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{
     CoTaskMemAlloc, IAdviseSink, IBindCtx, IDataObject, IDataObject_Impl, IEnumFORMATETC,
@@ -48,7 +49,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PM_NOREMOVE, WM_APP,
 };
 
-use super::inbound::{fetch_chunk, ClientOffer, CHUNK};
+use super::inbound::{fetch_chunk, ChunkError, ClientOffer, Failure, CHUNK};
 
 #[link(name = "ole32")]
 unsafe extern "system" {
@@ -97,11 +98,25 @@ fn hglobal_medium(global: HGLOBAL) -> STGMEDIUM {
 
 // ---- One file's contents ----
 
+/// What a failed read returns, so Explorer's error names the cause instead
+/// of a disk error (its message for STG_E_READFAULT). Windows has no code for
+/// "the source changed after the copy"; ERROR_FILE_INVALID ("the opened file
+/// is no longer valid") is the closest.
+pub(super) fn read_error(failure: Failure) -> HRESULT {
+    match failure {
+        Failure::Changed => ERROR_FILE_INVALID.to_hresult(),
+        Failure::Gone => ERROR_FILE_NOT_FOUND.to_hresult(),
+        Failure::Timeout => ERROR_TIMEOUT.to_hresult(),
+        Failure::Network => ERROR_UNEXP_NET_ERR.to_hresult(),
+        Failure::Other => STG_E_READFAULT,
+    }
+}
+
 /// Chunks fetched ahead of the reader on a thread of their own.
 struct Fetcher {
     /// File offset of the next chunk the channel delivers.
     next: u64,
-    rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+    rx: mpsc::Receiver<Result<Vec<u8>, ChunkError>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -114,7 +129,7 @@ impl Fetcher {
             let client = match crate::sunshine::create_transfer_https_client() {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(Err(e));
+                    let _ = tx.send(Err(ChunkError::new(Failure::Other, e)));
                     return;
                 }
             };
@@ -225,12 +240,12 @@ impl FileStream {
                 Ok(Err(e)) => {
                     log::warn!("client file transfer failed: {e}");
                     st.fetcher = None;
-                    return (total, STG_E_READFAULT);
+                    return (total, read_error(e.failure));
                 }
                 Err(_) => {
                     log::warn!("client file transfer: no chunk arrived in time");
                     st.fetcher = None;
-                    return (total, STG_E_READFAULT);
+                    return (total, read_error(Failure::Timeout));
                 }
             }
         }
@@ -768,6 +783,19 @@ mod tests {
             size,
             dir,
             mtime: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn a_failed_read_names_its_cause_not_a_disk_error() {
+        assert_eq!(read_error(Failure::Changed), ERROR_FILE_INVALID.to_hresult());
+        assert_eq!(read_error(Failure::Gone), ERROR_FILE_NOT_FOUND.to_hresult());
+        assert_eq!(read_error(Failure::Timeout), ERROR_TIMEOUT.to_hresult());
+        assert_eq!(read_error(Failure::Network), ERROR_UNEXP_NET_ERR.to_hresult());
+        assert_eq!(read_error(Failure::Other), STG_E_READFAULT);
+        for failure in [Failure::Changed, Failure::Gone, Failure::Timeout, Failure::Network] {
+            assert_ne!(read_error(failure), STG_E_READFAULT);
+            assert!(read_error(failure).is_err());
         }
     }
 

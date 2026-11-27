@@ -183,14 +183,69 @@ pub fn parse_offer(json: &[u8], sid: u64) -> Result<ClientOffer, String> {
 
 /// One chunk of entry `index`, from `offset`, at most `length` bytes; fewer
 /// only at the end of the file.
+/// Why a chunk could not be had: the paste target shows a message to match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The client's file is no longer the one it copied (changed or replaced).
+    Changed,
+    /// The client's file, or its offer, is gone.
+    Gone,
+    /// The client did not send the chunk in time.
+    Timeout,
+    /// The stream or the connection to Sunshine went away.
+    Network,
+    Other,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkError {
+    pub failure: Failure,
+    pub message: String,
+}
+
+impl ChunkError {
+    pub(crate) fn new(failure: Failure, message: impl Into<String>) -> Self {
+        Self {
+            failure,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?})", self.message, self.failure)
+    }
+}
+
+/// What Sunshine's answer to a chunk request means. Sunshine passes the
+/// client's own word on with 502 (`changed`, `gone`, `not_found`, `range`),
+/// answers 504 `timeout` when the client did not post in time and 410
+/// `no_session` once the stream has ended.
+pub fn classify(status: u16, body: &[u8]) -> Failure {
+    let word = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+        .unwrap_or_default();
+    match (status, word.as_str()) {
+        (_, "changed") | (_, "range") => Failure::Changed,
+        (_, "gone") | (502, "not_found") => Failure::Gone,
+        (504, _) | (_, "timeout") => Failure::Timeout,
+        (410, _) | (_, "no_session") => Failure::Network,
+        _ => Failure::Other,
+    }
+}
+
 pub async fn fetch_chunk(
     client: &reqwest::Client,
     offer: &ClientOffer,
     index: usize,
     offset: u64,
     length: u64,
-) -> Result<Vec<u8>, String> {
-    let url = crate::sunshine::get_sunshine_url().await?;
+) -> Result<Vec<u8>, ChunkError> {
+    let url = crate::sunshine::get_sunshine_url()
+        .await
+        .map_err(|e| ChunkError::new(Failure::Network, e))?;
     let endpoint = format!(
         "{}/api/v1/file-transfer/inbound/{}/{}/{}?offset={}&length={}",
         url.trim_end_matches('/'),
@@ -200,21 +255,28 @@ pub async fn fetch_chunk(
         offset,
         length
     );
-    let resp = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let transport = |e: reqwest::Error| {
+        let failure = if e.is_timeout() {
+            Failure::Timeout
+        } else {
+            Failure::Network
+        };
+        ChunkError::new(failure, e.to_string())
+    };
+    let resp = client.get(endpoint).send().await.map_err(transport)?;
     let status = resp.status();
-    let body = resp.bytes().await.map_err(|e| e.to_string())?;
+    let body = resp.bytes().await.map_err(transport)?;
     if !status.is_success() {
-        return Err(format!(
-            "HTTP {status} {}",
-            String::from_utf8_lossy(&body[..body.len().min(200)])
+        return Err(ChunkError::new(
+            classify(status.as_u16(), &body),
+            format!(
+                "HTTP {status} {}",
+                String::from_utf8_lossy(&body[..body.len().min(200)])
+            ),
         ));
     }
     if body.len() as u64 > length {
-        return Err("chunk longer than asked".into());
+        return Err(ChunkError::new(Failure::Other, "chunk longer than asked"));
     }
     Ok(body.to_vec())
 }
@@ -257,6 +319,21 @@ mod tests {
     use super::*;
 
     const ID: &str = "0b5e3a8c1d2f4a6b8c9d0e1f2a3b4c5d0b5e3a8c1d2f4a6b8c9d0e1f2a3b4c5d";
+
+    #[test]
+    fn sunshines_answers_name_the_failure() {
+        let word = |w: &str| format!(r#"{{"error":"{w}"}}"#).into_bytes();
+        assert_eq!(classify(502, &word("changed")), Failure::Changed);
+        assert_eq!(classify(502, &word("range")), Failure::Changed);
+        assert_eq!(classify(502, &word("gone")), Failure::Gone);
+        assert_eq!(classify(502, &word("not_found")), Failure::Gone);
+        assert_eq!(classify(504, &word("timeout")), Failure::Timeout);
+        assert_eq!(classify(410, &word("no_session")), Failure::Network);
+        assert_eq!(classify(503, &word("busy")), Failure::Other);
+        assert_eq!(classify(500, b"not json"), Failure::Other);
+        // Sunshine's own 404 is a bad request from us, not a missing file.
+        assert_eq!(classify(404, &word("not_found")), Failure::Other);
+    }
 
     #[test]
     fn a_chunk_fits_the_ticket_and_the_read_timeout() {
