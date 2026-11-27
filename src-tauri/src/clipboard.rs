@@ -89,6 +89,8 @@ const MAX_PENDING_BURSTS: usize = 32;
 // The blob endpoint accepts MIME types without parameters. Wire text is UTF-8.
 const MIME_TEXT: &str = "text/plain";
 const MIME_PNG: &str = "image/png";
+/// A file offer too long for one control message travels as a blob of this type.
+pub(crate) const MIME_FILE_OFFER: &str = "application/vnd.sunshine.file-offer+json";
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const SSE_RECONNECT_BACKOFF: Duration = Duration::from_secs(3);
@@ -656,14 +658,59 @@ async fn post_item_inner(body: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+/// The two calls a file offer goes out through; tests record them instead.
+trait OfferTransport {
+    async fn post_item(&self, body: Vec<u8>) -> Result<(), String>;
+    async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String>;
+}
+
+struct HostTransport;
+
+impl OfferTransport for HostTransport {
+    async fn post_item(&self, body: Vec<u8>) -> Result<(), String> {
+        post_item(body).await
+    }
+    async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String> {
+        upload_blob(bytes, mime).await
+    }
+}
+
+/// Send a file offer to the clients: inline (kind 4) while it fits one
+/// control message, otherwise uploaded as a blob and announced with a
+/// KIND_REF frame of type MIME_FILE_OFFER (a folder of a thousand short
+/// names is already past the service's 65500-byte /item limit). An upload or
+/// post failure is returned to the caller.
 pub async fn post_file_offer_payload(payload: Vec<u8>) -> Result<(), String> {
-    let token = next_token();
+    send_file_offer(&HostTransport, payload, next_token()).await
+}
+
+async fn send_file_offer<T: OfferTransport>(
+    transport: &T,
+    payload: Vec<u8>,
+    token: u32,
+) -> Result<(), String> {
+    if payload.len() <= INLINE_THRESHOLD {
+        let body = encode_frame(&Frame {
+            kind: Kind::FileOffer,
+            token,
+            payload,
+        });
+        return transport.post_item(body).await;
+    }
+    let size = payload.len() as u64;
+    let id = transport.upload_blob(payload, MIME_FILE_OFFER).await?;
+    let meta = RefMeta {
+        id,
+        mime: MIME_FILE_OFFER.to_string(),
+        size,
+    };
+    let json = serde_json::to_vec(&meta).map_err(|e| format!("ref json encode failed: {e}"))?;
     let body = encode_frame(&Frame {
-        kind: Kind::FileOffer,
+        kind: Kind::Ref,
         token,
-        payload,
+        payload: json,
     });
-    post_item(body).await
+    transport.post_item(body).await
 }
 
 /// What the host answers to the capability call (the heartbeat and the status read both make it).
@@ -871,7 +918,7 @@ async fn apply_inbound_ref(frame: Frame, sid: Option<u64>, echo: Arc<Mutex<EchoS
     let kind = match meta.mime.as_str() {
         m if m.starts_with("text/") => Kind::Text,
         "image/png" => Kind::Png,
-        "application/vnd.sunshine.file-offer+json" => Kind::FileOffer,
+        MIME_FILE_OFFER => Kind::FileOffer,
         other => {
             warn!("inbound REF: unsupported mime '{}'", other);
             return;
@@ -1871,5 +1918,116 @@ mod echo_tests {
         let encoded = ClipboardIdentity::new(None, Some(b"png"), None);
         assert!(!state.observe(encoded));
         assert!(state.observe(encoded));
+    }
+}
+
+#[cfg(test)]
+mod file_offer_send_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorder {
+        items: Mutex<Vec<Vec<u8>>>,
+        blobs: Mutex<Vec<(Vec<u8>, String)>>,
+        fail_upload: bool,
+    }
+
+    impl OfferTransport for Recorder {
+        async fn post_item(&self, body: Vec<u8>) -> Result<(), String> {
+            self.items.lock().unwrap().push(body);
+            Ok(())
+        }
+        async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String> {
+            if self.fail_upload {
+                return Err("upload status 507".to_string());
+            }
+            self.blobs.lock().unwrap().push((bytes, mime.to_string()));
+            Ok("b".repeat(32))
+        }
+    }
+
+    /// The offer JSON Sunshine makes for a folder of `n` one-byte files.
+    fn offer_of(n: usize) -> Vec<u8> {
+        let mut files =
+            vec![serde_json::json!({"path": "bulk", "size": 0, "dir": true, "mtime": 0})];
+        for i in 0..n {
+            files.push(serde_json::json!({
+                "path": format!("bulk/f{i:04}.txt"), "size": 1, "dir": false, "mtime": 1_790_000_000,
+            }));
+        }
+        serde_json::to_vec(&serde_json::json!({
+            "version": 2, "id": "a".repeat(64), "type": "files", "source": "clipboard",
+            "total_size": n, "expires_in": 3600, "files": files,
+        }))
+        .unwrap()
+    }
+
+    fn run(recorder: &Recorder, payload: Vec<u8>) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(send_file_offer(recorder, payload, 7))
+    }
+
+    #[test]
+    fn a_short_offer_goes_inline() {
+        let recorder = Recorder::default();
+        let payload = vec![b' '; INLINE_THRESHOLD];
+        run(&recorder, payload.clone()).unwrap();
+        assert!(recorder.blobs.lock().unwrap().is_empty());
+        let items = recorder.items.lock().unwrap();
+        assert_eq!(items.len(), 1);
+        let frame = decode_frame(&items[0]).unwrap();
+        assert_eq!(frame.kind, Kind::FileOffer);
+        assert_eq!(frame.token, 7);
+        assert_eq!(frame.payload, payload);
+    }
+
+    #[test]
+    fn a_long_offer_goes_as_a_blob_and_only_the_ref_is_posted() {
+        let recorder = Recorder::default();
+        let payload = vec![b' '; INLINE_THRESHOLD + 1];
+        run(&recorder, payload.clone()).unwrap();
+        let blobs = recorder.blobs.lock().unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(blobs[0].0, payload);
+        assert_eq!(blobs[0].1, MIME_FILE_OFFER);
+        let items = recorder.items.lock().unwrap();
+        assert_eq!(items.len(), 1);
+        let frame = decode_frame(&items[0]).unwrap();
+        assert_eq!(frame.kind, Kind::Ref);
+        assert_eq!(frame.token, 7);
+        let meta: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(meta["mime"], MIME_FILE_OFFER);
+        assert_eq!(meta["size"], payload.len() as u64);
+        assert_eq!(meta["id"], "b".repeat(32));
+    }
+
+    #[test]
+    fn a_folder_of_1200_small_files_stays_under_the_item_limit() {
+        let payload = offer_of(1200);
+        assert!(
+            payload.len() + 10 > 65_500,
+            "the case the review measured: {} bytes",
+            payload.len()
+        );
+        let recorder = Recorder::default();
+        run(&recorder, payload.clone()).unwrap();
+        assert_eq!(recorder.blobs.lock().unwrap()[0].0, payload);
+        let items = recorder.items.lock().unwrap();
+        assert!(items[0].len() <= 65_500);
+        assert_eq!(decode_frame(&items[0]).unwrap().kind, Kind::Ref);
+    }
+
+    #[test]
+    fn a_failed_upload_is_returned_and_nothing_is_posted() {
+        let recorder = Recorder {
+            fail_upload: true,
+            ..Default::default()
+        };
+        let err = run(&recorder, offer_of(1200)).unwrap_err();
+        assert!(err.contains("507"), "{err}");
+        assert!(recorder.items.lock().unwrap().is_empty());
     }
 }
