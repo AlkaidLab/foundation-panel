@@ -39,6 +39,9 @@ const MEASURE_WIDTH_CSS: f64 = 360.0;
 const READY_TIMEOUT: Duration = Duration::from_millis(900);
 /// A window that was shown and did not take the focus within this time is given up (the focus rules of the system, or a window that never rendered).
 const FOCUS_GIVE_UP: Duration = Duration::from_millis(1500);
+/// How long after the tray menu opened a loss of the focus does not end it: the taskbar takes the
+/// focus back once the opening gesture is over (the lift of a finger does it).
+const OPEN_FOCUS_GRACE: Duration = Duration::from_millis(1500);
 
 static LOADED: AtomicBool = AtomicBool::new(false);
 /// The window could not be made (or made again): the tray falls back to its native menu until it can.
@@ -50,6 +53,10 @@ static LOADED_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// The self test runs: the window stays cloaked and takes no focus (a measurement instance shows nothing on the desk of whoever uses the machine).
 static SELFTEST: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<Open>> = Mutex::new(None);
+/// A background loop that keeps making the window after the attempts of the start are used up is running.
+static RECOVERING: AtomicBool = AtomicBool::new(false);
+/// One attempt loop at a time: two (the start and the first view of the main window both ask) would race to make the same window.
+static CREATING: AtomicBool = AtomicBool::new(false);
 
 /// A menu opened from the tray icon: where the icon is and which side of the monitor the taskbar is on. The window is placed beside the icon, away from the taskbar, on every `ready`.
 #[derive(Clone, Copy)]
@@ -72,6 +79,9 @@ struct Open {
     /// The window has had the focus: from then on losing it ends the menu.
     armed: bool,
     shown_at: Option<Instant>,
+    /// Until when the menu takes the focus back instead of ending when it loses it. Set when the
+    /// tray menu opens, never for the menus of the pages.
+    focus_grace_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +126,7 @@ pub enum Health {
     /// being made, or its page is loading: a menu asked for now waits for it
     Starting,
     Ready,
-    /// it could not be made, or was lost and could not be made again
+    /// it could not be made, or was lost and could not be made again, after every attempt of `schedule_create_after`
     Failed,
 }
 
@@ -159,12 +169,78 @@ pub fn schedule_create_after(app: &AppHandle, delay: Duration) {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        if let Err(error) = ensure_created(&app) {
-            warn!("[ctxpop] the menu window could not be created: {error}");
-            FAILED.store(true, Ordering::SeqCst);
-            // the tray's native menu takes the icon until a window can be made
-            crate::tray::refresh_menu_mode(&app);
+        create_with_retry(&app).await;
+    });
+}
+
+/// Makes the window, trying again while WebView2 refuses it with the invalid-state code (webview_env.rs: another browser process on the user data folder runs with other options, or the one of
+/// the panel before this one is still shutting down). Every failure is logged with the stage; when the attempts are used up the tray's native menu takes the icon (`Health::Failed`) and a slow
+/// loop keeps trying, so that the Material menu is back as soon as WebView2 lets the window be made.
+async fn create_with_retry(app: &AppHandle) {
+    if CREATING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    create_attempts(app).await;
+    CREATING.store(false, Ordering::SeqCst);
+}
+
+async fn create_attempts(app: &AppHandle) {
+    let started = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let shared = crate::webview_env::is_shared();
+        match ensure_created(app) {
+            Ok(()) => {
+                crate::webview_env::note_success("tray-menu-window", attempt, shared, started);
+                return;
+            }
+            Err(error) => {
+                if shared {
+                    // an environment that belongs to a browser process that is gone must not be asked again
+                    crate::webview_env::forget();
+                }
+                match crate::webview_env::note_failure("tray-menu-window", attempt, shared, &error) {
+                    Some(wait) if !EXITING.load(Ordering::SeqCst) => {
+                        attempt += 1;
+                        tokio::time::sleep(wait).await;
+                    }
+                    _ => break,
+                }
+            }
         }
+    }
+    warn!("[ctxpop] the menu window could not be created: the native menu takes the icon until it can be");
+    FAILED.store(true, Ordering::SeqCst);
+    crate::tray::refresh_menu_mode(app);
+    recover_slowly(app);
+}
+
+/// After the attempts of the start failed: one more try every 20 s, up to 30 times (10 minutes), until a window is there.
+fn recover_slowly(app: &AppHandle) {
+    if RECOVERING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for round in 1..=30 {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if EXITING.load(Ordering::SeqCst) || app.get_webview_window(POPUP_LABEL).is_some() {
+                break;
+            }
+            match ensure_created(&app) {
+                Ok(()) => {
+                    info!("[webview-env] tray-menu-window: made by the slow retry (round {round})");
+                    break;
+                }
+                Err(error) => {
+                    if crate::webview_env::is_shared() {
+                        crate::webview_env::forget();
+                    }
+                    debug!("[webview-env] tray-menu-window: slow retry {round} failed: {error}");
+                }
+            }
+        }
+        RECOVERING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -213,7 +289,7 @@ fn ensure_created(app: &AppHandle) -> Result<(), String> {
     }
     let started = Instant::now();
     LOADED.store(false, Ordering::SeqCst);
-    let window = tauri::WebviewWindowBuilder::new(app, POPUP_LABEL, tauri::WebviewUrl::App("ctxmenu/index.html".into()))
+    let window = crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(app, POPUP_LABEL, tauri::WebviewUrl::App("ctxmenu/index.html".into())))
         .title("")
         .inner_size(MEASURE_WIDTH_CSS, 400.0)
         .resizable(false)
@@ -229,6 +305,7 @@ fn ensure_created(app: &AppHandle) -> Result<(), String> {
         .disable_drag_drop_handler()
         .build()
         .map_err(|e| e.to_string())?;
+    crate::webview_env::capture(&window);
     crate::windows::disable_context_menu(&window);
     #[cfg(target_os = "windows")]
     crate::windows::configure_webview_security(&window);
@@ -245,6 +322,7 @@ pub fn ctx_popup_loaded(app: AppHandle) {
     info!("[ctxpop] menu page ready");
     // the tray's own menu window is usable now: the native menu steps aside (unless the person asked for it), and a window that is loaded again has earned the failures it was blamed for
     crate::tray::menu_window_loaded(&app);
+    crate::tray::warm_menu_state(&app);
 }
 
 /// The window can show menus now: it exists and its page has loaded.
@@ -265,7 +343,7 @@ pub fn app() -> Option<AppHandle> {
 /// in the tray has the person's colours from the first menu.
 static THEME: Mutex<Value> = Mutex::new(Value::Null);
 fn theme_file() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join("tray-theme.json"))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join("tray-theme.json"))
 }
 fn remember_theme(theme: &Value) {
     if theme.is_null() {
@@ -324,16 +402,24 @@ pub struct OpenRequest {
     pub ratio: f64,
 }
 
+/// A monitor as the menu places by it: its work area and its scale.
+fn info_of(monitor: &tauri::Monitor) -> MonitorInfo {
+    let w = monitor.work_area();
+    MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(monitor.scale_factor()) }
+}
+
 fn monitors_of(owner: &WebviewWindow) -> Vec<MonitorInfo> {
-    owner
-        .available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| {
-            let w = m.work_area();
-            MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(m.scale_factor()) }
-        })
-        .collect()
+    owner.available_monitors().unwrap_or_default().iter().map(info_of).collect()
+}
+
+/// The monitor the menu window is on, as it is now. The tray's own sliders change the display's mode and scale while the menu is on, so what was read at the opening is
+/// not what the next page of the menu is placed in. The window's own scale is the one its page is drawn at.
+fn monitor_now(window: &WebviewWindow) -> Option<MonitorInfo> {
+    let mut info = info_of(&window.current_monitor().ok().flatten()?);
+    if let Ok(scale) = window.scale_factor() {
+        info.scale = sane_scale(scale);
+    }
+    Some(info)
 }
 
 /// Opens the menu. Resolves when the window is shown (the menu is on screen); the choice comes later as the event `ctx-popup:result`. An error means no window was shown: the page draws the menu itself.
@@ -364,7 +450,7 @@ pub async fn ctx_popup_open(owner: WebviewWindow, request: OpenRequest) -> Resul
     let (_, room_h) = room_css(monitor.work, monitor.scale, MARGIN_CSS);
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    *state() = Some(Open { token: request.token, tray: None, owner: owner.label().to_string(), anchor, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None });
+    *state() = Some(Open { token: request.token, tray: None, owner: owner.label().to_string(), anchor, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: None });
 
     // the window waits on the monitor of the pointer, as large as the work area allows, cloaked: the page lays the menu out in a window that renders, at the scale it will have
     let measure = Rect::new(
@@ -428,13 +514,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     let icon = target.icon;
     let centre = (icon.x + icon.w / 2, icon.y + icon.h / 2);
     let monitors = popup.available_monitors().map_err(|e| e.to_string())?;
-    let infos: Vec<MonitorInfo> = monitors
-        .iter()
-        .map(|m| {
-            let w = m.work_area();
-            MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(m.scale_factor()) }
-        })
-        .collect();
+    let infos: Vec<MonitorInfo> = monitors.iter().map(info_of).collect();
     let index = pick_monitor(&infos, centre).ok_or("no monitor")?;
     let monitor = infos[index];
     let bounds = Rect::new(monitors[index].position().x, monitors[index].position().y, monitors[index].size().width as i32, monitors[index].size().height as i32);
@@ -443,7 +523,10 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
 
     let token = TRAY_TOKEN.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    *state() = Some(Open { token, tray: Some(TrayAnchor { icon, edge }), owner: String::new(), anchor: centre, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None });
+    // the release of the opening gesture (touch lift, or a stray mouse release) must not land on
+    // the icon as a second click now that the menu is coming up
+    crate::tray::arm_release_suppression();
+    *state() = Some(Open { token, tray: Some(TrayAnchor { icon, edge }), owner: String::new(), anchor: centre, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: Some(Instant::now() + OPEN_FOCUS_GRACE) });
 
     // the window waits on the icon's monitor, as large as the work area allows and cloaked, while the page lays the card out at the scale it will have
     let measure = Rect::new(
@@ -479,6 +562,9 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
         }
     }
     info!("[ctxpop] tray menu {} shown {} ms after the click (edge {}, token {})", variant.as_str(), started.elapsed().as_millis(), edge.as_str(), token);
+    crate::mem_adaptive::note_menu_shown();
+    // "open the panel" is one tap away: a main window that was let go is made again now
+    crate::mem_adaptive::prewarm_main(&app, "tray menu opened");
     watch(app, token);
     Ok(true)
 }
@@ -509,7 +595,7 @@ pub fn tray_menu_open() -> bool {
 #[tauri::command]
 pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64) -> Result<(), String> {
     let popup = app.get_webview_window(POPUP_LABEL).ok_or("the menu window does not exist")?;
-    let (anchor, monitor, first, tx, tray) = {
+    let (anchor, opened, first, tx, tray) = {
         let mut guard = state();
         let open = guard.as_mut().filter(|o| o.token == token).ok_or("no such menu")?;
         let first = !open.shown;
@@ -518,6 +604,12 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
         let at = open.surface.map(|r| (r.x, r.y)).unwrap_or(open.anchor);
         (at, open.monitor, first, open.ready.take(), open.tray)
     };
+    // the page answers again for every page of the menu, and the tray's own sliders change the display's mode and scale while it is on: the work area and the scale
+    // are read again, so the card is sized at the scale it is drawn at and placed in the work area as it is now
+    let monitor = monitor_now(&popup).unwrap_or(opened);
+    if let Some(open) = state().as_mut().filter(|o| o.token == token) {
+        open.monitor = monitor;
+    }
     let size = (css_to_physical(width.max(1.0), monitor.scale), css_to_physical(height.max(1.0), monitor.scale));
     let placed = match tray {
         // the tray's menu: beside the icon, away from the taskbar; a page of another height keeps the edge at the taskbar
@@ -536,6 +628,10 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
         let _ = popup.set_focus();
         if let Some(open) = state().as_mut().filter(|o| o.token == token) {
             open.shown_at = Some(Instant::now());
+            // the grace counts from the moment the menu is on screen, not from the request to open it
+            if open.tray.is_some() {
+                open.focus_grace_until = Some(Instant::now() + OPEN_FOCUS_GRACE);
+            }
         }
     }
     if first && SELFTEST.load(Ordering::SeqCst) {
@@ -624,7 +720,7 @@ fn finish(app: &AppHandle, path: Option<Vec<u32>>, reason: Reason) -> bool {
         }
         let _ = app.emit_to(open.owner.as_str(), "ctx-popup:result", json!({ "token": open.token, "path": path, "reason": format!("{reason:?}") }));
     }
-    debug!("[ctxpop] closed token {} ({reason:?}) path {path:?}", open.token);
+    info!("[ctxpop] closed token {} ({reason:?}) path {path:?}", open.token);
     true
 }
 
@@ -649,8 +745,8 @@ fn watch(app: AppHandle, token: u64) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(120)).await;
-            let (owner_label, armed, shown_at) = match state().as_ref().filter(|o| o.token == token) {
-                Some(o) => (o.owner.clone(), o.armed, o.shown_at),
+            let (owner_label, armed, shown_at, focus_grace_until) = match state().as_ref().filter(|o| o.token == token) {
+                Some(o) => (o.owner.clone(), o.armed, o.shown_at, o.focus_grace_until),
                 None => return,
             };
             // the tray's menu has no owner window to keep an eye on
@@ -665,6 +761,10 @@ fn watch(app: AppHandle, token: u64) {
             };
             let focused = popup.is_focused().unwrap_or(false);
             let age = shown_at.map(|t| t.elapsed()).unwrap_or_default();
+            if !focused && focus_grace_until.is_some_and(|until| Instant::now() < until) {
+                let _ = popup.set_focus();
+                continue;
+            }
             if focused {
                 if let Some(open) = state().as_mut().filter(|o| o.token == token) {
                     open.armed = true;
@@ -696,6 +796,11 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) -> bool {
                 }
             }
             WindowEvent::Focused(false) => {
+                if state().as_ref().is_some_and(|o| o.focus_grace_until.is_some_and(|until| Instant::now() < until)) {
+                    info!("[ctxpop] the focus went back to the taskbar right after the menu opened: the menu takes it again");
+                    let _ = window.set_focus();
+                    return true;
+                }
                 let armed = state().as_ref().is_some_and(|o| o.armed);
                 if armed {
                     finish(window.app_handle(), None, Reason::FocusLost);
@@ -784,5 +889,15 @@ mod tests {
         assert!(src.contains("SetWindowPos(HWND(hwnd.0), None, rect.x, rect.y, rect.w.max(1), rect.h.max(1)"));
         // the two-call path is only the fallback
         assert!(apply.contains("if !set_rect_at_once"));
+    }
+
+    #[test]
+    fn the_menu_is_sized_and_placed_by_the_monitor_as_it_is_now() {
+        let src = include_str!("ctx_popup.rs");
+        let ready = &src[src.find("pub async fn ctx_popup_ready").unwrap()..src.find("fn apply_rect").unwrap()];
+        // the tray's own sliders change the display's mode and scale while the menu is on: the opening's reading is only the fallback
+        assert!(ready.contains("monitor_now(&popup).unwrap_or(opened)"));
+        assert!(ready.contains("open.monitor = monitor"));
+        assert!(ready.find("monitor_now(&popup)").unwrap() < ready.find("css_to_physical(width").unwrap(), "the size is converted at the scale read now");
     }
 }

@@ -26,10 +26,23 @@ mod main_panel;
 mod menu;
 mod notifications;
 pub(crate) mod popup_input;
+mod read_order;
+#[cfg(target_os = "windows")]
+mod touch_menu;
+
+/// The release of the click that is opening a tray menu is swallowed, whatever the click came
+/// from (touch_menu::arm_release_suppression).
+#[cfg(target_os = "windows")]
+pub(crate) fn arm_release_suppression() {
+    touch_menu::arm_release_suppression();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn arm_release_suppression() {}
 #[cfg(target_os = "windows")]
 mod vdd_confirmation;
 
-pub use actions::{cleanup_prevent_sleep, handle_tray_menu_event};
+pub use actions::{cleanup_prevent_sleep, dispatch_notify_action, handle_tray_menu_event};
 use menu::{build_tray_menu, tray_status_label};
 #[cfg(test)]
 use menu::{compact_menu_text, tray_notification_label};
@@ -51,6 +64,8 @@ static SUNSHINE_USER_MODE_STATE: Mutex<bool> = Mutex::new(false);
 
 // 当前语言状态管理 ("zh" 或 "en")
 static CURRENT_LOCALE: Mutex<Option<String>> = Mutex::new(None);
+/// The language of the pairing-request notification: one of the 20 codes of the panel (notifications/pairing_texts.rs), while the tray menu has its three.
+static NOTIFICATION_LOCALE: Mutex<Option<&'static str>> = Mutex::new(None);
 static LOCALE_CHANGE_REVISION: AtomicU64 = AtomicU64::new(0);
 static LOCALE_PERSIST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -190,7 +205,9 @@ impl TrayRuntimeState {
     fn mark_disconnected(&mut self) -> bool {
         let connection_changed = self.connection != CoreConnectionState::Disconnected;
         self.connection = CoreConnectionState::Disconnected;
-        connection_changed || self.tray_state.take().is_some()
+        // the state is dropped whether or not the connection changed: `||` would skip it on the first disconnect and `current_status()` would go on reporting the old one
+        let had_state = self.tray_state.take().is_some();
+        connection_changed || had_state
     }
 }
 
@@ -217,6 +234,27 @@ pub(crate) fn is_tray_session_active() -> bool {
         .unwrap_or(false)
 }
 
+/// What the host reports now (`TrayState.status`): `None` while the host has not reported since this panel started, or is not reachable.
+pub(crate) fn current_status() -> Option<String> {
+    TRAY_RUNTIME_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .tray_state
+        .as_ref()
+        .map(|state| state.status.clone())
+}
+
+/// The name of the client that waits for its PIN, as the host reports it (empty when there is none).
+pub(crate) fn current_pairing_client() -> String {
+    TRAY_RUNTIME_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .tray_state
+        .as_ref()
+        .map(|state| state.pairing_client_name.trim().to_owned())
+        .unwrap_or_default()
+}
+
 static MAIN_PANEL_BRIDGE: main_panel::Bridge = main_panel::Bridge::new();
 
 pub(crate) fn emit_message<R: Runtime>(app: &AppHandle<R>, msg_type: &str, message: &str) {
@@ -224,21 +262,22 @@ pub(crate) fn emit_message<R: Runtime>(app: &AppHandle<R>, msg_type: &str, messa
         "type": msg_type,
         "message": message
     });
-    let mut has_visible_window = false;
+    let main_visible = app
+        .get_webview_window("main")
+        .is_some_and(|window| window.is_visible().unwrap_or(false));
 
     for label in ["main", "desktop"] {
         if let Some(window) = app.get_webview_window(label) {
-            has_visible_window |= window.is_visible().unwrap_or(false);
             let _ = window.emit("show-message", &payload);
         }
     }
 
-    if msg_type == "error" && !has_visible_window {
+    if msg_type == "error" && !main_visible {
         use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
         app.dialog()
             .message(message)
-            .title("Sunshine Error")
+            .title(get_tray_strings().auto_start_error_title)
             .kind(MessageDialogKind::Error)
             .show(|_| {});
     }
@@ -261,9 +300,7 @@ struct TrayStrings {
     client_disconnected: &'static str,
     client_disconnected_detail: &'static str,
     client_disconnected_named: &'static str,
-    incoming_pairing: &'static str,
-    pairing_instruction: &'static str,
-    pairing_menu_instruction: &'static str,
+    nr_active: &'static str,
     complete_pairing: &'static str,
     open_main_panel: &'static str,
     connect_device: &'static str,
@@ -302,6 +339,13 @@ struct TrayStrings {
     auto_start: &'static str,
     #[cfg(target_os = "windows")]
     auto_start_off_confirm: &'static str,
+    auto_start_error_title: &'static str,
+    #[cfg(target_os = "windows")]
+    auto_start_uac_canceled: &'static str,
+    #[cfg(target_os = "windows")]
+    auto_start_untrusted_dir: &'static str,
+    #[cfg(target_os = "windows")]
+    auto_start_failed: &'static str,
     #[cfg(target_os = "windows")]
     switch_mode_confirm: &'static str,
     #[cfg(any(debug_assertions, feature = "beta"))]
@@ -351,9 +395,7 @@ const ZH_STRINGS: TrayStrings = TrayStrings {
     client_disconnected: "客户端已断开",
     client_disconnected_detail: "串流连接已结束。",
     client_disconnected_named: "「{name}」已从这台电脑断开。",
-    incoming_pairing: "Moonlight 配对请求",
-    pairing_instruction: "点击此通知，输入 Moonlight 上显示的 4 位 PIN。",
-    pairing_menu_instruction: "打开 Sunshine 托盘菜单中的“完成配对”，输入 Moonlight 上显示的 4 位 PIN。",
+    nr_active: "当前串流的 DLSS NR 画质增强已生效。",
     complete_pairing: "完成配对",
     open_main_panel: "打开主面板",
     connect_device: "配对新设备",
@@ -394,6 +436,13 @@ const ZH_STRINGS: TrayStrings = TrayStrings {
     switch_mode_confirm: "切换运行模式会先停止 Sunshine 再重新启动，正在进行的串流会断开，需要管理员授权。继续吗？",
     #[cfg(target_os = "windows")]
     auto_start_off_confirm: "关闭后 Sunshine 服务改为手动启动：这台电脑重启后，Sunshine 不会自动运行，远程设备将无法连接，直到有人在这台电脑上启动它。确定关闭吗？",
+    auto_start_error_title: "Sunshine",
+    #[cfg(target_os = "windows")]
+    auto_start_uac_canceled: "未能更改开机自启：已取消管理员授权。",
+    #[cfg(target_os = "windows")]
+    auto_start_untrusted_dir: "未能更改开机自启：当前安装目录可被普通用户写入，控制面板不会自动提权修改系统服务。请以管理员身份运行控制面板后重试，或更新/重新安装到受保护目录（如 Program Files）。",
+    #[cfg(target_os = "windows")]
+    auto_start_failed: "更改开机自启失败：{error}",
     #[cfg(any(debug_assertions, feature = "beta"))]
     web_stream: "Web 串流服务",
     #[cfg(debug_assertions)]
@@ -411,7 +460,7 @@ const ZH_STRINGS: TrayStrings = TrayStrings {
     visit_bilibili: "B 站",
     star_github: "在 GitHub 点 Star",
     sponsor_menu: "赞助",
-    bitrate_menu: "码率上限",
+    bitrate_menu: "当前码率",
     bitrate_auto: "自动",
     dpi_menu: "缩放",
     restart: "重启 Sunshine",
@@ -440,9 +489,7 @@ const EN_STRINGS: TrayStrings = TrayStrings {
     client_disconnected: "Client disconnected",
     client_disconnected_detail: "The streaming connection has ended.",
     client_disconnected_named: "“{name}” disconnected from this computer.",
-    incoming_pairing: "Moonlight pairing request",
-    pairing_instruction: "Click this notification to enter the 4-digit PIN shown in Moonlight.",
-    pairing_menu_instruction: "Open Complete Pairing from the Sunshine tray menu and enter the 4-digit PIN shown in Moonlight.",
+    nr_active: "DLSS NR is enhancing the current stream.",
     complete_pairing: "Complete pairing",
     open_main_panel: "Open Main Panel",
     connect_device: "Pair a New Device",
@@ -483,6 +530,13 @@ const EN_STRINGS: TrayStrings = TrayStrings {
     switch_mode_confirm: "Switching the mode stops Sunshine and starts it again: live streams end, and it needs administrator approval. Continue?",
     #[cfg(target_os = "windows")]
     auto_start_off_confirm: "The Sunshine service will be set to Manual: after this PC restarts, Sunshine will not run and remote devices cannot connect until someone starts it on this PC. Turn it off?",
+    auto_start_error_title: "Sunshine",
+    #[cfg(target_os = "windows")]
+    auto_start_uac_canceled: "Could not change startup setting: administrator authorization was canceled.",
+    #[cfg(target_os = "windows")]
+    auto_start_untrusted_dir: "Could not change startup setting: this installation folder is writable without administrator rights, so the panel will not self-elevate. Run the panel as administrator and try again, or reinstall/update into a protected folder such as Program Files.",
+    #[cfg(target_os = "windows")]
+    auto_start_failed: "Failed to update startup setting: {error}",
     #[cfg(any(debug_assertions, feature = "beta"))]
     web_stream: "Web Streaming",
     #[cfg(debug_assertions)]
@@ -500,7 +554,7 @@ const EN_STRINGS: TrayStrings = TrayStrings {
     visit_bilibili: "Bilibili",
     star_github: "Star on GitHub",
     sponsor_menu: "Sponsor",
-    bitrate_menu: "Bitrate cap",
+    bitrate_menu: "Current bitrate",
     bitrate_auto: "Auto",
     dpi_menu: "Scale",
     restart: "Restart Sunshine",
@@ -529,9 +583,7 @@ const JA_STRINGS: TrayStrings = TrayStrings {
     client_disconnected: "クライアントが切断されました",
     client_disconnected_detail: "ストリーミング接続が終了しました。",
     client_disconnected_named: "「{name}」がこのコンピューターから切断されました。",
-    incoming_pairing: "Moonlight ペアリング要求",
-    pairing_instruction: "この通知をクリックし、Moonlight に表示された 4 桁の PIN を入力してください。",
-    pairing_menu_instruction: "Sunshine のトレイメニューから「ペアリングを完了」を開き、Moonlight に表示された 4 桁の PIN を入力してください。",
+    nr_active: "現在のストリームで DLSS NR が有効になりました。",
     complete_pairing: "ペアリングを完了",
     open_main_panel: "メインパネルを開く",
     connect_device: "新しいデバイスをペアリング",
@@ -572,6 +624,13 @@ const JA_STRINGS: TrayStrings = TrayStrings {
     switch_mode_confirm: "実行モードを切り替えると Sunshine をいったん停止して再起動します。配信中のストリームは切断され、管理者の承認が必要です。続けますか？",
     #[cfg(target_os = "windows")]
     auto_start_off_confirm: "Sunshine サービスを手動に変更します。この PC を再起動すると Sunshine は起動せず、この PC で誰かが起動するまでリモートデバイスから接続できません。オフにしますか？",
+    auto_start_error_title: "Sunshine",
+    #[cfg(target_os = "windows")]
+    auto_start_uac_canceled: "自動起動を変更できませんでした：管理者権限の承認がキャンセルされました。",
+    #[cfg(target_os = "windows")]
+    auto_start_untrusted_dir: "自動起動を変更できませんでした：現在のインストール先フォルダーは一般ユーザーが書き込み可能なため、自動的に昇格できません。コントロールパネルを管理者として実行して再試行するか、Program Files などの保護されたフォルダーへ再インストールしてください。",
+    #[cfg(target_os = "windows")]
+    auto_start_failed: "自動起動の変更に失敗しました：{error}",
     #[cfg(any(debug_assertions, feature = "beta"))]
     web_stream: "Web ストリーミング",
     #[cfg(debug_assertions)]
@@ -589,7 +648,7 @@ const JA_STRINGS: TrayStrings = TrayStrings {
     visit_bilibili: "Bilibili",
     star_github: "GitHub でスターを付ける",
     sponsor_menu: "支援",
-    bitrate_menu: "ビットレート上限",
+    bitrate_menu: "現在のビットレート",
     bitrate_auto: "自動",
     dpi_menu: "スケール",
     restart: "Sunshine を再起動",
@@ -623,6 +682,11 @@ pub(crate) fn download_done_tooltip() -> &'static str {
 
 pub(crate) fn download_failed_tooltip() -> &'static str {
     get_tray_strings().download_failed
+}
+
+/// The code of the language of the pairing-request notification (`en` before the tray has started).
+fn notification_locale() -> &'static str {
+    NOTIFICATION_LOCALE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).unwrap_or("en")
 }
 
 fn get_current_locale() -> String {
@@ -666,11 +730,13 @@ mod power {
 
 /// 创建系统托盘
 pub fn create_system_tray<R: Runtime + 'static>(app: &AppHandle<R>) -> tauri::Result<()> {
-    #[cfg(target_os = "windows")]
-    init_sunshine_user_mode_state(app);
+    if !crate::test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        init_sunshine_user_mode_state(app);
 
-    if let Err(error) = notifications::initialize(app) {
-        warn!("{}", error);
+        if let Err(error) = notifications::initialize(app) {
+            warn!("{}", error);
+        }
     }
 
     initialize_tray_locale();
@@ -751,6 +817,14 @@ fn initialize_tray_locale() {
     let system_locale = get_system_locale();
     let locale = resolve_initial_tray_locale(config.as_ref(), system_locale.as_deref());
     info!("🌍 托盘菜单：启动语言为 {}", locale);
+    // the host's own setting names the language of the notification, when it is one the panel has; otherwise it follows the tray
+    let notification_locale = config
+        .as_ref()
+        .and_then(|config| config.locale.as_deref())
+        .and_then(notifications::pairing_code_for)
+        .unwrap_or_else(|| normalize_tray_locale(&locale));
+    *NOTIFICATION_LOCALE.lock().unwrap() = Some(notification_locale);
+    crate::proxy_server::set_panel_locale(&locale);
     *CURRENT_LOCALE.lock().unwrap() = Some(locale);
 }
 
@@ -776,6 +850,10 @@ fn build_owned_system_tray<R: Runtime + 'static>(app: &AppHandle<R>) -> tauri::R
     }
     builder.build(app)?;
     popup_input::note_native_attached(native);
+    // A touch long-press on the icon arrives as WM_CONTEXTMENU, which tray-icon does not emit:
+    // translate it into the right-click path the menu window already handles.
+    #[cfg(target_os = "windows")]
+    touch_menu::ensure_installed();
 
     info!("GUI tray created for the current user session");
 
@@ -789,20 +867,8 @@ fn open_desktop_gui_from_tray<R: Runtime>(app: &AppHandle<R>, source: &str) {
 }
 
 fn open_main_panel_from_tray<R: Runtime>(app: &AppHandle<R>, source: &str) {
-    // the old window is still being closed: the panel opens when it is gone
-    if windows::closing::is_closing("main") {
-        let source = source.to_owned();
-        windows::closing::after_closed(app, "main", move |app| open_main_panel_from_tray(&app, &source));
-        return;
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        windows::show_and_activate_window(&window);
-        return;
-    }
-
-    if let Err(e) = windows::create_main_window(app) {
-        error!("Failed to open main panel from tray {}: {}", source, e);
-    }
+    debug!("Main panel requested from tray {source}");
+    windows::activate_main_window(app, None);
 }
 
 pub fn mark_main_panel_loading() {
@@ -1117,6 +1183,24 @@ mod tests {
     }
 
     #[test]
+    fn the_first_disconnect_forgets_the_last_state_as_well_as_rebuilding_the_menu() {
+        // the full-screen PIN entry and a notification click read the status here: a pairing from before the host was lost must not be reported
+        let mut runtime = TrayRuntimeState {
+            connection: CoreConnectionState::Connecting,
+            tray_state: None,
+            recovery: RecoveryState::default(),
+        };
+        let mut pairing = tray_state("pairing");
+        pairing.pairing_client_name = "Living Room TV".to_string();
+        runtime.apply_connected_state(&pairing, Some(1)).expect("a monitor state is accepted");
+        assert_eq!(runtime.tray_state.as_ref().map(|state| state.status.as_str()), Some("pairing"));
+
+        assert!(runtime.mark_disconnected(), "the connection changed: the menu is rebuilt");
+        assert!(runtime.tray_state.is_none(), "and the old state is gone, though the connection changed too");
+        assert!(!runtime.mark_disconnected());
+    }
+
+    #[test]
     fn runtime_state_applies_connection_transitions_atomically() {
         let mut runtime = TrayRuntimeState {
             connection: CoreConnectionState::Connecting,
@@ -1163,6 +1247,8 @@ fn apply_tray_state<R: Runtime + 'static>(
         debug!("Ignored non-monitor tray state while Core is unavailable");
         return;
     };
+    // the full-screen PIN entry lives as long as the host reports a pairing (pin_window.rs)
+    crate::pin_window::on_tray_state(app, Some(state.status.as_str()));
 
     #[cfg(target_os = "windows")]
     crate::text_context::reconcile_streaming_state(Some(state));
@@ -1206,6 +1292,7 @@ fn apply_core_disconnected<R: Runtime + 'static>(app: &AppHandle<R>) {
     #[cfg(target_os = "windows")]
     crate::text_context::reconcile_streaming_state(None);
     crate::power::refresh_ecoqos_state(app);
+    crate::pin_window::on_tray_state(app, None);
 
     if let Err(e) = build_owned_system_tray(app) {
         error!(
@@ -1294,12 +1381,17 @@ fn init_sunshine_user_mode_state<R: Runtime + 'static>(app: &AppHandle<R>) {
 }
 
 fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64, String) {
-    let locale = normalize_tray_locale(locale).to_string();
+    let normalized = normalize_tray_locale(locale);
     let (revision, changed) = {
         let mut current_locale = CURRENT_LOCALE.lock().unwrap();
+        // 语言 cookie 保存面板原始语言（WebUI 按完整语言码解析界面语言），托盘文案继续使用规范化语言；
+        // 与托盘状态同处一个临界区更新，避免并发切换时 cookie 与托盘语言错序
+        crate::proxy_server::set_panel_locale(locale);
         let revision = next_locale_change_revision();
-        let changed = current_locale.as_deref() != Some(locale.as_str());
-        *current_locale = Some(locale.clone());
+        let changed = current_locale.as_deref() != Some(normalized);
+        *current_locale = Some(normalized.to_string());
+        // the tray menu's own choice (Chinese, English, Japanese) is also the language of the notification from now on
+        *NOTIFICATION_LOCALE.lock().unwrap() = Some(normalized);
         (revision, changed)
     };
 
@@ -1307,7 +1399,7 @@ fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64,
         rebuild_tray_menu(app);
     }
 
-    (revision, locale)
+    (revision, normalized.to_string())
 }
 
 /// 从托盘菜单切换语言
@@ -1387,6 +1479,11 @@ pub fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
 pub(crate) fn menu_window_loaded<R: Runtime>(app: &AppHandle<R>) {
     popup_input::reset_failures();
     popup_input::apply_menu_mode(app);
+}
+
+/// The menu window can show menus: the slow facts of the state (streams, displays, controller, start-up, RTSS) are read once now, so the first menu opens from a reading and not from nothing.
+pub(crate) fn warm_menu_state(app: &AppHandle) {
+    popup_input::refresh_in_background(app);
 }
 
 /// The icon carries the native menu or none, as the settings and the state of the menu window say (see popup_input.rs).

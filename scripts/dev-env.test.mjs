@@ -42,3 +42,13 @@ test('the app stays Windows-only while its Windows crates are cfg(windows) depen
   assert.equal(appIsWindowsOnly("[dependencies]\nserde = \"1\"\n"), false)
   assert.equal(appIsWindowsOnly("[target.'cfg(windows)'.dependencies]\nwindows = \"0.62\"\nwebview2-com = \"0.38\"\n"), true)
 })
+
+test('the release job builds the frontend with the pinned settings data and stops without it', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8')
+  const release = workflow.slice(workflow.indexOf('  windows-release:'))
+  const pin = release.indexOf('node scripts/dev-env.mjs settings-env')
+  const build = release.indexOf('npm run build:renderer')
+  assert.ok(pin > 0 && build > pin, 'the settings data is pinned before the frontend build of the release job')
+  assert.match(release.slice(pin, build), /PANEL_REQUIRE_SETTINGS_DATA: '1'/)
+  assert.match(readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8'), /PANEL_REQUIRE_SETTINGS_DATA === '1' && !hasSettingsData\) \{\n  throw/)
+})

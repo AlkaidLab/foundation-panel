@@ -71,6 +71,10 @@
       document.documentElement.setAttribute('data-bs-theme', theme)
       localStorage.setItem('theme', theme)
     },
+    'locale-sync': () => {
+      // 面板语言变化：语言 cookie 已由代理更新，重载页面按新语言初始化
+      location.reload()
+    },
     'set-background': ({ dataUrl, filePath }) => {
       document.body.style.backgroundImage = `url("${dataUrl}")`
       filePath && localStorage.setItem('WEBUI-BGSRC-PATH', filePath)

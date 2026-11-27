@@ -13,6 +13,7 @@ const GENERATED_CAPABILITY_PATH: &str = "capabilities/app-commands.generated.jso
 const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "capture_screenshot",
     "hdr_enhanced_select_backend",
+    "set_global_nr_enabled",
     "list_native_components",
     "native_component_get_status",
     "native_component_import",
@@ -184,6 +185,7 @@ fn main() {
     // 告诉 Cargo 当这些文件变化时需要重新编译
     // 这样 include_str! 宏就能读取到最新版本的文件
     println!("cargo:rerun-if-changed=inject-script.js");
+    println!("cargo:rerun-if-changed=inject-viewstate.js");
     println!("cargo:rerun-if-changed=inject-styles.css");
     println!("cargo:rerun-if-changed=error-404.html");
     // 命令清单从 main.rs 解析，main.rs 变化需重跑 build.rs

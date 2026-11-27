@@ -79,7 +79,7 @@ pub struct TrayPrefs {
     pub force_native: bool,
     /// The tiles of the quick panel (V3), in order, once the person has edited it; None = the default of foundation-ui (`DEFAULT_TILES`).
     pub tiles: Option<Vec<String>>,
-    /// The sliders of the three menus (V1, V2 and the quick panel read this one list, and so do the native menu's stepped submenus), in order; None = the default (the bitrate cap, then the scale).
+    /// The sliders of the three menus (V1, V2 and the quick panel read this one list, and so do the native menu's stepped submenus), in order; None = the default (the current bitrate, then the scale).
     /// A list saved before the default changed stays as it was saved.
     pub sliders: Option<Vec<String>>,
     /// The density of the three menus: "auto" (a finger or a pen that opens the menu, or slate posture, makes it touch; the page corrects the guess with its first pointer), "standard" or "touch".
@@ -224,7 +224,7 @@ pub fn just_closed_by_icon_press() -> bool {
 static CURRENT: Mutex<Option<TrayPrefs>> = Mutex::new(None);
 
 fn path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
+    crate::test_isolation::config_dir().map(|dir| dir.join("Sunshine GUI").join(FILE))
 }
 
 pub fn parse(text: &str) -> TrayPrefs {

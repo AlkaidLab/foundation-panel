@@ -34,6 +34,7 @@ import { useI18n } from '../desktop/i18n/index.js'
 import SidebarMenu from './SidebarMenu.vue'
 import { proxyBlock } from '../composables/proxyBlock.js'
 import { createProxyGate } from '../composables/proxyGate.js'
+import { createOfflineWatch } from '../composables/offlineWatch.js'
 import { isWebuiNavigationPath } from '../composables/webuiNavigation.js'
 import { BLANK, framePageGo, routeChanged, webuiNavigated } from '../composables/frameRoute.js'
 import { webPathOf, routeForWebPath } from '../composables/useRouter.js'
@@ -52,7 +53,7 @@ const sunshineUrl = ref('')
 const frameKey = ref(0)
 // The Web in the frame says (once, after it mounted) that it can be told the page: from then on a request for another framed page is a message to this frame (handleWebuiNavigate), not a new address. A new frame has not said it yet.
 let frameGoReady = false
-watch(sunshineUrl, () => { frameKey.value++; frameGoReady = false }, { flush: 'sync' })
+watch(sunshineUrl, () => { frameKey.value++; frameGoReady = false; offlineWatch.stop() }, { flush: 'sync' })
 // A link inside a Web page moves the frame without `sunshineUrl` (the address the panel last gave it) changing. Asked later for the address it remembers (Back to the page the link was on), the same
 // value would change nothing and the frame would stay on the page the link led to, with the route and the list already on the other one. `setFrameUrl` loads it again in that case.
 let frameMovedAway = false
@@ -338,7 +339,9 @@ const createMessageHandler = () => {
       }
       beginLoading()
     },
-    'webui-ready': finishLoading,
+    // the offline page of the proxy is up in the frame: the panel asks the host itself and tells the page when it answers (composables/offlineWatch.js)
+    'foundation-offline-page': (_data, event) => { if (isTrustedSunshineEvent(event)) offlineWatch.notice() },
+    'webui-ready': () => { offlineWatch.stop(); finishLoading() },
     'foundation-frame-go-ready': (_data, event) => { if (isTrustedSunshineEvent(event)) frameGoReady = true },
     // errors, long frames and slow calls inside the page, written to the panel's log (frameReport.js); only the frame that is shown may say them
     'panel-frame-report': (data, event) => {
@@ -518,6 +521,15 @@ const handleLocaleChanged = () => {
 // Lifecycle
 // the frame follows the panel's root element: a new wallpaper colour, light or dark, the picture on or off
 let rootFollow = null
+// While the frame shows the offline page, the panel's own native probe waits for the host and tells the page when it answers; the page then returns by itself.
+const offlineWatch = createOfflineWatch({
+  probe: () => sunshine.probeHost(2500),
+  hostUp: () => {
+    const origin = frameOrigin()
+    const frame = sunshineIframe.value?.contentWindow
+    if (origin && frame) frame.postMessage({ type: 'foundation-offline-host-up' }, origin)
+  },
+})
 // the origin a message to the frame can be sent to: an http(s) address only ('' for about:blank and any custom scheme, whose origin is 'null': postMessage(message, 'null') throws a SyntaxError)
 const frameOrigin = () => { try { const url = new URL(sunshineUrl.value || sunshineIframe.value?.src || '', window.location.href); return /^https?:$/.test(url.protocol) ? url.origin : '' } catch { return '' } }
 
@@ -528,6 +540,7 @@ onUnmounted(() => {
   if (messageHandler) window.removeEventListener('message', messageHandler)
   if (visibilityHandlerRef) document.removeEventListener('visibilitychange', visibilityHandlerRef)
   if (pollTimer) clearInterval(pollTimer)
+  offlineWatch.stop()
   clearLoadedFrameReveal()
   proxyGate.stop()
   proxyBlock.blocked = false

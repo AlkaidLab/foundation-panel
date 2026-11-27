@@ -4,20 +4,20 @@
     <MCaption bem="panel-caption" more bar-more :more-label="t.m3e.nav.moreTitle" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart" @more="moreOpen = true">
       <template v-if="backButton" #back><MCaptionBack :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #version><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="openUpdates" /></template>
-      <template #brand><MBrand class="panel-caption__brand" :size="20" data-tauri-drag-region /></template>
+      <template #brand><MBrand class="panel-caption__brand" :name="PRODUCT_NAME" :size="20" data-tauri-drag-region /></template>
       <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MFeedbackButton :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
       <template #search><div class="panel-caption__search" data-tauri-drag-region><MUnifiedSearch :search="uni" :texts="searchT" :compact="compactSearch || caption.tight.value" :height="38" /></div></template>
       <template #connect><button type="button" class="m-caption-connect" :aria-label="connectT.title" :data-tip="connectT.title" :disabled="hostUnusable" @click="connect.show('pair')"><MIcon name="person_add" /><span>{{ connectT.title }}</span></button></template>
       <template #controls><div class="panel-caption__controls">
         <button type="button" class="panel-caption__btn" :aria-label="t.sidebar.minimize" :data-tip="t.sidebar.minimize" @click="minimizeWindow"><MIcon name="remove" /></button>
         <button type="button" class="panel-caption__btn" :aria-label="isMaximized ? t.sidebar.restore : t.sidebar.maximize" :data-tip="isMaximized ? t.sidebar.restore : t.sidebar.maximize" @click="toggleMaximize"><MIcon :name="isMaximized ? 'filter_none' : 'crop_square'" /></button>
-        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" @click="closeWindow"><MIcon name="close" /></button>
+        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" data-panel-hide @click="hidePanel"><MIcon name="close" /></button>
       </div></template>
     </MCaption>
     <div class="panel-body">
-    <MScene :nav="nav" :caption-height="48" :jumps="jumps" :chip="backChip" :rail-items="rail" :bar-items="bar" :bar-current="barCur" :texts="sceneTexts" :overlay="isWebPage || offlineShown" :status="offlineShown" storage-key="foundation-ui.panel.list" @rail="onRail">
+    <MScene :nav="nav" :caption-height="48" :jumps="jumps" :chip="backChip" :rail-items="rail" :bar-items="bar" :bar-current="barCur" :texts="sceneTexts" :brand-name="PRODUCT_NAME" :overlay="isWebPage || offlineShown" :status="offlineShown" storage-key="foundation-ui.panel.list" @rail="onRail">
       <template #back-chip><MBackChip :page="backPage" :locale="locale" @back="jumps.back()" /></template>
-      <template #rail-foot><MIconButton icon="palette" :label="appearanceLabel" :current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)" /><MIconButton icon="info" :label="aboutTexts(locale).title" :current="router.currentRoute.value === ROUTES.ABOUT" @click="router.navigate(ROUTES.ABOUT, undefined, { root: true })" /><MSponsorButton :label="t.m3e.home.sponsor" :title="t.m3e.home.sponsorTitle" :sections="sponsorSections" :close-label="t.m3e.home.done" @open="(it) => actions_openExternal(it.url)" /></template>
+      <template #rail-foot><MIconButton icon="palette" :label="appearanceLabel" :current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)" /><MIconButton icon="info" :label="aboutTexts(locale).title" :current="router.currentRoute.value === ROUTES.ABOUT" :badge="notice.dot ? 'dot' : ''" @click="router.navigate(ROUTES.ABOUT, undefined, { root: true })" /><MSponsorButton :label="t.m3e.home.sponsor" :title="t.m3e.home.sponsorTitle" :sections="sponsorSections" :close-label="t.m3e.home.done" @open="(it) => actions_openExternal(it.url)" /></template>
       <template #list="{ entry, scene }">
         <MNavList
           :groups="listGroups(entry.rail)"
@@ -85,6 +85,9 @@
           @open-guide="openWelcome"
           @open-remote="remoteOpen = true"
           @open-about="router.navigate(ROUTES.ABOUT)"
+          :update="helpUpdate"
+          @check-update="checkFromTile"
+          @open-update="openUpdateFromTile"
           @open-doctor="openDoctor"
         />
       </template>
@@ -103,7 +106,7 @@
     <MErrorHost :locale="locale" report-sheet :can-go-back="nav.canPop.value" :host-online="hostConn.state.status === 'online'" :restart="() => hostConn.restart('service')" :doctor="openDoctor" :open-url="actions_openExternal" @back="errorBack" />
     <!-- 更多 of the bottom bar: what the bar has no room for -->
     <MSheet v-model="moreOpen" :title="t.m3e.nav.moreTitle" side="end" :close-label="t.m3e.home.done">
-      <div class="panel-more-version"><MBrand :size="20" /><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="moreGo(openUpdates)" /></div>
+      <div class="panel-more-version"><MBrand :name="PRODUCT_NAME" :size="20" /><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="moreGo(openUpdates)" /></div>
       <MGroup>
         <!-- what the caption bar has no room for (its tier, MCaption): in the order it has there -->
         <MItem v-if="caption.tier.value >= 5" action icon="person_add" :title="connectT.title" :disabled="hostUnusable" @click="moreGo(() => connect.show('pair'))" />
@@ -113,7 +116,7 @@
         <MItem action icon="settings" :title="t.m3e.nav.settings" :text="settingsList.lines.value.panel" :tone="notice.dot ? 'warn' : ''" @click="moreGo(() => onRail({ id: 'settings' }))" />
         <MItem v-if="developerMode.enabled.value" action icon="terminal" :title="devmodeTexts(locale).rail" @click="moreGo(() => router.navigate(ROUTES.DEV_HUB))" />
         <MItem action icon="palette" :title="appearanceLabel" :text="settingsList.lines.value['config:appearance']" @click="moreGo(() => router.navigate(ROUTES.SETTINGS_HUB, { section: 'appearance' }))" />
-        <MItem action icon="info" :title="aboutTexts(locale).title" :text="currentVersion" @click="moreGo(() => router.navigate(ROUTES.ABOUT, undefined, { root: true }))" />
+        <MItem action icon="info" :title="aboutTexts(locale).title" :text="aboutLine(currentVersion, helpUpdate, helpTileTexts(locale))" @click="moreGo(() => router.navigate(ROUTES.ABOUT, undefined, { root: true }))" />
         <MItem action icon="help" :title="t.m3e.nav.help" :text="settingsList.lines.value.help" @click="moreGo(() => onRail({ id: 'help' }))" />
         <MItem action icon="favorite" :title="t.m3e.home.sponsor" @click="moreGo(() => { sponsorOpen = true })" />
       </MGroup>
@@ -139,7 +142,7 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, getCurrentInstance, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, getCurrentInstance, nextTick, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import { sunshine, sunshineService, tools, openExternalUrl } from '../tauri-adapter.js'
 import { SPONSORS, sponsorUrl } from '../config/sponsors.js'
 import QRCode from 'qrcode'
@@ -148,14 +151,18 @@ import { qrSvgDataUrl } from '../composables/qrSvg.js'
 import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
+import { installSearchShortcut } from '../composables/searchShortcut.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, useFeedbackReplies, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
+import { updateTile, noticeAfterTile, helpTileTexts, aboutLine } from 'foundation-ui/help-tiles'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
 import { panelVersion } from '../composables/panelVersion.js'
 import { SEARCH_INDEX } from '@settings-data'
-import { labelOf, settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsHash } from 'foundation-ui/settings/index.js'
+import { settingsLabel } from '../composables/settingsLabel.js'
+import { ensureBaseLabels } from '../composables/settingsBase.js'
 import PanelHome from './PanelHome.vue'
 import PanelBusyLayer from './PanelBusyLayer.vue'
 import UpdateDownloadChip from './UpdateDownloadChip.vue'
@@ -206,13 +213,15 @@ import { proxyBlock } from '../composables/proxyBlock.js'
 import { hostData } from '../composables/hostData.js'
 import { createGuideData } from '../composables/guideData.js'
 import PanelPending from './PanelPending.vue'
-import { recordUpdateCheck } from '../composables/useUpdateCheckTime.js'
+import { helpUpdateView } from '../composables/helpUpdate.js'
+import { recordUpdateCheck, useUpdateCheckTime } from '../composables/useUpdateCheckTime.js'
 import { useHostReach } from '../composables/useHostReach.js'
 import { ROW_OF_ROUTE, railItems, pageItems, barItems, barCurrent } from '../composables/panelNav.js'
 import { rtssInstalled, readRtssInstall } from '../composables/rtssInstall.js'
 import { rowKeywords, parseSettingsHash } from 'foundation-ui/settings/index.js'
 import { hasUpdate } from '../composables/updateCheckError.js'
 import { useI18n } from '../desktop/i18n/index.js'
+import { PRODUCT_NAME } from '../config/brand.js'
 import { useDualSenseStatus } from '../composables/useDualSenseStatus.js'
 import { useDualSenseText } from '../composables/useDualSenseText.js'
 let rtssRefresh = 0
@@ -234,7 +243,7 @@ registerModeHandler((mode) => setTheme(mode))
 onMounted(() => { void useAppearance().init() })
 // the overview has its own (lighter) frost over the wallpaper; every other page the stronger one
 watch(() => router.currentRoute.value, (route) => useAppearance().setScope(route === ROUTES.HOME ? 'home' : 'other'), { immediate: true })
-const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized)
+const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized, { onDoubleTap: toggleMaximize })
 const {
   openUrl, cleanupCovers, restartAsAdmin, checkForUpdates, openGamepadTest, openStylusInputProbe,
   showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled, clipboardSyncStateWord,
@@ -281,6 +290,8 @@ const handleCheckForUpdates = async (channel = null) => {
 const toolsCtx = {
   t, router, webuiPath: toRef(props, 'webuiPath'), openWebUi, openControllers, openUrl, openGamepadTest,
   openStylusInputProbe, cleanupCovers, restartAsAdmin, showClipboardSyncStatus, handleCheckForUpdates,
+  // the clipboard sync status opens the switch that force-disables the sync (设置 → 输入与外设 → 键盘)
+  openClipboardSyncSetting: () => jumpConfig({ tab: 'input', sub: 'keyboard', focus: 'clipboard_sync' }),
 }
 const toolsMenuItems = computed(() => createUtilityTools(toolsCtx))
 // the component status: one controller for the page and for the home cards the catalogue offers
@@ -298,6 +309,8 @@ useSystemNotices({
   go: { components: () => jumpTo(ROUTES.COMPONENTS), microphone: () => jumpTo(ROUTES.MICROPHONE), vdd: () => jumpTo(ROUTES.VDD_SETTINGS), update: () => { showUpdateDialog.value = true } },
   update: () => ({ state: updateInfo.value && !updateInfo.value.is_latest ? 'available' : '', next: updateInfo.value?.version || '' }),
 })
+// the developers' answers to the feedback this window sent go to the same status button (and open in the sheet DevReportHost draws)
+useFeedbackReplies({ locale })
 const sponsorSections = computed(() => [
   { title: t.value.m3e.home.sponsorTitle, items: SPONSORS.map((x) => ({ id: x.id, icon: 'favorite', title: x.label, url: sponsorUrl(x, locale.value) })) },
   { items: [{ id: 'star', icon: 'star', title: t.value.m3e.home.star, url: 'https://github.com/AlkaidLab/foundation-sunshine' }, { id: 'qq', icon: 'groups', title: t.value.m3e.home.qq, url: 'https://qm.qq.com/q/AfMQoyKrkc' }] },
@@ -317,6 +330,29 @@ watch(updateInfo, (info) => { if (info) remember(afterCheck(noticeState.value, {
 const updatesOpen = computed(() => router.currentRoute.value === ROUTES.PANEL_SETTINGS || router.currentRoute.value === ROUTES.ABOUT)
 watch([updatesOpen, () => notice.value.version], ([open]) => { if (open && noticeState.value.available) remember(afterOpened(noticeState.value)) }, { immediate: true })
 const openUpdates = () => { jumpTo(ROUTES.PANEL_SETTINGS) }
+// 软件更新 on the tile of 帮助与关于: the state of the check that already runs (notice: a version waits and is not skipped; updateInfo: a check answered; the person's own check on the tile: checking, or failed),
+// and the action on the tile: 检查更新 asks the one checker (its sheet shows the answer), 更新 opens the sheet. Pressing 更新 counts as opening the update: the dot goes out for that version.
+const tileChecking = ref(false)
+const tileFailed = ref(false)
+const lastUpdateCheck = useUpdateCheckTime()
+const helpUpdate = computed(() => helpUpdateView(
+  { checking: tileChecking.value, waiting: notice.value.waiting, failed: tileFailed.value, answered: !!updateInfo.value },
+  { installed: currentVersion.value, next: notice.value.version, checkedAt: lastUpdateCheck.at.value },
+))
+const checkFromTile = async () => {
+  if (tileChecking.value) return
+  tileChecking.value = true
+  tileFailed.value = false
+  try { tileFailed.value = !(await handleCheckForUpdates()) } catch { tileFailed.value = true } finally { tileChecking.value = false }
+}
+// an answer of the one checker (from the tile, from 面板设置, from the updater) ends a failure the tile kept
+watch(updateInfo, (info) => { if (info) tileFailed.value = false })
+// 更新 opens the sheet only when there is a whole answer to show (a window made again can remember a waiting version before the updater has answered): without one the one checker is asked first
+const openUpdateFromTile = async () => {
+  if (!updateInfo.value) { await checkFromTile(); if (!updateInfo.value) return }
+  remember(noticeAfterTile(noticeState.value, updateTile(helpUpdate.value, helpTileTexts(locale.value))))
+  showUpdateDialog.value = true
+}
 const onVersionCopied = (text) => useNotify().snack(text ? captionTexts(locale.value).copiedNote : captionTexts(locale.value).copyFailed)
 // ---- the global back: the places a person left by a jump (体检 → 网络, a home tile → its settings); the person's own moves clear it
 const jumps = createJumpHistory({
@@ -333,7 +369,7 @@ const backChip = computed(() => showsChip(variant.value) && jumps.canBack.value)
 const backPage = computed(() => {
   const place = jumps.top.value
   if (!place) return ''
-  if (place.params?.tab) return labelOf(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
+  if (place.params?.tab) return settingsLabel(locale.value, `tabs.${place.params.tab}`) || railLabel(place.rail)
   const row = ['stream', 'input', 'audio', 'display', 'system', 'appearance', 'settings', 'help'].flatMap((r) => listItems(r)).find((i) => i.id === place.id)
   return row?.label || (place.id === ROUTES.HOME ? t.value.m3e.nav.overview : '') || railLabel(place.rail)
 })
@@ -464,7 +500,7 @@ const hostPort = ref(47990)
 onMounted(async () => { try { const port = Number(new URL(String(await sunshine.getUrl())).port); if (port) hostPort.value = port } catch { /* the default stays */ } })
 onMounted(async () => { try { announceVersion.value = (await sunshine.getVersion()) || '' } catch { /* the version only narrows version-bound notices */ } })
 const announcements = useAnnouncements({ locale, version: announceVersion })
-const appearanceLabel = computed(() => labelOf(locale.value, 'shell.appearance'))
+const appearanceLabel = computed(() => settingsLabel(locale.value, 'shell.appearance', t.value.settings.appearance))
 const announcementsUnread = announcements.unread
 // a dot on the help rail while an update is waiting (the about page checks and opens the update sheet)
 const rail = computed(() => railItems(t.value, { developer: devmodeTexts(locale.value).rail }).filter((item) => item.id !== 'developer' || developerMode.enabled.value).map((item) => (item.id === 'overview' && announcementsUnread.value ? { ...item, badge: announcementsUnread.value } : item.id === 'settings' && notice.value.dot ? { ...item, badge: 'dot' } : item.id === 'assistant' && mitaState.unread ? { ...item, badge: 'dot' } : item.id === 'developer' && devActivity.unseen.value ? { ...item, badge: 'dot' } : item)))
@@ -481,6 +517,8 @@ const hostConfig = ref(null)
 const dualsenseKeys = ref([])
 const hostClients = ref([])
 const hostApps = ref([])
+// the product's settings data is supplied (the imports above); the words of the categories the list below draws never come out as keys, whatever that data holds
+ensureBaseLabels()
 const settingsList = useSettingsList({ locale, config: hostConfig, dualsenseKeys, sources: { clients: hostClients, apps: hostApps, components: computed(() => componentStatus.rows.value), rtss: computed(() => ({ installed: rtssInstalled.value === true })), ds: computed(() => runtime.ds), mic: computed(() => runtime.mic), usb: computed(() => runtime.usb), audio: computed(() => audioDevicesChannel.data.value?.render || null) } })
 // the playback devices of the host: the audio row names the chosen device, the setting holds an id
 onMounted(() => { audioDevicesChannel.fetch().catch(() => null) })
@@ -594,6 +632,7 @@ const onFramePin = (event) => {
 }
 let unlistenConnect = null
 let unlistenFeedback = null
+let unlistenShowMessage = null
 let stopCrashWatch = null
 onMounted(async () => {
   pairing.start()
@@ -603,12 +642,16 @@ onMounted(async () => {
   try {
     const { listen } = await import('@tauri-apps/api/event')
     unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    unlistenShowMessage = await listen('show-message', (event) => {
+      const msg = String(event?.payload?.message || '').trim()
+      if (msg) useNotify().snack(msg)
+    })
     if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
     // the answer (feedback sent, or let go) is what stops the question: a program that ends before it asks again at the next start
     stopCrashWatch = watch(() => devReport.decision, (now, was) => { if (was === 'crash' && !now) invoke('crash_recovered_answered').catch(() => {}) })
   } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); stopCrashWatch?.(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); if (unlistenShowMessage) unlistenShowMessage(); stopCrashWatch?.(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {
@@ -661,7 +704,37 @@ const onUnifiedChoose = (doc) => jumps.jump(() => {
   else if (doc.type === 'app') { emit('webui-navigate', `/apps${filterHash(doc.app?.name || doc.title)}`); router.navigate(ROUTES.WEB_APPS) }
   else if (doc.type === 'tile') { addTileToHome('panel-home', doc.tile); router.navigate(ROUTES.HOME) }
 })
-const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose })
+const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose, shortcuts: false })
+// the shared search judges a field by the event target, which is the host element of a Material field; this guard looks through the whole path
+let removeSearchShortcut = () => {}
+onMounted(() => { removeSearchShortcut = installSearchShortcut(uni) })
+onBeforeUnmount(() => removeSearchShortcut())
+let searchBeforeHide = null
+
+// Capture on Window before the search component handles the outside press
+// on Document (panel-memory-dom-dispatch, Dispatching events).
+function captureHideIntent(event) {
+  searchBeforeHide = event.button === 0 && event.target?.closest?.('[data-panel-hide]')
+    ? uni.query.value : null
+}
+function clearHideIntent() { searchBeforeHide = null }
+
+async function hidePanel(event) {
+  if (event.detail > 0 && searchBeforeHide !== null) uni.query.value = searchBeforeHide
+  clearHideIntent()
+  await nextTick()
+  await window.__panelViewState?.flush()
+  await closeWindow()
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', captureHideIntent, true)
+  window.addEventListener('pointercancel', clearHideIntent, true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', captureHideIntent, true)
+  window.removeEventListener('pointercancel', clearHideIntent, true)
+})
 // Where an error of the diagnostics page leads
 // 体检: the entries of help and search open it running; a fix leads to a setting row or a page of the panel; 米塔 AI gets the result
 // each press of 「开始体检」 carries its own token: the history entry keeps it, so Back from a fix finds the result instead of running every check again (MDoctor)
@@ -864,14 +937,13 @@ defineExpose({
 
 <style lang="less">
 .panel-shell { position: relative; height: 100vh; height: 100dvh; min-height: 0; overflow: clip; }
-.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; }
+.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; touch-action: none; }
 .panel-caption__brand { align-self: center; padding-inline-start: 16px; pointer-events: none; }
 .panel-more-version { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px 16px 12px; }
 .panel-more-version .m-capver { margin-inline-start: 0; }
 .panel-caption__controls { display: flex; justify-self: end; }
 .panel-caption__search { display: flex; align-items: center; justify-content: center; min-width: 0; padding: 0 12px; }
-/* the caption bar of a phone is the Web UI's: the brand gives way (it was max-content and pushed the buttons out of a 360 px window), search and the action buttons touch (the shared icon sizes are m3e's layout.css) */
-@media (max-width: 599.98px) { .panel-caption { grid-template-columns: minmax(0, 1fr) auto auto; } .panel-caption__brand { min-width: 0; overflow: hidden; padding-inline-start: 12px; } .panel-caption__search { padding: 0; } }
+/* the caption bar of a phone (its grid, the brand giving way, the sizes and the gap of the buttons) is foundation-ui's (css/layout.css, `.m-caption[data-phone]`): the Web UI has the same bar. The three window buttons below are the control panel's alone. */
 .panel-caption__btn { display: grid; place-items: center; width: 46px; height: 48px; padding: 0; border: 0; background: transparent; color: var(--md-sys-color-on-surface); font-size: 18px; cursor: default; transition: background-color 120ms linear, color 120ms linear; }
 .panel-caption__btn:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 9%, transparent); }
 .panel-caption__btn:active { background: color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent); }

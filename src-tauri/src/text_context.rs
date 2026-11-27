@@ -12,7 +12,7 @@ use std::time::Instant;
 use log::{info, warn};
 use serde::Serialize;
 use tokio::sync::Notify;
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -22,22 +22,29 @@ use windows::Win32::System::Ole::{
     SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
     SafeArrayUnaccessData,
 };
+use windows::Win32::System::Threading::{
+    CreateEventW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, SetEvent,
+};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
-    IUIAutomationTextPattern2, IUIAutomationValuePattern, SetWinEventHook,
-    UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
-    UIA_HasKeyboardFocusPropertyId, UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId,
-    UIA_IsPasswordPropertyId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId,
+    IUIAutomationTextEditPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
+    SetWinEventHook, UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId,
+    UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId,
+    UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
+    UIA_ProcessIdPropertyId, UIA_TextEditPatternId, UIA_TextPattern2Id, UIA_ValueIsReadOnlyPropertyId,
     UIA_ValuePatternId, UnhookWinEvent,
 };
 use windows::Win32::UI::Shell::IFrameworkInputPane;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GUITHREADINFO,
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, MSG, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage,
-    WINEVENT_OUTOFCONTEXT,
+    DispatchMessageW, ES_MULTILINE, ES_PASSWORD, ES_READONLY, EVENT_OBJECT_FOCUS,
+    EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, GWL_STYLE, GetClassNameW, GetForegroundWindow,
+    GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, MSG,
+    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
-use windows::core::{BOOL, GUID};
+use windows::core::{BOOL, GUID, PCWSTR, PWSTR};
 
 use crate::sunshine::{create_https_client, get_local_sunshine_url};
 
@@ -50,6 +57,16 @@ const PANE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const EDITOR_CARET_POLL: Duration = Duration::from_millis(200);
 // Focus-event bursts (menu traversal, Alt+Tab) collapse into one snapshot.
 const RESCAN_DEBOUNCE: Duration = Duration::from_millis(40);
+// The system caret hides between blink flashes (530 ms per phase by default).
+// Editors confirmed by that caret alone would flip to "not editable" on
+// every other snapshot, so a caret that just vanished from the same element
+// is treated as a blink for this long after the last confirming snapshot.
+const CARET_BLINK_GRACE: Duration = Duration::from_millis(1000);
+// Some applications do not raise UIA focus events. During an active stream,
+// this watchdog refreshes the focused element so those windows can still
+// trigger the remote IME. Keep it below Sunshine's 1.2 s touch-to-focus
+// correlation window so a missed focus event can still match the touch.
+const FOCUS_WATCHDOG_POLL: Duration = Duration::from_millis(500);
 mod agent;
 pub use agent::{reconcile_streaming_state, set_enabled, start, stop};
 
@@ -61,7 +78,7 @@ fn observer_wait(
     last_pane_check: Instant,
     rescan_at: Option<Instant>,
 ) -> Duration {
-    let mut wait = Duration::from_millis(500);
+    let mut wait = FOCUS_WATCHDOG_POLL.saturating_sub(now.duration_since(last_snapshot));
     if editor_focused {
         wait = wait.min(EDITOR_CARET_POLL.saturating_sub(now.duration_since(last_snapshot)));
         if pane_available {
@@ -71,7 +88,7 @@ fn observer_wait(
     if let Some(at) = rescan_at {
         wait = wait.min(RESCAN_DEBOUNCE.saturating_sub(now.duration_since(at)));
     }
-    wait.clamp(Duration::from_millis(5), Duration::from_millis(500))
+    wait.clamp(Duration::from_millis(5), FOCUS_WATCHDOG_POLL)
 }
 
 fn agent_id() -> &'static str {
@@ -106,6 +123,12 @@ impl WireRect {
     }
 }
 
+impl std::fmt::Display for WireRect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{}-{},{}", self.left, self.top, self.right, self.bottom)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct Observation {
     version: u8,
@@ -131,6 +154,102 @@ struct FocusSignature {
     password: bool,
     editable: bool,
     caret_rect: Option<WireRect>,
+}
+
+/// Identity of the focused element for the focus log. Caret movement inside
+/// one editor changes the signature but is not a focus transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocusLogKey {
+    control_type: i32,
+    rect: WireRect,
+    password: bool,
+    editable: bool,
+    has_caret: bool,
+}
+
+impl From<&FocusSignature> for FocusLogKey {
+    fn from(signature: &FocusSignature) -> Self {
+        Self {
+            control_type: signature.control_type,
+            rect: signature.rect,
+            password: signature.password,
+            editable: signature.editable,
+            has_caret: signature.caret_rect.is_some(),
+        }
+    }
+}
+
+/// Whether a snapshot without a caret is the hidden phase of a caret blink.
+/// Scintilla and Qt editors are confirmed by the Win32 caret alone: while
+/// that caret blinks they must stay editors instead of publishing a
+/// retraction and a new confirmation twice per second.
+fn is_caret_blink(
+    previous: Option<&FocusSignature>,
+    current: &FocusSignature,
+    confirmed_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    previous
+        .zip(confirmed_at)
+        .is_some_and(|(previous, confirmed_at)| {
+            previous.editable
+                && previous.caret_rect.is_some()
+                && !current.editable
+                && current.caret_rect.is_none()
+                && previous.control_type == current.control_type
+                && previous.rect == current.rect
+                && previous.password == current.password
+                && now.duration_since(confirmed_at) <= CARET_BLINK_GRACE
+        })
+}
+
+#[derive(Clone, Debug, Default)]
+struct NativeFocus {
+    focus_class: Option<String>,
+    caret_class: Option<String>,
+    focus_rect: Option<WireRect>,
+    caret_rect: Option<WireRect>,
+    read_only_edit: bool,
+    password_edit: bool,
+    focus_hwnd: Option<HWND>,
+}
+
+/// Field-diagnosis facts for one focus log line. They never take part in the
+/// focus signature, so a change in them alone publishes nothing.
+#[derive(Default)]
+struct FocusDetails {
+    process: Option<String>,
+    class: Option<String>,
+    text_edit: Option<bool>,
+    value_read_only: Option<bool>,
+}
+
+fn flag(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "n/a",
+    }
+}
+
+/// Executable file name of a process, for the focus log line only.
+fn process_name(pid: u32) -> Option<String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let queried =
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut length);
+        let _ = CloseHandle(handle);
+        queried.ok()?;
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        Some(
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or(path),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -226,23 +345,48 @@ unsafe fn take_last_bounding_rect(array: *mut SAFEARRAY) -> Option<WireRect> {
     result
 }
 
-fn inspect_caret(element: &IUIAutomationElement) -> Option<WireRect> {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaretState {
+    active: bool,
+    rect: Option<WireRect>,
+}
+
+fn inspect_caret(element: &IUIAutomationElement) -> CaretState {
     let pattern =
         unsafe { element.GetCachedPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }.ok();
+    // GetCaretRange's isActive reports keyboard focus on the caret owner, so
+    // it holds even when no bounding rectangle can be produced. Remember the
+    // verdict separately: the Win32 fallback may still add a rectangle, but
+    // when it cannot, the UIA verdict must survive instead of collapsing to
+    // active=false.
+    let mut uia_active = false;
     if let Some(pattern) = pattern {
         let mut active = BOOL::default();
         if let Ok(range) = unsafe { pattern.GetCaretRange(&mut active) } {
-            if !active.as_bool() {
-                return None;
-            }
-            if let Ok(bounds) = unsafe { range.GetBoundingRectangles() } {
-                if let Some(rect) = unsafe { take_last_bounding_rect(bounds) } {
-                    return Some(rect);
+            if active.as_bool() {
+                uia_active = true;
+                let rect = unsafe { range.GetBoundingRectangles() }
+                    .ok()
+                    .and_then(|bounds| unsafe { take_last_bounding_rect(bounds) });
+                if let Some(rect) = rect {
+                    return CaretState {
+                        active: true,
+                        rect: Some(rect),
+                    };
                 }
             }
         }
     }
-    caret_from_win32()
+    caret_from_win32().map_or_else(
+        || CaretState {
+            active: uia_active,
+            rect: None,
+        },
+        |rect| CaretState {
+            active: true,
+            rect: Some(rect),
+        },
+    )
 }
 
 /// Win32 caret fallback: editors with self-drawn UI that skip UIA text
@@ -285,20 +429,246 @@ fn caret_from_win32() -> Option<WireRect> {
     }
 }
 
-fn is_confirmed_editor(is_edit_control: bool, value_read_only: Option<bool>) -> bool {
-    // TextEditPattern can exist on a read-only Chromium Document. Missing or
-    // failed ValuePattern reads remain unknown, never evidence of editability.
-    is_edit_control && value_read_only == Some(false)
+fn window_class_name(hwnd: HWND) -> Option<String> {
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let mut class = [0u16; 256];
+    let length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
+    (length > 0).then(|| String::from_utf16_lossy(&class[..length.min(class.len())]))
+}
+
+fn native_window_rect(hwnd: HWND) -> Option<WireRect> {
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect).ok()? };
+    let rect = WireRect::from(rect);
+    rect.visible().then_some(rect)
+}
+
+fn inspect_native_focus(event_thread: Option<u32>) -> Option<NativeFocus> {
+    unsafe {
+        let thread = event_thread
+            .filter(|thread| *thread != 0)
+            .unwrap_or_else(|| GetWindowThreadProcessId(GetForegroundWindow(), None));
+        if thread == 0 {
+            return None;
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(thread, &mut info).is_err() {
+            return None;
+        }
+
+        let caret_rect = (!info.hwndCaret.is_invalid())
+            .then(|| {
+                let mut top_left = POINT {
+                    x: info.rcCaret.left,
+                    y: info.rcCaret.top,
+                };
+                let mut bottom_right = POINT {
+                    x: info.rcCaret.right,
+                    y: info.rcCaret.bottom,
+                };
+                if !ClientToScreen(info.hwndCaret, &mut top_left).as_bool()
+                    || !ClientToScreen(info.hwndCaret, &mut bottom_right).as_bool()
+                {
+                    return None;
+                }
+                let rect = WireRect {
+                    left: top_left.x,
+                    top: top_left.y,
+                    right: bottom_right.x.max(top_left.x + 1),
+                    bottom: bottom_right.y.max(top_left.y + 1),
+                };
+                rect.visible().then_some(rect)
+            })
+            .flatten();
+
+        Some(NativeFocus {
+            focus_class: window_class_name(info.hwndFocus),
+            caret_class: window_class_name(info.hwndCaret),
+            focus_rect: native_window_rect(info.hwndFocus),
+            caret_rect,
+            read_only_edit: native_window_is_read_only_edit(info.hwndFocus)
+                || native_window_is_read_only_edit(info.hwndCaret),
+            password_edit: native_window_is_password_edit(info.hwndFocus)
+                || native_window_is_password_edit(info.hwndCaret),
+            focus_hwnd: (!info.hwndFocus.is_invalid()).then_some(info.hwndFocus),
+        })
+    }
+}
+
+fn is_native_text_class(class: &str) -> bool {
+    let class = class.trim().to_ascii_lowercase();
+    class == "edit"
+        || class.starts_with("richedit")
+        || class.starts_with("windowsforms10.edit")
+        || class == "scintilla"
+        || class == "mintty"
+        || class == "consolewindowclass"
+        || class == "cascadia_hosting_window_class"
+        || class.starts_with("chrome_renderwidgethosthwnd")
+        || (class.starts_with("qt") && class.ends_with("qwindowicon"))
+}
+
+/// Terminals and self-drawn editors whose focused window is itself the typing
+/// surface. They paint their own caret, so GUITHREADINFO never carries caret
+/// evidence for them and the focused class name is the whole signal. Dialogs
+/// in these apps are standard dialog or Edit windows, which never match, so
+/// the focused-window condition cannot report a dialog as an editor.
+fn is_self_drawn_text_class(class: &str) -> bool {
+    let class = class.trim().to_ascii_lowercase();
+    class == "putty"
+        || class == "vim"
+        || class == "px_window_class"
+        || (class.starts_with("xshell") && class.ends_with("::coreapp"))
+}
+
+/// Only real Edit/RichEdit windows honor ES_READONLY; terminals and
+/// self-drawn controls ignore the style, so it is only consulted for those
+/// classes.
+fn native_window_is_read_only_edit(hwnd: HWND) -> bool {
+    let Some(class) = window_class_name(hwnd) else {
+        return false;
+    };
+    let class = class.trim().to_ascii_lowercase();
+    let is_edit_like = class == "edit"
+        || class.starts_with("richedit")
+        || class.starts_with("windowsforms10.edit");
+    is_edit_like && unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } & (ES_READONLY as isize) != 0
+}
+
+/// ES_PASSWORD is only honored by single-line Edit controls, so the style is
+/// only consulted there. The native fallback otherwise reports every control
+/// as a plain text field, including password boxes.
+fn native_window_is_password_edit(hwnd: HWND) -> bool {
+    let Some(class) = window_class_name(hwnd) else {
+        return false;
+    };
+    let class = class.trim().to_ascii_lowercase();
+    if class != "edit" {
+        return false;
+    }
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    style & (ES_PASSWORD as isize) != 0 && style & (ES_MULTILINE as isize) == 0
+}
+
+/// The native focus snapshot is captured before the UIA element is read. If
+/// focus moved to another window between the two reads, the caret and class
+/// evidence describe the previous focus while the UIA element belongs to the
+/// new one. Re-check the live focus window and drop stale native evidence;
+/// the focus event that triggered the switch schedules a clean rescan.
+fn native_focus_is_current(native: &NativeFocus) -> bool {
+    let Some(captured) = native.focus_hwnd else {
+        return false;
+    };
+    unsafe {
+        // GetGUIThreadInfo(0) reports the foreground thread, which owns the
+        // keyboard focus in the normal editor case.
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(0, &mut info)
+            .is_ok_and(|_| !info.hwndFocus.is_invalid() && info.hwndFocus == captured)
+    }
+}
+
+fn native_text_evidence(native: Option<&NativeFocus>) -> bool {
+    let Some(native) = native else {
+        return false;
+    };
+    // Self-drawn terminals and editors match on the focused window class
+    // alone: the window itself is the typing surface and its caret is painted
+    // by the application instead of the system.
+    if native
+        .focus_class
+        .as_deref()
+        .is_some_and(is_self_drawn_text_class)
+    {
+        return true;
+    }
+    native.caret_rect.is_some()
+        && [native.focus_class.as_deref(), native.caret_class.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(is_native_text_class)
+}
+
+fn is_confirmed_editor(
+    control_type: i32,
+    is_scintilla: bool,
+    native_text: bool,
+    value_read_only: Option<bool>,
+    has_text_edit_pattern: bool,
+    caret_active: bool,
+    caret_has_rect: bool,
+) -> bool {
+    // A definite read-only result always wins. Chromium can expose
+    // TextEditPattern on a read-only Document, so the pattern alone cannot
+    // activate the keyboard.
+    if value_read_only == Some(true) {
+        return false;
+    }
+
+    // Chromium and Qt providers expose focused contenteditable editors as
+    // Custom or Group controls: QQ's ProseMirror editor arrives as a Group
+    // with TextEditPattern but no ValuePattern, TextPattern2 caret, or Win32
+    // caret. TextEditPattern is the provider's explicit editability contract
+    // there; an explicit Value.IsReadOnly result still rejects first.
+    if (control_type == UIA_CustomControlTypeId.0 || control_type == UIA_GroupControlTypeId.0)
+        && has_text_edit_pattern
+    {
+        return true;
+    }
+
+    if is_scintilla && caret_active {
+        return true;
+    }
+
+    // native_text is already the full native verdict: either a class-list
+    // window with caret evidence, or a self-drawn terminal whose focused
+    // window is the typing surface. Read-only rejection happened earlier.
+    if native_text {
+        return true;
+    }
+
+    if control_type == UIA_EditControlTypeId.0
+        && value_read_only != Some(true)
+        && (value_read_only == Some(false) || caret_active)
+    {
+        return true;
+    }
+
+    // TextEditPattern restores support for providers that do not report the
+    // standard Edit control type. A live caret supplies the second piece of
+    // evidence needed to avoid treating a static Document as an editor. A
+    // Document additionally needs a usable caret rectangle because browser
+    // caret browsing can expose an active caret without editability.
+    has_text_edit_pattern
+        && caret_active
+        && (control_type != UIA_DocumentControlTypeId.0 || caret_has_rect)
 }
 
 fn inspect_focused_element(
     automation: &IUIAutomation,
     cache: &IUIAutomationCacheRequest,
     generation: u64,
+    native: Option<&NativeFocus>,
+    details: &mut FocusDetails,
 ) -> Option<(FocusSignature, Observation)> {
     // BuildCache fetches every property and pattern in one cross-process
     // round trip instead of one per Current* call.
     let element = unsafe { automation.GetFocusedElementBuildCache(cache) }.ok()?;
+    // The element reflects the focus as of this read. Focus may have moved
+    // between the native capture and here; stale native evidence must not
+    // confirm the element that has focus now.
+    let native = native.filter(|native| native_focus_is_current(native));
     let has_focus = unsafe { element.CachedHasKeyboardFocus() }.ok()?.as_bool();
     let enabled = unsafe { element.CachedIsEnabled() }.ok()?.as_bool();
     let offscreen = unsafe { element.CachedIsOffscreen() }.ok()?.as_bool();
@@ -310,18 +680,132 @@ fn inspect_focused_element(
         return None;
     }
     let control_type = unsafe { element.CachedControlType() }.ok()?.0;
+    let class_name = unsafe { element.CachedClassName() }
+        .ok()
+        .map(|name| name.to_string());
+    let is_scintilla = class_name
+        .as_deref()
+        .is_some_and(|name| name.eq_ignore_ascii_case("Scintilla"));
+    let process = unsafe { element.CachedProcessId() }
+        .ok()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .and_then(process_name);
     let password = unsafe { element.CachedIsPassword() }
         .map(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        // UIA reports false both for ordinary text and for a provider that
+        // does not expose IsPassword, so the two cannot be told apart. A
+        // password style on the focus window, already verified to be the
+        // current focus, is password evidence on its own.
+        || native.is_some_and(|native| native.password_edit);
     let value_read_only =
         unsafe { element.GetCachedPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
             .ok()
             .and_then(|pattern| unsafe { pattern.CachedIsReadOnly() }.ok())
             .map(|value| value.as_bool());
-    let editable = is_confirmed_editor(control_type == UIA_EditControlTypeId.0, value_read_only);
-    let caret_rect = editable.then(|| inspect_caret(&element)).flatten();
+    // Without UIA read-only evidence, an ES_READONLY native Edit is read-only;
+    // UIA-provided values keep priority.
+    let value_read_only = value_read_only.or(native
+        .is_some_and(|native| native.read_only_edit)
+        .then_some(true));
+    let has_text_edit_pattern = unsafe {
+        element.GetCachedPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
+    }
+    .is_ok();
+    let should_inspect_caret = has_text_edit_pattern
+        || (control_type == UIA_EditControlTypeId.0 && value_read_only != Some(true))
+        || is_scintilla;
+    let mut caret = should_inspect_caret
+        .then(|| inspect_caret(&element))
+        .unwrap_or_default();
+    let native_text = native_text_evidence(native);
+    // Terminal and self-drawn editors (mintty, conhost, Qt, Chromium, ...)
+    // sit behind UIA containers that have neither a text pattern nor an Edit
+    // control type, so the UIA caret check above never runs for them. Their
+    // caret evidence is native; feed it into the same confirmation path
+    // because the observer loop never retries the native-only fallback while
+    // the UIA path already produced an observation.
+    if native_text {
+        if let Some(rect) = native.and_then(|native| native.caret_rect) {
+            if !caret.active {
+                caret.active = true;
+            }
+            if caret.rect.is_none() {
+                caret.rect = Some(rect);
+            }
+        }
+    }
+    let editable = is_confirmed_editor(
+        control_type,
+        is_scintilla,
+        native_text,
+        value_read_only,
+        has_text_edit_pattern,
+        caret.active,
+        caret.rect.is_some(),
+    );
     let signature = FocusSignature {
         control_type,
+        rect,
+        password,
+        editable,
+        caret_rect: caret.rect,
+    };
+    *details = FocusDetails {
+        process,
+        class: class_name,
+        text_edit: Some(has_text_edit_pattern),
+        value_read_only,
+    };
+    let observation = Observation {
+        version: 1,
+        agent_id: agent_id(),
+        generation,
+        source: "uia",
+        active: true,
+        editable,
+        password,
+        multiline: false,
+        pane_visible: false,
+        auto_show: false,
+        element_rect: Some(rect),
+        caret_rect: caret.rect,
+    };
+    Some((signature, observation))
+}
+
+fn inspect_native_focused_element(
+    native: Option<&NativeFocus>,
+    generation: u64,
+) -> Option<(FocusSignature, Observation)> {
+    let native = native?;
+    if !native_focus_is_current(native) {
+        return None;
+    }
+    build_native_observation(native, generation)
+}
+
+fn build_native_observation(
+    native: &NativeFocus,
+    generation: u64,
+) -> Option<(FocusSignature, Observation)> {
+    if !native_text_evidence(Some(native)) {
+        return None;
+    }
+    // A focused caret alone does not imply editability: ES_READONLY Edit and
+    // RichEdit controls still own a caret. Reject them explicitly so the core
+    // sees the negative transition, while writable controls and terminals
+    // keep native support.
+    let editable = !native.read_only_edit;
+    // ES_PASSWORD marks single-line Edit controls as password boxes instead
+    // of ordinary text.
+    let password = native.password_edit;
+    // Self-drawn terminals paint their own caret, so caret_rect can be empty;
+    // the window rectangle carries the element geometry in that case.
+    let caret_rect = native.caret_rect;
+    let rect = native.focus_rect.or(caret_rect)?;
+    let signature = FocusSignature {
+        control_type: -1,
         rect,
         password,
         editable,
@@ -349,6 +833,7 @@ thread_local! {
     // messages are pumped); the observer loop coalesces bursts into at most
     // one snapshot per debounce window.
     static RESCAN_AT: Cell<Option<Instant>> = Cell::new(None);
+    static RESCAN_THREAD: Cell<Option<u32>> = Cell::new(None);
 }
 
 unsafe extern "system" fn win_event_proc(
@@ -357,7 +842,7 @@ unsafe extern "system" fn win_event_proc(
     hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
-    _thread: u32,
+    thread: u32,
     _time: u32,
 ) {
     // EVENT_OBJECT_FOCUS arrives with varying idObject values (OBJID_CLIENT
@@ -371,6 +856,7 @@ unsafe extern "system" fn win_event_proc(
             slot.set(Some(Instant::now()));
         }
     });
+    RESCAN_THREAD.with(|slot| slot.set((thread != 0).then_some(thread)));
 }
 
 fn pump_messages() {
@@ -401,7 +887,41 @@ impl Drop for FocusHook {
     }
 }
 
-fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shared>) {
+struct StopSignal {
+    requested: AtomicBool,
+    handle: isize,
+}
+
+impl StopSignal {
+    fn new() -> Option<Arc<Self>> {
+        let handle = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.ok()?;
+        Some(Arc::new(Self {
+            requested: AtomicBool::new(false),
+            handle: handle.0 as isize,
+        }))
+    }
+
+    fn handle(&self) -> HANDLE {
+        HANDLE(self.handle as _)
+    }
+
+    fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        let _ = unsafe { SetEvent(self.handle()) };
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for StopSignal {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle()) };
+    }
+}
+
+fn observer_loop(generation: u64, stop: Arc<StopSignal>, shared: Arc<agent::Shared>) {
     let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     if !initialized {
         warn!("text context observer could not initialize COM");
@@ -415,8 +935,8 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
         unsafe { CoCreateInstance(&FRAMEWORK_INPUT_PANE, None, CLSCTX_INPROC_SERVER).ok() };
     let automation: Option<IUIAutomation> =
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
-    let cancelled = stop.load(Ordering::Acquire)
-        || !shared.ready(generation, pane.is_some(), automation.is_some());
+    let cancelled =
+        stop.is_requested() || !shared.ready(generation, pane.is_some(), automation.is_some());
     if cancelled {
         return;
     }
@@ -434,16 +954,19 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
             let _ = request.AddProperty(UIA_IsOffscreenPropertyId);
             let _ = request.AddProperty(UIA_BoundingRectanglePropertyId);
             let _ = request.AddProperty(UIA_ControlTypePropertyId);
+            let _ = request.AddProperty(UIA_ClassNamePropertyId);
             let _ = request.AddProperty(UIA_IsPasswordPropertyId);
+            let _ = request.AddProperty(UIA_ProcessIdPropertyId);
             let _ = request.AddProperty(UIA_ValueIsReadOnlyPropertyId);
             let _ = request.AddPattern(UIA_ValuePatternId);
+            let _ = request.AddPattern(UIA_TextEditPatternId);
             let _ = request.AddPattern(UIA_TextPattern2Id);
         }
         Some(request)
     });
 
-    // Focus events drive snapshots; only confirmed editors poll caret geometry.
-    // Idle desktops and full-screen games cost zero cross-process UIA traffic.
+    // Focus events drive snapshots. The watchdog covers providers that emit no
+    // focus events, while confirmed editors keep the faster caret cadence.
     let _hook_focus = FocusHook(unsafe {
         SetWinEventHook(
             EVENT_OBJECT_FOCUS,
@@ -469,14 +992,21 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
 
     let mut previous_pane_visible = false;
     let mut previous_focus: Option<FocusSignature> = None;
+    // When the focused element was last confirmed with a visible caret, and
+    // which element the last focus log line described.
+    let mut caret_confirmed_at: Option<Instant> = None;
+    let mut logged_focus: Option<FocusLogKey> = None;
     let mut editor_focused = false;
     // A stream can start while an editor already has focus, so request a
     // baseline snapshot even when no focus event is raised.
-    let mut last_snapshot = Instant::now();
+    // Prime the watchdog so the observer establishes a baseline immediately,
+    // including when the stream starts with an already-focused editor.
+    let mut last_snapshot = Instant::now() - FOCUS_WATCHDOG_POLL;
     let mut last_pane_check = Instant::now();
     RESCAN_AT.with(|slot| slot.set(Some(Instant::now() - RESCAN_DEBOUNCE)));
+    let stop_handles = [stop.handle()];
 
-    while !stop.load(Ordering::Acquire) {
+    while !stop.is_requested() {
         pump_messages();
         let now = Instant::now();
 
@@ -522,42 +1052,109 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
             _ => false,
         });
         let need_snapshot = rescan_due
+            || now.duration_since(last_snapshot) >= FOCUS_WATCHDOG_POLL
             || (editor_focused && now.duration_since(last_snapshot) >= EDITOR_CARET_POLL);
 
         if need_snapshot {
             // Reset the polling deadline even when no snapshot is available.
             last_snapshot = now;
-            if let (Some(automation), Some(cache)) = (automation.as_ref(), cache.as_ref()) {
-                match inspect_focused_element(automation, cache, generation) {
-                    Some((signature, observation)) => {
+            let event_thread = RESCAN_THREAD.with(|slot| slot.take());
+            let native = inspect_native_focus(event_thread);
+            let mut details = FocusDetails::default();
+            let focused = match (automation.as_ref(), cache.as_ref()) {
+                (Some(automation), Some(cache)) => {
+                    inspect_focused_element(
+                        automation,
+                        cache,
+                        generation,
+                        native.as_ref(),
+                        &mut details,
+                    )
+                    .or_else(|| inspect_native_focused_element(native.as_ref(), generation))
+                }
+                _ => inspect_native_focused_element(native.as_ref(), generation),
+            };
+            // The native fallback inspects a window instead of a UIA element.
+            if details.class.is_none() {
+                if let Some(native) = native.as_ref() {
+                    details.class = native.focus_class.clone();
+                    details.process = native
+                        .focus_hwnd
+                        .filter(|hwnd| !hwnd.is_invalid())
+                        .map(|hwnd| unsafe { GetWindowThreadProcessId(hwnd, None) })
+                        .and_then(process_name);
+                }
+            }
+            match focused {
+                Some((signature, observation)) => {
+                    if is_caret_blink(
+                        previous_focus.as_ref(),
+                        &signature,
+                        caret_confirmed_at,
+                        now,
+                    ) {
+                        // The caret returns with the next flash: keep the
+                        // confirmed state instead of publishing a retraction.
+                        editor_focused = true;
+                    } else {
                         editor_focused = signature.editable;
                         if previous_focus != Some(signature) {
+                            // One line per focus transition: field diagnosis of
+                            // which editors the observer recognizes, which process
+                            // and control the verdict came from, and where its
+                            // element is, so a remote tap can be checked against
+                            // the rectangle the core matches it with.
+                            let logged = FocusLogKey::from(&signature);
+                            if logged_focus != Some(logged) {
+                                info!(
+                                    "text context focus: source={} active={} editable={} password={} control_type={} caret={} process={} class={} rect={} text_edit={} value_read_only={}",
+                                    observation.source,
+                                    observation.active,
+                                    observation.editable,
+                                    observation.password,
+                                    signature.control_type,
+                                    signature.caret_rect.is_some(),
+                                    details.process.as_deref().unwrap_or("?"),
+                                    details.class.as_deref().unwrap_or("-"),
+                                    observation
+                                        .element_rect
+                                        .map(|rect| rect.to_string())
+                                        .unwrap_or_default(),
+                                    flag(details.text_edit),
+                                    flag(details.value_read_only),
+                                );
+                                logged_focus = Some(logged);
+                            }
                             // Publish non-editable focus too. The core caches UIA as
                             // level-triggered state, so explicit negative transitions
                             // prevent a previously focused editor from going stale.
                             shared.publish(observation);
                             previous_focus = Some(signature);
                         }
+                        caret_confirmed_at =
+                            (signature.editable && signature.caret_rect.is_some()).then_some(now);
                     }
-                    None if previous_focus.take().is_some() => {
-                        editor_focused = false;
-                        shared.publish(Observation {
-                            version: 1,
-                            agent_id: agent_id(),
-                            generation,
-                            source: "uia",
-                            active: false,
-                            editable: false,
-                            password: false,
-                            multiline: false,
-                            pane_visible: false,
-                            auto_show: false,
-                            element_rect: None,
-                            caret_rect: None,
-                        });
-                    }
-                    None => editor_focused = false,
                 }
+                None if previous_focus.take().is_some() => {
+                    editor_focused = false;
+                    caret_confirmed_at = None;
+                    logged_focus = None;
+                    shared.publish(Observation {
+                        version: 1,
+                        agent_id: agent_id(),
+                        generation,
+                        source: "uia",
+                        active: false,
+                        editable: false,
+                        password: false,
+                        multiline: false,
+                        pane_visible: false,
+                        auto_show: false,
+                        element_rect: None,
+                        caret_rect: None,
+                    });
+                }
+                None => editor_focused = false,
             }
         }
 
@@ -575,7 +1172,7 @@ fn observer_loop(generation: u64, stop: Arc<AtomicBool>, shared: Arc<agent::Shar
         );
         unsafe {
             MsgWaitForMultipleObjectsEx(
-                None,
+                Some(&stop_handles),
                 wait.as_millis() as u32,
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
@@ -607,18 +1204,22 @@ async fn post_json(path: &str, body: &impl Serialize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::Accessibility::{
+        UIA_CustomControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId,
+    };
 
     #[test]
     fn idle_or_missing_input_pane_does_not_leave_an_expired_poll_deadline() {
+        assert!(FOCUS_WATCHDOG_POLL < Duration::from_millis(1200));
         let start = Instant::now();
         let now = start + Duration::from_secs(60);
         assert_eq!(
-            observer_wait(now, false, true, start, start, None),
-            Duration::from_millis(500)
+            observer_wait(now, false, true, now, start, None),
+            FOCUS_WATCHDOG_POLL
         );
         assert_eq!(
-            observer_wait(now, false, false, start, start, None),
-            Duration::from_millis(500)
+            observer_wait(now, false, false, now, start, None),
+            FOCUS_WATCHDOG_POLL
         );
         assert_eq!(
             observer_wait(now, true, false, now, start, None),
@@ -629,23 +1230,382 @@ mod tests {
             Duration::from_millis(5)
         );
         assert_eq!(
-            observer_wait(now, false, false, start, start, Some(now)),
+            observer_wait(now, false, false, now, start, Some(now)),
             RESCAN_DEBOUNCE
         );
     }
 
     #[test]
-    fn only_explicitly_writable_edit_is_confirmed() {
-        for (is_edit, read_only, expected) in [
-            (true, Some(false), true),
-            (true, Some(true), false),
-            (true, None, false),
-            (false, Some(true), false), // Chrome read-only Document
-            (false, Some(false), false),
-            (false, None, false),
+    fn caret_blink_keeps_a_caret_confirmed_editor() {
+        let start = Instant::now();
+        let rect = WireRect {
+            left: 0,
+            top: 0,
+            right: 10,
+            bottom: 10,
+        };
+        let confirmed = FocusSignature {
+            control_type: UIA_PaneControlTypeId.0,
+            rect,
+            password: false,
+            editable: true,
+            caret_rect: Some(WireRect {
+                left: 1,
+                top: 1,
+                right: 2,
+                bottom: 9,
+            }),
+        };
+        // The same element as seen between two flashes of its caret.
+        let mut blink = confirmed;
+        blink.editable = false;
+        blink.caret_rect = None;
+        assert!(is_caret_blink(
+            Some(&confirmed),
+            &blink,
+            Some(start),
+            start + Duration::from_millis(600),
+        ));
+
+        // A caret that stays away for longer than a blink phase is gone.
+        assert!(!is_caret_blink(
+            Some(&confirmed),
+            &blink,
+            Some(start),
+            start + CARET_BLINK_GRACE + Duration::from_millis(1),
+        ));
+        // Nothing confirmed this element with a caret, or no element precedes it.
+        assert!(!is_caret_blink(Some(&confirmed), &blink, None, start));
+        assert!(!is_caret_blink(None, &blink, Some(start), start));
+
+        // Another element is a real focus change, even without a caret.
+        let mut other = blink;
+        other.rect = WireRect {
+            left: 20,
+            top: 0,
+            right: 30,
+            bottom: 10,
+        };
+        assert!(!is_caret_blink(Some(&confirmed), &other, Some(start), start));
+
+        // A caret that only moved, for example after typing, is still the same editor.
+        let mut typed = confirmed;
+        typed.caret_rect = Some(WireRect {
+            left: 3,
+            top: 1,
+            right: 4,
+            bottom: 9,
+        });
+        assert!(!is_caret_blink(Some(&confirmed), &typed, Some(start), start));
+        // Such movement updates the published caret but is not logged again.
+        assert_eq!(FocusLogKey::from(&confirmed), FocusLogKey::from(&typed));
+        assert_ne!(FocusLogKey::from(&confirmed), FocusLogKey::from(&blink));
+    }
+
+    #[test]
+    fn value_and_text_edit_evidence_confirm_editors() {
+        for (control_type, scintilla, read_only, text_edit, caret_active, caret_rect, expected) in [
+            (
+                UIA_EditControlTypeId.0,
+                false,
+                Some(false),
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                UIA_EditControlTypeId.0,
+                false,
+                Some(true),
+                true,
+                true,
+                true,
+                false,
+            ),
+            (
+                UIA_EditControlTypeId.0,
+                false,
+                None,
+                false,
+                true,
+                true,
+                true,
+            ),
+            (
+                UIA_EditControlTypeId.0,
+                false,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (UIA_PaneControlTypeId.0, true, None, false, true, true, true),
+            (
+                UIA_PaneControlTypeId.0,
+                true,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                UIA_TextControlTypeId.0,
+                false,
+                None,
+                true,
+                true,
+                false,
+                true,
+            ),
+            (
+                UIA_DocumentControlTypeId.0,
+                false,
+                Some(true),
+                true,
+                true,
+                true,
+                false,
+            ),
+            (
+                UIA_DocumentControlTypeId.0,
+                false,
+                None,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (
+                UIA_DocumentControlTypeId.0,
+                false,
+                None,
+                true,
+                true,
+                false,
+                false,
+            ),
+            (
+                UIA_DocumentControlTypeId.0,
+                false,
+                None,
+                true,
+                true,
+                true,
+                true,
+            ),
+            (
+                UIA_DocumentControlTypeId.0,
+                false,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            // QQ's ProseMirror editor: a Group with TextEditPattern and no
+            // other evidence. Read-only still rejects.
+            (
+                UIA_GroupControlTypeId.0,
+                false,
+                None,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                UIA_GroupControlTypeId.0,
+                false,
+                Some(true),
+                true,
+                true,
+                true,
+                false,
+            ),
         ] {
-            assert_eq!(is_confirmed_editor(is_edit, read_only), expected);
+            assert_eq!(
+                is_confirmed_editor(
+                    control_type,
+                    scintilla,
+                    false,
+                    read_only,
+                    text_edit,
+                    caret_active,
+                    caret_rect,
+                ),
+                expected
+            );
         }
+    }
+
+    #[test]
+    fn custom_text_edit_provider_without_caret_is_editable() {
+        assert!(is_confirmed_editor(
+            UIA_CustomControlTypeId.0,
+            false,
+            false,
+            None,
+            true,
+            false,
+            false,
+        ));
+        assert!(!is_confirmed_editor(
+            UIA_CustomControlTypeId.0,
+            false,
+            false,
+            Some(true),
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn native_text_classes_cover_common_editing_hosts() {
+        for class in [
+            "Edit",
+            "RichEdit50W",
+            "WindowsForms10.EDIT.app.0.141b42a_r9_ad1",
+            "Scintilla",
+            "mintty",
+            "ConsoleWindowClass",
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Chrome_RenderWidgetHostHWND1",
+            "Qt5152QWindowIcon",
+        ] {
+            assert!(is_native_text_class(class), "{class}");
+        }
+        for class in ["Button", "Static", "Chrome_WidgetWin_0"] {
+            assert!(!is_native_text_class(class), "{class}");
+        }
+    }
+
+    #[test]
+    fn self_drawn_text_classes_cover_terminal_hosts() {
+        for class in [
+            "PuTTY",
+            "Vim",
+            "PX_WINDOW_CLASS",
+            "Xshell7::CoreApp",
+            "Xshell6::CoreApp",
+        ] {
+            assert!(is_self_drawn_text_class(class), "{class}");
+        }
+        // The Xshell main frame hosts toolbars and the session manager; only
+        // the terminal surface itself is a typing surface. Dialogs never match.
+        for class in [
+            "Xshell7::MainFrame_0",
+            "#32770",
+            "Chrome_WidgetWin_1",
+            "VimViewer",
+        ] {
+            assert!(!is_self_drawn_text_class(class), "{class}");
+        }
+    }
+
+    fn native_focus(focus_class: &str, caret_rect: Option<WireRect>) -> NativeFocus {
+        NativeFocus {
+            focus_class: Some(focus_class.to_string()),
+            caret_class: None,
+            focus_rect: Some(WireRect {
+                left: 0,
+                top: 0,
+                right: 400,
+                bottom: 300,
+            }),
+            caret_rect,
+            read_only_edit: false,
+            password_edit: false,
+            focus_hwnd: None,
+        }
+    }
+
+    #[test]
+    fn self_drawn_hosts_confirm_without_a_native_caret() {
+        for class in ["PuTTY", "Vim", "PX_WINDOW_CLASS", "Xshell7::CoreApp"] {
+            assert!(
+                native_text_evidence(Some(&native_focus(class, None))),
+                "{class}"
+            );
+        }
+        // Caret-based classes still need caret evidence; class alone is not
+        // enough for them.
+        assert!(!native_text_evidence(Some(&native_focus("mintty", None))));
+        assert!(native_text_evidence(Some(&native_focus(
+            "mintty",
+            Some(WireRect {
+                left: 4,
+                top: 4,
+                right: 5,
+                bottom: 24,
+            })
+        ))));
+    }
+
+    #[test]
+    fn self_drawn_classes_match_the_focused_window_only() {
+        let mut caret_host = native_focus("Button", None);
+        caret_host.caret_class = Some("PuTTY".to_string());
+        caret_host.caret_rect = Some(WireRect {
+            left: 4,
+            top: 4,
+            right: 5,
+            bottom: 24,
+        });
+        // A self-drawn class on the caret window while focus is elsewhere is
+        // not an editor: only the focused terminal window is the typing
+        // surface.
+        assert!(!native_text_evidence(Some(&caret_host)));
+    }
+
+    #[test]
+    fn native_fallback_reports_password_and_missing_caret() {
+        let terminal = native_focus("PuTTY", None);
+        let (_, observation) =
+            build_native_observation(&terminal, 1).expect("terminal observation");
+        assert!(observation.editable);
+        assert!(!observation.password);
+        assert_eq!(observation.caret_rect, None);
+        assert!(observation.element_rect.is_some());
+
+        let mut password_box = native_focus("Edit", None);
+        password_box.caret_rect = Some(WireRect {
+            left: 4,
+            top: 4,
+            right: 5,
+            bottom: 24,
+        });
+        password_box.password_edit = true;
+        let (_, observation) =
+            build_native_observation(&password_box, 1).expect("edit observation");
+        assert!(observation.editable);
+        assert!(observation.password);
+    }
+
+    #[test]
+    fn native_text_evidence_confirms_without_uia_caret() {
+        assert!(is_confirmed_editor(
+            UIA_PaneControlTypeId.0,
+            false,
+            true,
+            None,
+            false,
+            false,
+            false,
+        ));
+        // The read-only rejection still wins over native evidence.
+        assert!(!is_confirmed_editor(
+            UIA_PaneControlTypeId.0,
+            false,
+            true,
+            Some(true),
+            false,
+            false,
+            false,
+        ));
     }
 
     pub(super) fn observation(source: &'static str, active: bool) -> Observation {

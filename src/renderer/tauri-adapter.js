@@ -92,6 +92,7 @@ export const vdd = {
 // ─── Virtual Mouse ───────────────────────────────────────
 
 export const vmouse = {
+  getSupport: () => wrapResult('get_vmouse_support'),
   getStatus: () => wrapResult('get_vmouse_status'),
   install: () => wrapResult('install_vmouse_driver'),
   uninstall: () => wrapResult('uninstall_vmouse_driver'),
@@ -123,8 +124,15 @@ export const controllerHub = {
 // the audio endpoints of the host and the VB-CABLE state (GET /api/audio/devices)
 export const audioDevices = {
   get: () => wrapResult('get_audio_devices'),
-  // 'install' (download, verify, silent setup) or 'enable' (pnputil); ask the person first
-  startVbCableJob: (action) => wrapResult('start_vb_cable_job', { action }),
+}
+
+// Component operations are separate: downloading never installs a driver.
+export const vbCable = {
+  check: () => wrapResult('vb_cable_check'),
+  download: () => wrapResult('vb_cable_download'),
+  install: () => wrapResult('vb_cable_install'),
+  enable: () => wrapResult('vb_cable_enable'),
+  uninstall: () => wrapResult('vb_cable_uninstall'),
 }
 
 export const virtualMicrophone = {
@@ -145,6 +153,8 @@ export const usbip = {
   getStatus: () => wrapResult('usbip_get_status'),
   installTransport: () => wrapResult('usbip_install_transport'),
   cleanupTransport: () => wrapResult('usbip_cleanup_transport'),
+  removeStaleNodes: () => wrapResult('usbip_remove_stale_nodes'),
+  exportDiagnostics: () => wrapResult('usbip_export_diagnostics'),
   replaceLegacyTransport: () => wrapResult('usbip_replace_legacy_transport'),
   listRemote: (remote, tcpPort = 3240) => wrapResult('usbip_list_remote', {
     remote,
@@ -156,6 +166,11 @@ export const usbip = {
     tcpPort,
   }),
   detach: (port) => wrapResult('usbip_detach', { port }),
+  // restarts Windows after 30 seconds the person can still cancel; the panel asks first
+  restartWindows: () => wrapResult('usbip_restart_windows'),
+  // when this Windows session started (seconds since the Unix epoch; 0 where unknown) and the verdict on the registered driver's signature
+  bootSecs: () => wrapResult('usbip_boot_secs'),
+  driverSignature: () => wrapResult('usbip_driver_signature'),
 }
 
 export const rtxHdr = {
@@ -198,6 +213,8 @@ export const sunshine = {
   setLocale: (locale) => invoke('set_sunshine_locale', { locale }),
   changeBitrate: (clientName, bitrate) => invoke('change_bitrate', { clientName, bitrate }),
   stopAllSessions: () => invoke('stop_all_sessions'),
+  // the live streams, or a rejection when the host cannot be asked (getActiveSessions answers an empty list then)
+  askActiveSessions: () => invoke('get_active_sessions'),
 }
 
 // ─── Sunshine 服务（SCM）────────────────────────────────

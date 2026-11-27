@@ -43,7 +43,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     // Recover an interrupted user-session transaction even if WebView2 is
     // unavailable. The guard also covers a later setup error.
     #[cfg(target_os = "windows")]
-    let touch_keyboard_guard = crate::touch_keyboard::start();
+    let touch_keyboard_guard = (!crate::test_isolation::active()).then(crate::touch_keyboard::start);
     let agent_only = args.iter().any(|arg| arg == "--hidden");
     let explicit_minimized = args.iter().any(|arg| arg == "--minimized");
     // `--start-guide` is the installer's "open the start guide" button. It shows the main window
@@ -63,6 +63,10 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         .find(|arg| arg.starts_with("--url="))
         .map_or(false, |arg| arg.contains("/pin"));
 
+    // A click on a notification that started this panel (notify_action.rs). The PIN entry is a window of its own: the main window is not made for it, as it is not for `--url=.../pin`.
+    let startup_notify_action = crate::notify_action::NotifyAction::from_args(&args);
+    let startup_opens_pin_only = startup_notify_action == Some(crate::notify_action::NotifyAction::OpenPin);
+
     let app_handle = app.handle().clone();
     if !crate::webview_runtime::ensure_available() {
         info!("WebView2 Runtime is unavailable; native fallback was shown");
@@ -72,18 +76,26 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         drop(touch_keyboard_guard);
         std::process::exit(crate::webview_runtime::WEBVIEW2_MISSING_EXIT_CODE);
     }
-    windows::register_agent_restart();
-    crate::desktop_settings::apply_startup_settings(&app_handle, &desktop_settings);
+    if !crate::test_isolation::active() {
+        windows::register_agent_restart();
+        crate::desktop_settings::apply_startup_settings(&app_handle, &desktop_settings);
+    }
     // 更新偏好属于应用级状态，必须在 `--hidden` 的纯托盘代理模式下也立即注册。
     // 自动联网检查仍在后面按窗口启动模式决定，避免把状态初始化和网络行为耦合。
     update::init_update_preferences(&app_handle)?;
-    crate::install_integrity::start(app_handle.clone());
-    crate::clipboard::auto_start();
-    #[cfg(target_os = "windows")]
-    crate::text_context::start(desktop_settings.text_context_enabled);
+    if !crate::test_isolation::active() {
+        crate::install_integrity::start(app_handle.clone());
+        if desktop_settings.clipboard_sync_enabled {
+            crate::clipboard::auto_start();
+        }
+        #[cfg(target_os = "windows")]
+        crate::text_context::start(desktop_settings.text_context_enabled);
+    }
     let mut tasks = BackgroundTasks(vec![windows::lifecycle::start_monitor(app_handle.clone())]);
     #[cfg(target_os = "windows")]
-    crate::vdd::start_hardware_cursor_migration();
+    if !crate::test_isolation::active() {
+        crate::vdd::start_hardware_cursor_migration();
+    }
     // a measurement instance (SUNSHINE_GUI_TEST_OFFSCREEN) shows its window, off screen, whatever the person's setting: a page of a hidden window sleeps
     let start_minimized = (explicit_minimized || desktop_settings.start_minimized)
         && !windows::test_offscreen()
@@ -101,7 +113,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
             windows::create_desktop_window(&app_handle)?;
         }
         windows::create_main_window_hidden(&app_handle)?;
-    } else if !show_toolbar && !url_contains_pin && !is_send_to_client && !is_quick_share_folder {
+    } else if !show_toolbar && !url_contains_pin && !startup_opens_pin_only && !is_send_to_client && !is_quick_share_folder {
         if start_minimized {
             windows::create_main_window_hidden(&app_handle)?;
         } else {
@@ -139,16 +151,24 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         ctx_popup::schedule_create_after(&app_handle, std::time::Duration::ZERO);
     } else {
         ctx_popup::schedule_create(&app_handle);
+        // the main window's first view normally makes it (panel_content_ready); if that is late, a click on the icon in the first seconds must still find the Material menu coming
+        ctx_popup::schedule_create_after(&app_handle, std::time::Duration::from_secs(6));
     }
+    crate::mem_adaptive::start(&app_handle);
+    crate::launch_splash::start_for_measurement(&app_handle);
     crate::power::refresh_ecoqos_state(&app_handle);
-    #[cfg(target_os = "windows")]
-    if desktop_settings.file_mapping_menu_enabled {
-        if let Err(e) = crate::shell_context_menu::install_file_mapping_menu() {
-            warn!("install file mapping context menu failed: {}", e);
+    if !crate::test_isolation::active() {
+        // The "send to client" menu follows clipboard_files_enabled
+        // (desktop_settings::apply_clipboard_files, from apply_startup_settings).
+        #[cfg(target_os = "windows")]
+        if desktop_settings.file_mapping_menu_enabled {
+            if let Err(e) = crate::shell_context_menu::install_file_mapping_menu() {
+                warn!("install file mapping context menu failed: {}", e);
+            }
         }
+        register_global_shortcuts(app, desktop_settings.toolbar_shortcut_enabled)?;
+        crate::nr_overlay::initialize(&app_handle);
     }
-    register_global_shortcuts(app, desktop_settings.toolbar_shortcut_enabled)?;
-    crate::nr_overlay::initialize(&app_handle);
     setup_menu_event_handler(app);
 
     if is_send_to_client {
@@ -171,6 +191,13 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
             }
         }
 
+        // 通知点击启动的面板：现在做通知要求的事（notify_action.rs）
+        if let Some(action) = startup_notify_action {
+            info!("A notification click started the panel: {action:?}");
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            tray::dispatch_notify_action(&app_handle, action);
+        }
+
         // 工具栏窗口（非桌面模式下）
         if show_toolbar && !show_desktop {
             info!("🔧 将在应用启动后打开工具栏");
@@ -191,7 +218,9 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         }));
     }
     #[cfg(target_os = "windows")]
-    app.manage(touch_keyboard_guard);
+    if let Some(guard) = touch_keyboard_guard {
+        app.manage(guard);
+    }
     app.manage(tasks);
 
     Ok(())
@@ -199,18 +228,22 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
 
 pub fn shutdown_application(app: &AppHandle) {
     #[cfg(target_os = "windows")]
-    crate::touch_keyboard::stop();
+    if !crate::test_isolation::active() {
+        crate::touch_keyboard::stop();
+    }
     if let Some(tasks) = app.try_state::<BackgroundTasks>() {
         tasks.abort();
     }
     windows::lifecycle::shutdown();
-    #[cfg(target_os = "windows")]
-    crate::text_context::stop();
-    crate::clipboard::stop();
-    #[cfg(target_os = "windows")]
-    crate::tray::cleanup_prevent_sleep();
-    crate::moonlight_web::cleanup();
-    crate::windows::unregister_agent_restart();
+    if !crate::test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        crate::text_context::stop();
+        crate::clipboard::stop();
+        #[cfg(target_os = "windows")]
+        crate::tray::cleanup_prevent_sleep();
+        crate::moonlight_web::cleanup();
+        crate::windows::unregister_agent_restart();
+    }
 }
 
 #[cfg(test)]
@@ -303,6 +336,11 @@ pub fn sync_toolbar_shortcut(app_handle: &AppHandle, enabled: bool) -> Result<bo
     match shortcut_manager.on_shortcut(TOOLBAR_SHORTCUT, move |_app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
             debug!("Global shortcut triggered: CTRL+SHIFT+ALT+T");
+            // The shortcut opens the toolbar, whose actions lead to the main panel.
+            // Begin warming on the existing Pressed event (panel-memory-tauri-shortcut, Usage).
+            if app_handle.get_webview_window("toolbar").is_none() {
+                crate::mem_adaptive::prewarm_main(&app_handle, "toolbar shortcut pressed");
+            }
             toggle_toolbar_window(&app_handle);
         }
     }) {
@@ -352,6 +390,12 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
     info!("🔔 检测到第二个实例启动，激活现有窗口");
     info!("   启动参数: {:?}", args);
 
+    // A click on a notification, from the notification centre or from a toast on screen: Windows started a second panel with the address of the notification (notify_action.rs).
+    if let Some(action) = crate::notify_action::NotifyAction::from_args(&args) {
+        tray::dispatch_notify_action(app, action);
+        return;
+    }
+
     let send_to_client_paths = crate::file_transfer::parse_send_to_client_args(&args);
     if !send_to_client_paths.is_empty() {
         info!("📤 检测到文件传输右键菜单请求");
@@ -375,14 +419,8 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
     if crate::start_guide::requests_start_guide(&args) {
         info!("--start-guide: forwarding to the running panel");
         crate::start_guide::queue_start_guide();
-        if app.get_webview_window("main").is_none() {
-            if let Err(e) = windows::create_main_window(app) {
-                error!("failed to open the panel for --start-guide: {e}");
-                return;
-            }
-        } else {
-            windows::activate_main_window(app, None);
-        }
+        crate::mem_adaptive::prewarm_main(app, "start-guide message");
+        windows::activate_main_window(app, None);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("start-guide-pending", ());
         }
@@ -446,11 +484,8 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
         }
     }
 
-    if app.get_webview_window("main").is_none() {
-        if let Err(e) = windows::create_main_window(app) {
-            error!("Failed to create main panel for second instance: {}", e);
-            return;
-        }
-    }
+    // A second-instance message is the earliest signal for this activation
+    // (panel-memory-tauri-instance, Usage).
+    crate::mem_adaptive::prewarm_main(app, "second-instance message");
     windows::activate_main_window(app, target_url);
 }
