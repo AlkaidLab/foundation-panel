@@ -55,6 +55,8 @@
   "m3e.live.encoding",
   "m3e.live.toSettings",
   "m3e.live.values",
+  "settings.clipboardFilesEnabled",
+  "settings.clipboardFilesEnabledDesc",
   "sidebar.degraded",
   "stream.bitrateAuto",
   "stream.hostAudio",
