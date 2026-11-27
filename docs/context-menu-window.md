@@ -31,8 +31,9 @@
 
 1. 把窗口拖到屏幕右下角，在窗口右下角附近右键：菜单应越过窗口边缘显示在屏幕上，不被截断，不盖住任务栏。
 2. 副屏不同缩放比（例如 100 % 与 150 %）：在两块屏的边缘各右键一次，菜单大小与位置应和各自屏的缩放一致。
-3. 键盘：右键后 ↑/↓/Home/End、Enter 选择；→ 进入子菜单、← 返回；Esc 关闭，焦点回到主窗口。
-4. 点菜单外任意处、点任务栏、Alt+Tab：菜单关闭；点到别的程序后焦点留在那个程序。
-5. 菜单打开时拖动/最小化主窗口：菜单关闭。
-6. 延迟：CDP 读 `window.__ctxPopupTimings`（右键请求到窗口显示，毫秒）；受控实例上也可调用 `ctx_popup_selftest`（`SUNSHINE_GUI_TEST_OFFSCREEN=1` 时，窗口保持遮蔽，不会出现在桌面上），返回 p50/p95。
-7. 空闲占用：对比 `SUNSHINE_GUI_CTX_POPUP=off` 与默认启动后，`msedgewebview2.exe` 工作集之差。
+3. 系统「辅助功能 › 文本大小」150 %：菜单完整不被截断（打开时按系统对窗口的 DPI 定测量视口和 `maxHeight`；`ctx_popup_ready` 的尺寸换算按页面回报的 `devicePixelRatio`）。
+4. 键盘：右键后 ↑/↓/Home/End、Enter 选择；→ 进入子菜单、← 返回；Esc 关闭，焦点回到主窗口。
+5. 点菜单外任意处、点任务栏、Alt+Tab：菜单关闭；点到别的程序后焦点留在那个程序。
+6. 菜单打开时拖动/最小化主窗口：菜单关闭。
+7. 延迟：CDP 读 `window.__ctxPopupTimings`（右键请求到窗口显示，毫秒）；受控实例上也可调用 `ctx_popup_selftest`（`SUNSHINE_GUI_TEST_OFFSCREEN=1` 时，窗口保持遮蔽，不会出现在桌面上），返回 p50/p95。
+8. 空闲占用：对比 `SUNSHINE_GUI_CTX_POPUP=off` 与默认启动后，`msedgewebview2.exe` 工作集之差。
