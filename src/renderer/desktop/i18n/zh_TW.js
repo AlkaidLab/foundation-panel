@@ -296,6 +296,8 @@ export const zh_TW = {
     devMode: '開發者模式',
     devModeDesc: '顯示除錯資訊和開發者工具',
     textContextEnabled: 'Windows 文本焦點與軟鍵盤輔助',
+    clipboardFilesEnabled: '在主機和串流用戶端之間複製檔案',
+    clipboardFilesEnabledDesc: '在主機上複製檔案或資料夾後，可以在串流用戶端的檔案總管裡直接貼上；在用戶端複製的檔案也能在主機上貼上。檔案右鍵選單裡還有「傳送到 Sunshine 用戶端」。檔案在貼上時才傳輸，主機只會提供你自己能讀取的檔案。需要用戶端支援（目前為 Windows 版 Moonlight）。',
     textContextEnabledDesc: '串流期間識別獲得焦點的可編輯控制元件，用於軟鍵盤自動彈出和游標定位。若影響系統性能，可以關閉；普通遠端鍵盤輸入不受影響。',
     clipboardSyncEnabled: "剪貼簿同步",
     clipboardSyncEnabledDesc: "同步 Windows 剪貼簿與串流客戶端。若與微信輸入法等其他剪貼簿管理工具衝突，請關閉。",

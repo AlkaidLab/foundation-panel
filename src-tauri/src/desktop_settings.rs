@@ -52,6 +52,8 @@ pub struct DesktopSettings {
     pub log_level: String,
     pub toolbar_shortcut_enabled: bool,
     pub text_context_enabled: bool,
+    /// Files copied in Explorer (and "send to client") are offered to streaming clients for pasting.
+    pub clipboard_files_enabled: bool,
     pub clipboard_sync_enabled: bool,
     /// A change of the monitor's scale gives the window its size in DIPs back (a virtual display that follows the client's resolution changes the scale; the window kept its pixels and shrank in DIPs). Off by default.
     pub keep_window_size_on_dpi_change: bool,
@@ -71,6 +73,7 @@ impl Default for DesktopSettings {
             log_level: "info".to_string(),
             toolbar_shortcut_enabled: true,
             text_context_enabled: true,
+            clipboard_files_enabled: true,
             clipboard_sync_enabled: true,
             keep_window_size_on_dpi_change: false,
         }
@@ -399,6 +402,7 @@ pub async fn save_desktop_settings(
     }
     #[cfg(target_os = "windows")]
     crate::text_context::set_enabled(settings.text_context_enabled);
+    apply_clipboard_files(settings.clipboard_files_enabled);
     crate::tray::refresh_menu(&app);
     crate::logger::set_log_level(&settings.log_level);
     apply_dev_mode(&app, settings.dev_mode);
@@ -472,11 +476,29 @@ pub fn apply_startup_settings(app: &AppHandle, settings: &DesktopSettings) {
     apply_dev_mode(app, settings.dev_mode);
     #[cfg(target_os = "windows")]
     crate::text_context::set_enabled(settings.text_context_enabled);
+    apply_clipboard_files(settings.clipboard_files_enabled);
     if let Err(e) = apply_auto_start(settings) {
         log::warn!("Failed to reconcile GUI auto-start registration: {}", e);
     }
     if settings.auto_start_sunshine {
         ensure_sunshine_started_async();
+    }
+}
+
+/// Offer copied files to clients or not, and keep Explorer's "send to client" entry in step.
+fn apply_clipboard_files(enabled: bool) {
+    crate::file_transfer::set_enabled(enabled);
+    // A measurement instance leaves Explorer's menu alone (see test_isolation).
+    #[cfg(target_os = "windows")]
+    if !crate::test_isolation::active() {
+        let result = if enabled {
+            crate::shell_context_menu::install_file_transfer_menu()
+        } else {
+            crate::shell_context_menu::uninstall_file_transfer_menu()
+        };
+        if let Err(e) = result {
+            log::warn!("Failed to update the send-to-client context menu: {e}");
+        }
     }
 }
 
@@ -603,6 +625,20 @@ mod tests {
                 .expect("toolbar shortcut setting should deserialize");
 
         assert!(!settings.toolbar_shortcut_enabled);
+    }
+
+    #[test]
+    fn clipboard_files_are_enabled_by_default_and_migrate() {
+        assert!(DesktopSettings::default().clipboard_files_enabled);
+
+        let settings: DesktopSettings = serde_json::from_str(r#"{"autoStart":false}"#)
+            .expect("legacy desktop settings should deserialize");
+        assert!(settings.clipboard_files_enabled);
+
+        let disabled: DesktopSettings =
+            serde_json::from_str(r#"{"clipboardFilesEnabled":false}"#)
+                .expect("clipboard files setting should deserialize");
+        assert!(!disabled.clipboard_files_enabled);
     }
 
     #[test]

@@ -32,6 +32,19 @@ pub fn install_file_transfer_menu() -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
+pub fn uninstall_file_transfer_menu() -> Result<(), String> {
+    use winreg::RegKey;
+    use winreg::enums::*;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    match hkcu.delete_subkey_all(r"Software\Classes\*\shell\Sunshine.SendToClient") {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("delete context menu key failed: {e}")),
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub fn install_file_mapping_menu() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
     let exe = exe.to_string_lossy().to_string();

@@ -89,6 +89,8 @@ const MAX_PENDING_BURSTS: usize = 32;
 // The blob endpoint accepts MIME types without parameters. Wire text is UTF-8.
 const MIME_TEXT: &str = "text/plain";
 const MIME_PNG: &str = "image/png";
+/// A file offer too long for one control message travels as a blob of this type.
+pub(crate) const MIME_FILE_OFFER: &str = "application/vnd.sunshine.file-offer+json";
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const SSE_RECONNECT_BACKOFF: Duration = Duration::from_secs(3);
@@ -477,7 +479,10 @@ fn snapshot_and_post(echo: &Arc<Mutex<EchoState>>) {
     if let Ok(files) = ctx.get_files() {
         if !files.is_empty() && text_bytes.is_none() && png_bytes.is_none() {
             st.current = None;
-            debug!("local file clipboard without transferable payload; sync skipped");
+            // The names never travel as text; the files themselves are offered
+            // for pasting through the file-transfer endpoints (kind 4).
+            info!("local file clipboard: offering {} path(s) as files", files.len());
+            crate::file_transfer::offer_copied_files(files);
             return;
         }
     }
@@ -655,14 +660,59 @@ async fn post_item_inner(body: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+/// The two calls a file offer goes out through; tests record them instead.
+trait OfferTransport {
+    async fn post_item(&self, body: Vec<u8>) -> Result<(), String>;
+    async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String>;
+}
+
+struct HostTransport;
+
+impl OfferTransport for HostTransport {
+    async fn post_item(&self, body: Vec<u8>) -> Result<(), String> {
+        post_item(body).await
+    }
+    async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String> {
+        upload_blob(bytes, mime).await
+    }
+}
+
+/// Send a file offer to the clients: inline (kind 4) while it fits one
+/// control message, otherwise uploaded as a blob and announced with a
+/// KIND_REF frame of type MIME_FILE_OFFER (a folder of a thousand short
+/// names is already past the service's 65500-byte /item limit). An upload or
+/// post failure is returned to the caller.
 pub async fn post_file_offer_payload(payload: Vec<u8>) -> Result<(), String> {
-    let token = next_token();
+    send_file_offer(&HostTransport, payload, next_token()).await
+}
+
+async fn send_file_offer<T: OfferTransport>(
+    transport: &T,
+    payload: Vec<u8>,
+    token: u32,
+) -> Result<(), String> {
+    if payload.len() <= INLINE_THRESHOLD {
+        let body = encode_frame(&Frame {
+            kind: Kind::FileOffer,
+            token,
+            payload,
+        });
+        return transport.post_item(body).await;
+    }
+    let size = payload.len() as u64;
+    let id = transport.upload_blob(payload, MIME_FILE_OFFER).await?;
+    let meta = RefMeta {
+        id,
+        mime: MIME_FILE_OFFER.to_string(),
+        size,
+    };
+    let json = serde_json::to_vec(&meta).map_err(|e| format!("ref json encode failed: {e}"))?;
     let body = encode_frame(&Frame {
-        kind: Kind::FileOffer,
+        kind: Kind::Ref,
         token,
-        payload,
+        payload: json,
     });
-    post_item(body).await
+    transport.post_item(body).await
 }
 
 /// What the host answers to the capability call (the heartbeat and the status read both make it).
@@ -810,14 +860,16 @@ fn take_burst_text(token: u32) -> Option<Vec<u8>> {
 /// compound-upgrade logic relies on text-before-image processing, which
 /// per-frame spawns onto a thread pool cannot guarantee (and which, prior
 /// to this, could reorder plain v1 multi-frame applies too).
-fn handle_inbound_frame(frame: Frame, echo: &Arc<Mutex<EchoState>>) {
+fn handle_inbound_frame(frame: Frame, sid: Option<u64>, echo: &Arc<Mutex<EchoState>>) {
     match frame.kind {
         Kind::Ref => {
             let echo = echo.clone();
             tauri::async_runtime::spawn(async move {
-                apply_inbound_ref(frame, echo).await;
+                apply_inbound_ref(frame, sid, echo).await;
             });
         }
+        // A client copied files: put them on the host clipboard (file_transfer::inbound).
+        Kind::FileOffer => crate::file_transfer::inbound::apply_client_offer(sid, &frame.payload),
         _ if frame.token == 0 => apply_inbound_inline(frame, echo),
         Kind::Text => {
             retain_burst_text(frame.token, frame.payload.clone());
@@ -826,11 +878,6 @@ fn handle_inbound_frame(frame: Frame, echo: &Arc<Mutex<EchoState>>) {
         Kind::Png => {
             let token = frame.token;
             deliver_burst_png(token, &frame.payload, echo);
-        }
-        Kind::FileOffer => {
-            // Keep the legacy warn-and-drop path (apply_inbound_inline
-            // rejects file offers on the host agent).
-            apply_inbound_inline(frame, echo);
         }
     }
 }
@@ -849,7 +896,7 @@ fn deliver_burst_png(token: u32, png: &[u8], echo: &Arc<Mutex<EchoState>>) {
     }
 }
 
-async fn apply_inbound_ref(frame: Frame, echo: Arc<Mutex<EchoState>>) {
+async fn apply_inbound_ref(frame: Frame, sid: Option<u64>, echo: Arc<Mutex<EchoState>>) {
     let meta: RefMeta = match serde_json::from_slice(&frame.payload) {
         Ok(m) => m,
         Err(e) => {
@@ -873,12 +920,16 @@ async fn apply_inbound_ref(frame: Frame, echo: Arc<Mutex<EchoState>>) {
     let kind = match meta.mime.as_str() {
         m if m.starts_with("text/") => Kind::Text,
         "image/png" => Kind::Png,
-        "application/vnd.sunshine.file-offer+json" => Kind::FileOffer,
+        MIME_FILE_OFFER => Kind::FileOffer,
         other => {
             warn!("inbound REF: unsupported mime '{}'", other);
             return;
         }
     };
+    if kind == Kind::FileOffer {
+        crate::file_transfer::inbound::apply_client_offer(sid, &bytes);
+        return;
+    }
     let token = frame.token;
 
     if token != 0 && matches!(kind, Kind::Text | Kind::Png) {
@@ -1206,8 +1257,8 @@ async fn sse_pump(stop: Arc<Notify>, echo: Arc<Mutex<EchoState>>) {
                         // Parse \n\n-separated SSE events.
                         while let Some(end) = find_event_end(&buf) {
                             let raw = buf.drain(..end + 2).collect::<Vec<u8>>();
-                            if let Some(frame) = parse_sse_event(&raw) {
-                                handle_inbound_frame(frame, &echo);
+                            if let Some((frame, sid)) = parse_sse_event(&raw) {
+                                handle_inbound_frame(frame, sid, &echo);
                             }
                         }
                     }
@@ -1249,12 +1300,17 @@ fn find_event_end(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n")
 }
 
-fn parse_sse_event(raw: &[u8]) -> Option<Frame> {
+/// The frame and the id of the streaming session it came from (the event's
+/// "id:" line), which a client's file offer needs to be pasted.
+fn parse_sse_event(raw: &[u8]) -> Option<(Frame, Option<u64>)> {
     let s = std::str::from_utf8(raw).ok()?;
     let mut data_b64: Option<String> = None;
+    let mut sid: Option<u64> = None;
     for line in s.split('\n') {
         let line = line.trim_end_matches('\r');
-        if let Some(rest) = line.strip_prefix("data: ") {
+        if let Some(rest) = line.strip_prefix("id:") {
+            sid = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("data: ") {
             data_b64 = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("data:") {
             data_b64 = Some(rest.trim_start().to_string());
@@ -1262,7 +1318,7 @@ fn parse_sse_event(raw: &[u8]) -> Option<Frame> {
     }
     let b64 = data_b64?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    decode_frame(&bytes)
+    decode_frame(&bytes).map(|frame| (frame, sid))
 }
 
 // ---------- Heartbeat ----------
@@ -1888,5 +1944,116 @@ mod echo_tests {
         let encoded = ClipboardIdentity::new(None, Some(b"png"), None);
         assert!(!state.observe(encoded));
         assert!(state.observe(encoded));
+    }
+}
+
+#[cfg(test)]
+mod file_offer_send_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorder {
+        items: Mutex<Vec<Vec<u8>>>,
+        blobs: Mutex<Vec<(Vec<u8>, String)>>,
+        fail_upload: bool,
+    }
+
+    impl OfferTransport for Recorder {
+        async fn post_item(&self, body: Vec<u8>) -> Result<(), String> {
+            self.items.lock().unwrap().push(body);
+            Ok(())
+        }
+        async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> Result<String, String> {
+            if self.fail_upload {
+                return Err("upload status 507".to_string());
+            }
+            self.blobs.lock().unwrap().push((bytes, mime.to_string()));
+            Ok("b".repeat(32))
+        }
+    }
+
+    /// The offer JSON Sunshine makes for a folder of `n` one-byte files.
+    fn offer_of(n: usize) -> Vec<u8> {
+        let mut files =
+            vec![serde_json::json!({"path": "bulk", "size": 0, "dir": true, "mtime": 0})];
+        for i in 0..n {
+            files.push(serde_json::json!({
+                "path": format!("bulk/f{i:04}.txt"), "size": 1, "dir": false, "mtime": 1_790_000_000,
+            }));
+        }
+        serde_json::to_vec(&serde_json::json!({
+            "version": 2, "id": "a".repeat(64), "type": "files", "source": "clipboard",
+            "total_size": n, "expires_in": 3600, "files": files,
+        }))
+        .unwrap()
+    }
+
+    fn run(recorder: &Recorder, payload: Vec<u8>) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(send_file_offer(recorder, payload, 7))
+    }
+
+    #[test]
+    fn a_short_offer_goes_inline() {
+        let recorder = Recorder::default();
+        let payload = vec![b' '; INLINE_THRESHOLD];
+        run(&recorder, payload.clone()).unwrap();
+        assert!(recorder.blobs.lock().unwrap().is_empty());
+        let items = recorder.items.lock().unwrap();
+        assert_eq!(items.len(), 1);
+        let frame = decode_frame(&items[0]).unwrap();
+        assert_eq!(frame.kind, Kind::FileOffer);
+        assert_eq!(frame.token, 7);
+        assert_eq!(frame.payload, payload);
+    }
+
+    #[test]
+    fn a_long_offer_goes_as_a_blob_and_only_the_ref_is_posted() {
+        let recorder = Recorder::default();
+        let payload = vec![b' '; INLINE_THRESHOLD + 1];
+        run(&recorder, payload.clone()).unwrap();
+        let blobs = recorder.blobs.lock().unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(blobs[0].0, payload);
+        assert_eq!(blobs[0].1, MIME_FILE_OFFER);
+        let items = recorder.items.lock().unwrap();
+        assert_eq!(items.len(), 1);
+        let frame = decode_frame(&items[0]).unwrap();
+        assert_eq!(frame.kind, Kind::Ref);
+        assert_eq!(frame.token, 7);
+        let meta: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(meta["mime"], MIME_FILE_OFFER);
+        assert_eq!(meta["size"], payload.len() as u64);
+        assert_eq!(meta["id"], "b".repeat(32));
+    }
+
+    #[test]
+    fn a_folder_of_1200_small_files_stays_under_the_item_limit() {
+        let payload = offer_of(1200);
+        assert!(
+            payload.len() + 10 > 65_500,
+            "the case the review measured: {} bytes",
+            payload.len()
+        );
+        let recorder = Recorder::default();
+        run(&recorder, payload.clone()).unwrap();
+        assert_eq!(recorder.blobs.lock().unwrap()[0].0, payload);
+        let items = recorder.items.lock().unwrap();
+        assert!(items[0].len() <= 65_500);
+        assert_eq!(decode_frame(&items[0]).unwrap().kind, Kind::Ref);
+    }
+
+    #[test]
+    fn a_failed_upload_is_returned_and_nothing_is_posted() {
+        let recorder = Recorder {
+            fail_upload: true,
+            ..Default::default()
+        };
+        let err = run(&recorder, offer_of(1200)).unwrap_err();
+        assert!(err.contains("507"), "{err}");
+        assert!(recorder.items.lock().unwrap().is_empty());
     }
 }

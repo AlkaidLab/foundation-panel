@@ -298,6 +298,8 @@ export const en = {
     devMode: 'Developer Mode',
     devModeDesc: 'Show debug information and developer tools',
     textContextEnabled: 'Windows text focus and on-screen keyboard assistance',
+    clipboardFilesEnabled: 'Copy files between the host and clients',
+    clipboardFilesEnabledDesc: 'Files and folders copied on the host can be pasted in the streaming client\'s file manager, and files copied on the client can be pasted on the host. Files also get a "Send to Sunshine client" context menu entry. Files travel only when pasted, and the host offers only files you can read. Needs a client that supports it; currently Moonlight for Windows.',
     textContextEnabledDesc: 'Detect focused editable controls during streaming to support the on-screen keyboard and caret positioning. Disable this optional observer if it affects system performance. Ordinary remote keyboard input is unchanged.',
     clipboardSyncEnabled: 'Clipboard sync',
     clipboardSyncEnabledDesc: 'Sync the Windows clipboard with the streaming client. Turn this off if it conflicts with another clipboard manager, such as WeChat Input Method.',

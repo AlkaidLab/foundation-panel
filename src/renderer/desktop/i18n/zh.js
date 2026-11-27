@@ -298,6 +298,8 @@ export const zh = {
     devMode: '开发者模式',
     devModeDesc: '显示调试信息和开发者工具',
     textContextEnabled: 'Windows 文本焦点与软键盘辅助',
+    clipboardFilesEnabled: '在主机和串流客户端之间复制文件',
+    clipboardFilesEnabledDesc: '在主机上复制文件或文件夹后，可以在串流客户端的资源管理器里直接粘贴；在客户端复制的文件也能在主机上粘贴。文件右键菜单里还有「发送到 Sunshine 客户端」。文件在粘贴时才传输，主机只会提供你自己能读取的文件。需要客户端支持（目前为 Windows 版 Moonlight）。',
     textContextEnabledDesc: '串流期间识别获得焦点的可编辑控件，用于软键盘自动弹出和光标定位。若影响系统性能，可以关闭；普通远程键盘输入不受影响。',
     clipboardSyncEnabled: '剪贴板同步',
     clipboardSyncEnabledDesc: '同步 Windows 剪贴板与串流客户端。若与微信输入法等其他剪贴板管理工具冲突，请关闭。',

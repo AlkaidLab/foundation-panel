@@ -1,6 +1,10 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// `#[implement]` (file_transfer::inbound_win) expands to paths under `windows_core`.
+#[cfg(target_os = "windows")]
+extern crate wv2_windows_core as windows_core;
+
 mod app;
 mod bat_runner;
 mod build_identity;
