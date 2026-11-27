@@ -824,6 +824,7 @@ fn initialize_tray_locale() {
         .and_then(notifications::pairing_code_for)
         .unwrap_or_else(|| normalize_tray_locale(&locale));
     *NOTIFICATION_LOCALE.lock().unwrap() = Some(notification_locale);
+    crate::proxy_server::set_panel_locale(&locale);
     *CURRENT_LOCALE.lock().unwrap() = Some(locale);
 }
 
@@ -1380,14 +1381,17 @@ fn init_sunshine_user_mode_state<R: Runtime + 'static>(app: &AppHandle<R>) {
 }
 
 fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64, String) {
-    let locale = normalize_tray_locale(locale).to_string();
+    let normalized = normalize_tray_locale(locale);
     let (revision, changed) = {
         let mut current_locale = CURRENT_LOCALE.lock().unwrap();
+        // 语言 cookie 保存面板原始语言（WebUI 按完整语言码解析界面语言），托盘文案继续使用规范化语言；
+        // 与托盘状态同处一个临界区更新，避免并发切换时 cookie 与托盘语言错序
+        crate::proxy_server::set_panel_locale(locale);
         let revision = next_locale_change_revision();
-        let changed = current_locale.as_deref() != Some(locale.as_str());
-        *current_locale = Some(locale.clone());
+        let changed = current_locale.as_deref() != Some(normalized);
+        *current_locale = Some(normalized.to_string());
         // the tray menu's own choice (Chinese, English, Japanese) is also the language of the notification from now on
-        *NOTIFICATION_LOCALE.lock().unwrap() = Some(normalize_tray_locale(&locale));
+        *NOTIFICATION_LOCALE.lock().unwrap() = Some(normalized);
         (revision, changed)
     };
 
@@ -1395,7 +1399,7 @@ fn apply_next_tray_locale<R: Runtime>(app: &AppHandle<R>, locale: &str) -> (u64,
         rebuild_tray_menu(app);
     }
 
-    (revision, locale)
+    (revision, normalized.to_string())
 }
 
 /// 从托盘菜单切换语言

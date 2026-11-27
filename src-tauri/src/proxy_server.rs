@@ -22,6 +22,21 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 static SUNSHINE_TARGET: LazyLock<Arc<RwLock<String>>> =
     LazyLock::new(|| Arc::new(RwLock::new(String::from("https://localhost:47990"))));
 
+/// 面板当前语言。代理把它写进 WebUI 文档的 cookie（sunshine_panel_locale），让 GUI 内嵌页面按面板语言
+/// 解析界面语言，而不是按 WebView2 的浏览器语言（部分机器上两者不一致，见 WebUI config/i18n.js 的回退链）。
+static PANEL_LOCALE: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
+
+/// 托盘/前端语言变化的唯一入口（tray.rs）调用它，保持代理上的语言 cookie 与面板一致。
+pub fn set_panel_locale(locale: &str) {
+    if let Ok(mut current) = PANEL_LOCALE.write() {
+        *current = Some(locale.to_string());
+    }
+}
+
+fn current_panel_locale() -> Option<String> {
+    PANEL_LOCALE.read().ok().and_then(|locale| locale.clone())
+}
+
 #[cfg(test)]
 static TEST_REFRESH_TARGET: LazyLock<std::sync::Mutex<Option<String>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
@@ -1932,6 +1947,13 @@ async fn fetch_and_proxy(
         res = res.header("Cache-Control", "no-cache, no-store, must-revalidate");
         res = res.header("Pragma", "no-cache");
         res = res.header("Expires", "0");
+        // 内嵌页面按面板语言解析界面语言（cookie 供 WebUI 的 i18n 回退链读取）
+        if let Some(locale) = current_panel_locale() {
+            res = res.header(
+                axum::http::header::SET_COOKIE,
+                format!("sunshine_panel_locale={locale}; Path=/; SameSite=Lax"),
+            );
+        }
     }
 
     Ok(res.body(final_body)?)
