@@ -340,20 +340,6 @@ pub(super) fn show_core_notification_if_new<R: Runtime>(
     }
 }
 
-/// Copied files that cannot be offered to the client, with the reason.
-pub(super) fn show_file_transfer_refused<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    if !is_enabled() {
-        return;
-    }
-    let content = NotificationContent {
-        title: title.to_string(),
-        body: body.to_string(),
-    };
-    if let Err(error) = show(app, content, NotifyAction::OpenMain, is_enabled, None) {
-        warn!("{}", error);
-    }
-}
-
 fn forget_notification(key: &Option<NotificationKey>) {
     if let Some(key) = key {
         let mut last = LAST_NOTIFICATION.lock().unwrap();

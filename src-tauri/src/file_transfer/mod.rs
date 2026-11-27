@@ -66,20 +66,6 @@ pub fn parse_send_to_client_args(args: &[String]) -> Vec<String> {
 }
 
 const NO_RUNNING_SESSION: &str = "没有正在串流的客户端连接";
-const FROM_WSL: &str = "WSL 里的文件不能直接复制到串流客户端";
-
-/// True for a path inside WSL (`\\wsl.localhost\<distro>\...`, `\\wsl$\...`).
-/// A WSL distribution belongs to the user that registered it: Sunshine runs as
-/// a system service and does not see it even while impersonating that user, so
-/// it would refuse the files as not found and the client would get nothing.
-pub fn outside_sunshine_reach(path: &str) -> bool {
-    let p = path.replace('/', "\\").to_ascii_lowercase();
-    let p = p
-        .strip_prefix("\\\\?\\unc\\")
-        .map(|rest| format!("\\\\{rest}"))
-        .unwrap_or(p);
-    p.starts_with("\\\\wsl.localhost\\") || p.starts_with("\\\\wsl$\\")
-}
 
 pub fn dispatch_cli_send(paths: Vec<String>) {
     if paths.is_empty() {
@@ -142,11 +128,6 @@ async fn offer_paths(paths: Vec<String>, offer_type: &str) -> Result<String, Str
     if running_sessions == 0 {
         return Err(NO_RUNNING_SESSION.to_string());
     }
-    // Checked only with a client streaming: copying WSL files is ordinary otherwise.
-    if paths.iter().any(|p| outside_sunshine_reach(p)) {
-        crate::tray::notify_file_transfer_from_wsl();
-        return Err(FROM_WSL.to_string());
-    }
 
     let offer = register_offer(&paths, offer_type).await?;
     let entries = offer
@@ -204,28 +185,6 @@ async fn register_offer(paths: &[String], offer_type: &str) -> Result<serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn paths_inside_wsl_are_out_of_sunshines_reach() {
-        for path in [
-            r"\\wsl.localhost\Ubuntu\home\me\a.sh",
-            r"\\WSL.LOCALHOST\Ubuntu\home",
-            r"\\wsl$\Debian\etc\hosts",
-            r"\\?\UNC\wsl.localhost\Ubuntu\home\me\a.sh",
-            "//wsl.localhost/Ubuntu/home/me/a.sh",
-        ] {
-            assert!(outside_sunshine_reach(path), "{path}");
-        }
-        for path in [
-            r"C:\Users\me\Desktop\a.txt",
-            r"\\nas\share\a.txt",
-            r"\\wsl.localhostile\x",
-            r"D:\wsl.localhost\a.txt",
-            r"\\?\C:\long\path.txt",
-        ] {
-            assert!(!outside_sunshine_reach(path), "{path}");
-        }
-    }
 
     #[test]
     fn send_to_client_args_take_everything_after_the_flag() {
