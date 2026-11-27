@@ -16,8 +16,11 @@ use std::collections::HashSet;
 pub const MAX_ENTRIES: usize = 10000;
 /// Longest relative path in UTF-16 units: FILEDESCRIPTORW holds MAX_PATH.
 pub const MAX_PATH_UNITS: usize = 259;
-/// Size of one chunk request (Sunshine's file_transfer_pull::kMaxChunk).
-pub const CHUNK: u64 = 4 * 1024 * 1024;
+/// Size of one chunk request (at most Sunshine's file_transfer_pull::kMaxChunk,
+/// 4 MiB). Sunshine gives the client 30 s plus the chunk at 64 KiB/s to post
+/// it, 46 s for 1 MiB; a slow uplink then still finishes a chunk well inside
+/// that (8.4 s at 1 Mbit/s), and less is lost when one has to be asked again.
+pub const CHUNK: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -254,6 +257,17 @@ mod tests {
     use super::*;
 
     const ID: &str = "0b5e3a8c1d2f4a6b8c9d0e1f2a3b4c5d0b5e3a8c1d2f4a6b8c9d0e1f2a3b4c5d";
+
+    #[test]
+    fn a_chunk_fits_the_ticket_and_the_read_timeout() {
+        // Sunshine: at most 4 MiB, a ticket lasts 30 s + the chunk at 64 KiB/s.
+        assert!(CHUNK <= 4 * 1024 * 1024);
+        let ticket_secs = 30 + CHUNK.div_ceil(64 * 1024);
+        // create_transfer_https_client waits 75 s for the answer to start.
+        assert!(ticket_secs + 10 <= 75, "ticket {ticket_secs} s");
+        // 1 Mbit/s up (125000 bytes/s) finishes a chunk well before the ticket ends.
+        assert!(CHUNK / 125_000 + 1 < ticket_secs - 30);
+    }
 
     fn offer(files: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"id": ID, "type": "clipboard", "files": files}))

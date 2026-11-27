@@ -1259,7 +1259,9 @@ pub fn create_https_client() -> Result<reqwest::Client, String> {
 }
 
 /// For a file chunk the host pastes from a client: Sunshine answers once the
-/// client has sent the chunk, which can take up to its 30 s ticket timeout.
+/// client has sent the chunk, which can take up to its ticket deadline (46 s
+/// for a 1 MiB chunk, see file_transfer::inbound::CHUNK), with nothing on
+/// the wire meanwhile.
 pub fn create_transfer_https_client() -> Result<reqwest::Client, String> {
     let token = read_local_auth_token()?;
     let mut headers = reqwest::header::HeaderMap::new();
@@ -1272,7 +1274,7 @@ pub fn create_transfer_https_client() -> Result<reqwest::Client, String> {
         .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_millis(3000))
-        .read_timeout(std::time::Duration::from_secs(45))
+        .read_timeout(std::time::Duration::from_secs(75))
         .timeout(std::time::Duration::from_secs(90))
         .default_headers(headers)
         .build()
