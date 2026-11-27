@@ -263,8 +263,12 @@ mod tests {
         // Sunshine: at most 4 MiB, a ticket lasts 30 s + the chunk at 64 KiB/s.
         assert!(CHUNK <= 4 * 1024 * 1024);
         let ticket_secs = 30 + CHUNK.div_ceil(64 * 1024);
-        // create_transfer_https_client waits 75 s for the answer to start.
-        assert!(ticket_secs + 10 <= 75, "ticket {ticket_secs} s");
+        // The transfer client waits this long for the answer to start.
+        let read_secs = crate::sunshine::TRANSFER_READ_TIMEOUT.as_secs();
+        assert!(
+            ticket_secs + 10 <= read_secs,
+            "ticket {ticket_secs} s, read {read_secs} s"
+        );
         // 1 Mbit/s up (125000 bytes/s) finishes a chunk well before the ticket ends.
         assert!(CHUNK / 125_000 + 1 < ticket_secs - 30);
     }

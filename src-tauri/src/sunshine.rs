@@ -1271,6 +1271,9 @@ pub fn create_https_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
 }
 
+/// How long the transfer client waits for the answer to start.
+pub const TRANSFER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
+
 /// For a file chunk the host pastes from a client: Sunshine answers once the
 /// client has sent the chunk, which can take up to its ticket deadline (46 s
 /// for a 1 MiB chunk, see file_transfer::inbound::CHUNK), with nothing on
@@ -1287,7 +1290,7 @@ pub fn create_transfer_https_client() -> Result<reqwest::Client, String> {
         .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_millis(3000))
-        .read_timeout(std::time::Duration::from_secs(75))
+        .read_timeout(TRANSFER_READ_TIMEOUT)
         .timeout(std::time::Duration::from_secs(90))
         .default_headers(headers)
         .build()
