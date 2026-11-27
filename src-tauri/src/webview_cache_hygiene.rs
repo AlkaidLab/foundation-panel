@@ -88,8 +88,14 @@ pub fn sweep_stale_http_cache(root: &Path, epoch: &str) -> SweepResult {
 
 /// Called in the setup hook before any window exists.
 pub fn clear_stale_cache_at_startup(app: &tauri::AppHandle) {
-    let Some(root) = webview_user_data_root(app) else { return };
-    let Some(epoch) = epoch_of_current_panel() else { return };
+    let Some(root) = webview_user_data_root(app) else {
+        warn!("[webview-cache] the app local data dir is unknown: the cache of a previous panel build is left as it is");
+        return;
+    };
+    let Some(epoch) = epoch_of_current_panel() else {
+        warn!("[webview-cache] the size or the modification time of the panel executable could not be read: the cache of a previous panel build is left as it is");
+        return;
+    };
     let result = sweep_stale_http_cache(&root, &epoch);
     if result.skipped {
         return;
