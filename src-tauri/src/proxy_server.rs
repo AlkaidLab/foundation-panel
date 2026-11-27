@@ -1703,7 +1703,9 @@ async fn send_request(
         _ => client.get(url),
     };
 
-    // 复制请求头（排除特殊头部）
+    // 复制请求头（排除特殊头部）。accept-encoding 也不转发：主机按它选择压缩副本，而只有 reqwest 自己声明的
+    // 编码是代理一定能解码的（浏览器的列表可能带 zstd 这类代理不认的编码）；不带时 reqwest 填上它支持的列表，
+    // Range 请求则不声明压缩。
     for (key, value) in headers.iter() {
         let key_str = key.as_str();
         if !matches!(
@@ -1713,6 +1715,7 @@ async fn send_request(
                 | "content-length"
                 | "transfer-encoding"
                 | "x-sunshine-local-token"
+                | "accept-encoding"
         ) {
             if let Ok(value_str) = value.to_str() {
                 req_builder = req_builder.header(key_str, value_str);
@@ -2367,6 +2370,71 @@ mod tests {
         let request = request_received.await.unwrap().to_ascii_lowercase();
         assert!(request.contains("x-sunshine-local-token: expected-value"));
         assert!(!request.contains("attacker-value"));
+    }
+
+    #[tokio::test]
+    async fn brotli_from_the_host_is_decoded_and_the_browser_accept_encoding_is_not_forwarded() {
+        // The host answers a request that accepts br with the Brotli copy of an asset. The proxy must hand the
+        // WebView plain bytes (reqwest decodes them) and must ask the host only for what reqwest can decode.
+        const BROTLI: &[u8] = &[
+            0x8b, 0x0e, 0x80, 0x65, 0x78, 0x70, 0x6f, 0x72, 0x74, 0x20, 0x63, 0x6f, 0x6e, 0x73, 0x74, 0x20, 0x68, 0x65, 0x6c,
+            0x6c, 0x6f, 0x20, 0x3d, 0x20, 0x27, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x27, 0x3b, 0x0a, 0x03,
+        ];
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_seen, request_received) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = request_seen.send(String::from_utf8_lossy(&request).into_owned());
+            let mut response = Vec::new();
+            response.extend_from_slice(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Encoding: br\r\nVary: Accept-Encoding\r\nContent-Length: 34\r\nConnection: close\r\n\r\n",
+            );
+            response.extend_from_slice(BROTLI);
+            stream.write_all(&response).await.unwrap();
+        });
+
+        let mut headers = axum::http::HeaderMap::new();
+        // what the WebView sends
+        headers.insert(
+            "Accept-Encoding",
+            axum::http::HeaderValue::from_static("gzip, deflate, br, zstd"),
+        );
+        let client = build_http_client(DEFAULT_PROXY_TIMEOUT_SECS);
+        let response = send_request(
+            &client,
+            &format!("http://{address}/assets/locale-zh-1a2b3c4d.js"),
+            &axum::http::Method::GET,
+            &headers,
+            &Bytes::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let request = request_received.await.unwrap().to_ascii_lowercase();
+        let accept_encoding = request
+            .lines()
+            .find(|line| line.starts_with("accept-encoding:"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(accept_encoding.contains("br"), "the host is asked for its Brotli copy: {accept_encoding}");
+        assert!(!accept_encoding.contains("zstd"), "an encoding reqwest cannot decode is never promised to the host: {accept_encoding}");
+        assert!(response.headers().get(reqwest::header::CONTENT_ENCODING).is_none());
+        let body = response.text().await.unwrap();
+        assert_eq!(body, "export const hello = 'world';\n");
     }
 
     #[tokio::test]
