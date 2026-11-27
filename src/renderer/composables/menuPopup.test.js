@@ -103,7 +103,7 @@ test('the transport of the menu window: events in, commands out, and a failing c
   assert.deepEqual(opened, [{ token: 5, items: [] }, ['close', { token: 5 }]])
   await t.ready(5, { w: 240, h: 400 }); await t.pick(5, [2, 0]); await t.cancel(5); await t.loaded()
   assert.deepEqual(n.calls, [
-    ['ctx_popup_ready', { token: 5, width: 240, height: 400 }], ['ctx_popup_pick', { token: 5, path: [2, 0] }], ['ctx_popup_cancel', { token: 5 }], ['ctx_popup_loaded', undefined],
+    ['ctx_popup_ready', { token: 5, width: 240, height: 400, ratio: 0 }], ['ctx_popup_pick', { token: 5, path: [2, 0] }], ['ctx_popup_cancel', { token: 5 }], ['ctx_popup_loaded', undefined],
   ])
   const failing = popupTransport({ invoke: async () => { throw new Error('gone') }, listen: n.listen })
   await failing.pick(1, [0]); await failing.ready(1, { w: 1, h: 1 })

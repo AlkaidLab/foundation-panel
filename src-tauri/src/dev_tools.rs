@@ -111,14 +111,14 @@ pub fn dev_set_cold_cloak(on: Option<bool>) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn real_dpi(window: &tauri::WebviewWindow) -> u32 {
+pub(crate) fn real_dpi(window: &tauri::WebviewWindow) -> u32 {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     window.hwnd().map(|hwnd| unsafe { GetDpiForWindow(HWND(hwnd.0)) }).unwrap_or(96)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn real_dpi(_window: &tauri::WebviewWindow) -> u32 {
+pub(crate) fn real_dpi(_window: &tauri::WebviewWindow) -> u32 {
     96
 }
 

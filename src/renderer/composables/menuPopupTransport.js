@@ -6,7 +6,8 @@ export function popupTransport({ invoke, listen }) {
   return {
     onOpen: (cb) => listen('ctx-popup:open', (event) => cb(event.payload)),
     onClose: (cb) => listen('ctx-popup:close', (event) => cb(event.payload)),
-    ready: (token, size) => quiet(invoke('ctx_popup_ready', { token, width: size.w, height: size.h })),
+    // the page draws its css at its own device pixel ratio: the host converts the reported size at the number the page sees, not at the window's dpi (it can lag)
+    ready: (token, size) => quiet(invoke('ctx_popup_ready', { token, width: size.w, height: size.h, ratio: globalThis.devicePixelRatio ?? 0 })),
     pick: (token, path) => quiet(invoke('ctx_popup_pick', { token, path })),
     cancel: (token) => quiet(invoke('ctx_popup_cancel', { token })),
     loaded: () => quiet(invoke('ctx_popup_loaded')),
@@ -23,7 +24,7 @@ export function trayTransport({ invoke, listen }) {
     onOpen: (cb) => listen('tray-popup:open', (event) => cb(event.payload)),
     onState: (cb) => listen('tray-popup:state', (event) => cb(event.payload)),
     onClose: (cb) => listen('ctx-popup:close', (event) => cb(event.payload)),
-    ready: (token, size) => quiet(invoke('ctx_popup_ready', { token, width: size.w, height: size.h })),
+    ready: (token, size) => quiet(invoke('ctx_popup_ready', { token, width: size.w, height: size.h, ratio: globalThis.devicePixelRatio ?? 0 })),
     act: (token, id) => quiet(invoke('tray_popup_act', { token, id })),
     // a slider was released: unlike the others this one's answer matters (the page shows the busy state and the failure), so the rejection is not swallowed
     set: (token, key, value) => invoke('tray_popup_set', { token, key, value }),

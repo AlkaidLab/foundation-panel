@@ -50,7 +50,7 @@ test('the commands and events: both sides name the same ones, and main.rs regist
   assert.equal(t.onOpen(() => {}), 'tray-popup:open'); assert.equal(t.onState(() => {}), 'tray-popup:state'); assert.equal(t.onClose(() => {}), 'ctx-popup:close')
   for (const ev of ['tray-popup:open', 'tray-popup:state', 'ctx-popup:close']) assert.ok(ctxRs.includes(`"${ev}"`), ev)
   t.ready(7, { w: 304, h: 400 }); t.act(7, 'about'); t.cancel(7)
-  assert.deepEqual(calls, [['ctx_popup_ready', { token: 7, width: 304, height: 400 }], ['tray_popup_act', { token: 7, id: 'about' }], ['ctx_popup_cancel', { token: 7 }]])
+  assert.deepEqual(calls, [['ctx_popup_ready', { token: 7, width: 304, height: 400, ratio: 0 }], ['tray_popup_act', { token: 7, id: 'about' }], ['ctx_popup_cancel', { token: 7 }]])
 })
 
 test('the menu window page shows both menus; the tray page does not tell the host the window loaded twice', () => {

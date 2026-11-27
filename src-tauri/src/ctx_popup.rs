@@ -416,10 +416,27 @@ fn monitors_of(owner: &WebviewWindow) -> Vec<MonitorInfo> {
 /// not what the next page of the menu is placed in. The window's own scale is the one its page is drawn at.
 fn monitor_now(window: &WebviewWindow) -> Option<MonitorInfo> {
     let mut info = info_of(&window.current_monitor().ok().flatten()?);
+    // the scale the page is drawn at is the window's own dpi: the accessibility text size scales the dpi a per-monitor window gets beyond the monitor's own scale, and the
+    // system's number for the window is read here, not the framework's cached factor (it can miss a change made while the window is hidden)
+    #[cfg(target_os = "windows")]
+    {
+        info.scale = sane_scale(f64::from(crate::dev_tools::real_dpi(window)) / 96.0);
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Ok(scale) = window.scale_factor() {
         info.scale = sane_scale(scale);
     }
     Some(info)
+}
+
+/// The rect the cloaked window waits in while the page lays the menu out: at the monitor's work area, as large as the menu's viewport (its width and the room for its height, plus the padding that keeps the shadow) allows.
+fn measure_rect(work: Rect, scale: f64, width_css: f64, room_h: f64) -> Rect {
+    Rect::new(
+        work.x,
+        work.y,
+        css_to_physical(width_css, scale).min(work.w),
+        css_to_physical(room_h + 2.0 * PAD_CSS, scale).min(work.h),
+    )
 }
 
 /// Opens the menu. Resolves when the window is shown (the menu is on screen); the choice comes later as the event `ctx-popup:result`. An error means no window was shown: the page draws the menu itself.
@@ -447,21 +464,27 @@ pub async fn ctx_popup_open(owner: WebviewWindow, request: OpenRequest) -> Resul
         .ok_or("no position for the menu")?;
     let monitors = monitors_of(&owner);
     let monitor = pick_monitor(&monitors, anchor).map(|i| monitors[i]).ok_or("no monitor")?;
-    let (_, room_h) = room_css(monitor.work, monitor.scale, MARGIN_CSS);
+    let (_, mut room_h) = room_css(monitor.work, monitor.scale, MARGIN_CSS);
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     *state() = Some(Open { token: request.token, tray: None, owner: owner.label().to_string(), anchor, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: None });
 
-    // the window waits on the monitor of the pointer, as large as the work area allows, cloaked: the page lays the menu out in a window that renders, at the scale it will have
-    let measure = Rect::new(
-        monitor.work.x,
-        monitor.work.y,
-        css_to_physical(MEASURE_WIDTH_CSS, monitor.scale).min(monitor.work.w),
-        css_to_physical(room_h + 2.0 * PAD_CSS, monitor.scale).min(monitor.work.h),
-    );
     #[cfg(target_os = "windows")]
     crate::windows::set_cloak(&popup, true);
-    apply_rect(&popup, measure);
+    apply_rect(&popup, measure_rect(monitor.work, monitor.scale, MEASURE_WIDTH_CSS, room_h));
+    // the move can change the DPI the window is given: the accessibility text size scales the DPI of a per-monitor window beyond the monitor's own scale, and the page is drawn at the DPI the
+    // window has now, so the viewport and the room for the menu are computed again at the scale read from the window
+    if let Some(now) = monitor_now(&popup) {
+        if now.scale != monitor.scale {
+            info!("[ctxpop] the window sits at scale {} on a monitor at {}: the viewport and the room are computed again", now.scale, monitor.scale);
+            let (_, now_room) = room_css(now.work, now.scale, MARGIN_CSS);
+            room_h = now_room;
+            if let Some(open) = state().as_mut().filter(|o| o.token == request.token) {
+                open.monitor = now;
+            }
+            apply_rect(&popup, measure_rect(now.work, now.scale, MEASURE_WIDTH_CSS, now_room));
+        }
+    }
     let _ = popup.show();
 
     app.emit_to(
@@ -519,7 +542,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     let monitor = infos[index];
     let bounds = Rect::new(monitors[index].position().x, monitors[index].position().y, monitors[index].size().width as i32, monitors[index].size().height as i32);
     let edge = taskbar_edge(bounds, monitor.work, icon);
-    let (_, room_h) = room_css(monitor.work, monitor.scale, TRAY_MARGIN_CSS);
+    let (_, mut room_h) = room_css(monitor.work, monitor.scale, TRAY_MARGIN_CSS);
 
     let token = TRAY_TOKEN.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -528,16 +551,22 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     crate::tray::arm_release_suppression();
     *state() = Some(Open { token, tray: Some(TrayAnchor { icon, edge }), owner: String::new(), anchor: centre, monitor, ready: Some(tx), shown: false, surface: None, armed: false, shown_at: None, focus_grace_until: Some(Instant::now() + OPEN_FOCUS_GRACE) });
 
-    // the window waits on the icon's monitor, as large as the work area allows and cloaked, while the page lays the card out at the scale it will have
-    let measure = Rect::new(
-        monitor.work.x,
-        monitor.work.y,
-        css_to_physical(variant.width_css() + 2.0 * PAD_CSS, monitor.scale).min(monitor.work.w),
-        css_to_physical(room_h + 2.0 * PAD_CSS, monitor.scale).min(monitor.work.h),
-    );
     #[cfg(target_os = "windows")]
     crate::windows::set_cloak(&popup, true);
-    apply_rect(&popup, measure);
+    apply_rect(&popup, measure_rect(monitor.work, monitor.scale, variant.width_css() + 2.0 * PAD_CSS, room_h));
+    // the move can change the DPI the window is given: the accessibility text size scales the DPI of a per-monitor window beyond the monitor's own scale, and the page is drawn at the DPI the
+    // window has now, so the viewport and the room for the card are computed again at the scale read from the window
+    if let Some(now) = monitor_now(&popup) {
+        if now.scale != monitor.scale {
+            info!("[ctxpop] the window sits at scale {} on a monitor at {}: the viewport and the room are computed again", now.scale, monitor.scale);
+            let (_, now_room) = room_css(now.work, now.scale, TRAY_MARGIN_CSS);
+            room_h = now_room;
+            if let Some(open) = state().as_mut().filter(|o| o.token == token) {
+                open.monitor = now;
+            }
+            apply_rect(&popup, measure_rect(now.work, now.scale, variant.width_css() + 2.0 * PAD_CSS, now_room));
+        }
+    }
     let _ = popup.show();
 
     app.emit_to(
@@ -593,7 +622,7 @@ pub fn tray_menu_open() -> bool {
 
 /// The page drew the menu (or drew another level of it) and measured it: size and place the window, show it.
 #[tauri::command]
-pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64) -> Result<(), String> {
+pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64, ratio: Option<f64>) -> Result<(), String> {
     let popup = app.get_webview_window(POPUP_LABEL).ok_or("the menu window does not exist")?;
     let (anchor, opened, first, tx, tray) = {
         let mut guard = state();
@@ -607,20 +636,23 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
     // the page answers again for every page of the menu, and the tray's own sliders change the display's mode and scale while it is on: the work area and the scale
     // are read again, so the card is sized at the scale it is drawn at and placed in the work area as it is now
     let monitor = monitor_now(&popup).unwrap_or(opened);
+    // the page draws its css at its own device pixel ratio, and that ratio is the one its size converts at: it can differ from the window's dpi while the window has not seen
+    // a change yet, and the size of the menu cannot be off, so the page's number is the one used and the window's and the monitor's are only the fallback
+    let scale = match ratio { Some(r) if r > 0.0 => sane_scale(r), _ => monitor.scale };
     if let Some(open) = state().as_mut().filter(|o| o.token == token) {
         open.monitor = monitor;
     }
-    let size = (css_to_physical(width.max(1.0), monitor.scale), css_to_physical(height.max(1.0), monitor.scale));
+    let size = (css_to_physical(width.max(1.0), scale), css_to_physical(height.max(1.0), scale));
     let placed = match tray {
         // the tray's menu: beside the icon, away from the taskbar; a page of another height keeps the edge at the taskbar
-        Some(t) => place_beside_icon(t.icon, size, monitor.work, t.edge, css_to_physical(TRAY_MARGIN_CSS, monitor.scale)),
-        None => place_surface(anchor, size, monitor.work, css_to_physical(MARGIN_CSS, monitor.scale)),
+        Some(t) => place_beside_icon(t.icon, size, monitor.work, t.edge, css_to_physical(TRAY_MARGIN_CSS, scale)),
+        None => place_surface(anchor, size, monitor.work, css_to_physical(MARGIN_CSS, scale)),
     };
     if let Some(open) = state().as_mut().filter(|o| o.token == token) {
         open.surface = Some(placed.rect);
     }
-    let window = placed.rect.grow(css_to_physical(PAD_CSS, monitor.scale));
-    debug!("[ctxpop] menu {}x{} css at {:?} -> surface {:?} window {:?} (scale {})", width, height, anchor, placed.rect, window, monitor.scale);
+    let window = placed.rect.grow(css_to_physical(PAD_CSS, scale));
+    info!("[ctxpop] menu {}x{} css (page {}, window {}, monitor {}) -> surface {:?} window {:?}", width, height, ratio.unwrap_or(0.0), crate::dev_tools::real_dpi(&popup), monitor.scale, placed.rect, window);
     apply_rect(&popup, window);
     if first && !SELFTEST.load(Ordering::SeqCst) {
         #[cfg(target_os = "windows")]
@@ -899,5 +931,33 @@ mod tests {
         assert!(ready.contains("monitor_now(&popup).unwrap_or(opened)"));
         assert!(ready.contains("open.monitor = monitor"));
         assert!(ready.find("monitor_now(&popup)").unwrap() < ready.find("css_to_physical(width").unwrap(), "the size is converted at the scale read now");
+    }
+
+    #[test]
+    fn the_opening_lays_out_at_the_scale_the_window_has_after_the_move() {
+        let src = include_str!("ctx_popup.rs");
+        let bodies = [
+            ("ctx_popup_open", &src[src.find("pub async fn ctx_popup_open").unwrap()..src.find("// ---- the tray's menu").unwrap()]),
+            ("open_tray", &src[src.find("pub async fn open_tray").unwrap()..src.find("/// The tray menu on screen").unwrap()]),
+        ];
+        // the accessibility text size scales the DPI a per-monitor window is given beyond the monitor's own scale: the viewport and the room are computed again at the scale read from the window
+        for (name, body) in bodies {
+            let moved = body.find("apply_rect(&popup, measure_rect(").unwrap();
+            let read = body.find("if let Some(now) = monitor_now(&popup)").unwrap();
+            assert!(read > moved, "{name} reads the scale from the window after it is on the monitor");
+            assert!(body.contains("room_h = now_room"), "{name} gives the page the room at the scale it is drawn at");
+            assert!(body.contains("open.monitor = now"), "{name} keeps the read scale as the fallback for ready");
+        }
+    }
+
+    #[test]
+    fn the_size_is_converted_at_the_scale_the_page_reports() {
+        let src = include_str!("ctx_popup.rs");
+        let ready = &src[src.find("pub async fn ctx_popup_ready").unwrap()..src.find("fn apply_rect").unwrap()];
+        // the page draws its css at its own device pixel ratio: the size is converted at the number the page reports, the window's and the monitor's are the fallback
+        assert!(ready.contains("let scale = match ratio { Some(r) if r > 0.0 => sane_scale(r), _ => monitor.scale }"));
+        assert!(ready.contains("css_to_physical(width.max(1.0), scale)"));
+        // the scale of the window is the system's dpi for it, not a cached factor that can miss a change made while the window is hidden
+        assert!(src.contains("info.scale = sane_scale(f64::from(crate::dev_tools::real_dpi(window)) / 96.0);"));
     }
 }
