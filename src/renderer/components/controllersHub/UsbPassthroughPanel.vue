@@ -1,7 +1,6 @@
 <template>
   <div class="m-usb">
     <UsbForwardingSettings :transport-ready="status.ready && !statusProbeFailed" />
-    <UsbWiredStreamingSettings />
     <UsbTransportPanel :transport="transport" />
     <MSection>
       <MGroup>
@@ -42,7 +41,6 @@ import { useI18n } from '../../desktop/i18n/index.js'
 import { useUsbTransport } from '../../composables/useUsbTransport.js'
 import { usbipStatusChannel } from '../../composables/deviceStatusStore.js'
 import UsbForwardingSettings from './UsbForwardingSettings.vue'
-import UsbWiredStreamingSettings from './UsbWiredStreamingSettings.vue'
 import UsbTransportPanel from './UsbTransportPanel.vue'
 
 const { t } = useI18n()
