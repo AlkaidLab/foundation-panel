@@ -402,16 +402,24 @@ pub struct OpenRequest {
     pub ratio: f64,
 }
 
+/// A monitor as the menu places by it: its work area and its scale.
+fn info_of(monitor: &tauri::Monitor) -> MonitorInfo {
+    let w = monitor.work_area();
+    MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(monitor.scale_factor()) }
+}
+
 fn monitors_of(owner: &WebviewWindow) -> Vec<MonitorInfo> {
-    owner
-        .available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| {
-            let w = m.work_area();
-            MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(m.scale_factor()) }
-        })
-        .collect()
+    owner.available_monitors().unwrap_or_default().iter().map(info_of).collect()
+}
+
+/// The monitor the menu window is on, as it is now. The tray's own sliders change the display's mode and scale while the menu is on, so what was read at the opening is
+/// not what the next page of the menu is placed in. The window's own scale is the one its page is drawn at.
+fn monitor_now(window: &WebviewWindow) -> Option<MonitorInfo> {
+    let mut info = info_of(&window.current_monitor().ok().flatten()?);
+    if let Ok(scale) = window.scale_factor() {
+        info.scale = sane_scale(scale);
+    }
+    Some(info)
 }
 
 /// Opens the menu. Resolves when the window is shown (the menu is on screen); the choice comes later as the event `ctx-popup:result`. An error means no window was shown: the page draws the menu itself.
@@ -506,13 +514,7 @@ pub async fn open_tray(app: AppHandle, variant: crate::tray_prefs::Variant, menu
     let icon = target.icon;
     let centre = (icon.x + icon.w / 2, icon.y + icon.h / 2);
     let monitors = popup.available_monitors().map_err(|e| e.to_string())?;
-    let infos: Vec<MonitorInfo> = monitors
-        .iter()
-        .map(|m| {
-            let w = m.work_area();
-            MonitorInfo { work: Rect::new(w.position.x, w.position.y, w.size.width as i32, w.size.height as i32), scale: sane_scale(m.scale_factor()) }
-        })
-        .collect();
+    let infos: Vec<MonitorInfo> = monitors.iter().map(info_of).collect();
     let index = pick_monitor(&infos, centre).ok_or("no monitor")?;
     let monitor = infos[index];
     let bounds = Rect::new(monitors[index].position().x, monitors[index].position().y, monitors[index].size().width as i32, monitors[index].size().height as i32);
@@ -593,7 +595,7 @@ pub fn tray_menu_open() -> bool {
 #[tauri::command]
 pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64) -> Result<(), String> {
     let popup = app.get_webview_window(POPUP_LABEL).ok_or("the menu window does not exist")?;
-    let (anchor, monitor, first, tx, tray) = {
+    let (anchor, opened, first, tx, tray) = {
         let mut guard = state();
         let open = guard.as_mut().filter(|o| o.token == token).ok_or("no such menu")?;
         let first = !open.shown;
@@ -602,6 +604,12 @@ pub async fn ctx_popup_ready(app: AppHandle, token: u64, width: f64, height: f64
         let at = open.surface.map(|r| (r.x, r.y)).unwrap_or(open.anchor);
         (at, open.monitor, first, open.ready.take(), open.tray)
     };
+    // the page answers again for every page of the menu, and the tray's own sliders change the display's mode and scale while it is on: the work area and the scale
+    // are read again, so the card is sized at the scale it is drawn at and placed in the work area as it is now
+    let monitor = monitor_now(&popup).unwrap_or(opened);
+    if let Some(open) = state().as_mut().filter(|o| o.token == token) {
+        open.monitor = monitor;
+    }
     let size = (css_to_physical(width.max(1.0), monitor.scale), css_to_physical(height.max(1.0), monitor.scale));
     let placed = match tray {
         // the tray's menu: beside the icon, away from the taskbar; a page of another height keeps the edge at the taskbar
@@ -881,5 +889,15 @@ mod tests {
         assert!(src.contains("SetWindowPos(HWND(hwnd.0), None, rect.x, rect.y, rect.w.max(1), rect.h.max(1)"));
         // the two-call path is only the fallback
         assert!(apply.contains("if !set_rect_at_once"));
+    }
+
+    #[test]
+    fn the_menu_is_sized_and_placed_by_the_monitor_as_it_is_now() {
+        let src = include_str!("ctx_popup.rs");
+        let ready = &src[src.find("pub async fn ctx_popup_ready").unwrap()..src.find("fn apply_rect").unwrap()];
+        // the tray's own sliders change the display's mode and scale while the menu is on: the opening's reading is only the fallback
+        assert!(ready.contains("monitor_now(&popup).unwrap_or(opened)"));
+        assert!(ready.contains("open.monitor = monitor"));
+        assert!(ready.find("monitor_now(&popup)").unwrap() < ready.find("css_to_physical(width").unwrap(), "the size is converted at the scale read now");
     }
 }
