@@ -377,6 +377,9 @@ struct TrayStrings {
     download_progress: &'static str,
     download_done: &'static str,
     download_failed: &'static str,
+    /// Notification when copied files are in WSL, which Sunshine (a system service) cannot read.
+    file_transfer_wsl_title: &'static str,
+    file_transfer_wsl_body: &'static str,
 }
 
 const ZH_STRINGS: TrayStrings = TrayStrings {
@@ -471,6 +474,8 @@ const ZH_STRINGS: TrayStrings = TrayStrings {
     download_progress: "正在下载更新 {percent}%",
     download_done: "更新已下载，可打开面板安装",
     download_failed: "更新下载失败",
+    file_transfer_wsl_title: "这些文件无法发给客户端",
+    file_transfer_wsl_body: "WSL 里的文件不能直接复制到串流客户端。请先把它们复制到 Windows 的文件夹（比如桌面），再从那里复制。",
 };
 
 const EN_STRINGS: TrayStrings = TrayStrings {
@@ -565,6 +570,8 @@ const EN_STRINGS: TrayStrings = TrayStrings {
     download_progress: "Downloading update {percent}%",
     download_done: "Update downloaded; open the panel to install",
     download_failed: "Update download failed",
+    file_transfer_wsl_title: "These files can't be sent to the client",
+    file_transfer_wsl_body: "Files inside WSL can't be copied to the streaming client. Copy them to a Windows folder, such as the Desktop, and copy them from there.",
 };
 
 const JA_STRINGS: TrayStrings = TrayStrings {
@@ -659,6 +666,8 @@ const JA_STRINGS: TrayStrings = TrayStrings {
     download_progress: "更新をダウンロード中 {percent}%",
     download_done: "更新をダウンロードしました。パネルを開いてインストールできます",
     download_failed: "更新のダウンロードに失敗しました",
+    file_transfer_wsl_title: "これらのファイルはクライアントに送れません",
+    file_transfer_wsl_body: "WSL 内のファイルはストリーミング クライアントに直接コピーできません。いったん Windows のフォルダー（デスクトップなど）にコピーし、そこからコピーしてください。",
 };
 
 fn get_tray_strings() -> &'static TrayStrings {
@@ -678,6 +687,20 @@ pub(crate) fn download_progress_tooltip(percent: u32) -> String {
 
 pub(crate) fn download_done_tooltip() -> &'static str {
     get_tray_strings().download_done
+}
+
+/// Tell the person that copied files inside WSL cannot go to the client (see
+/// file_transfer::outside_sunshine_reach), as a native notification.
+pub(crate) fn notify_file_transfer_from_wsl() {
+    let Some(app) = crate::ctx_popup::app() else {
+        return;
+    };
+    let strings = get_tray_strings();
+    notifications::show_file_transfer_refused(
+        &app,
+        strings.file_transfer_wsl_title,
+        strings.file_transfer_wsl_body,
+    );
 }
 
 pub(crate) fn download_failed_tooltip() -> &'static str {
