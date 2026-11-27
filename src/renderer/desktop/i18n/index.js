@@ -217,6 +217,8 @@ listenTrayLocaleChanged()
 window.addEventListener('storage', (event) => {
   if (event.key !== 'language' || !event.newValue) return
   updateCurrentLocale(event.newValue)
+  // 另一个窗口切换了语言：同步本窗口已打开的内嵌 WebUI 页面（语言 cookie 已由发起窗口写入代理状态）
+  notifyEmbeddedPages(normalizeDesktopLocale(event.newValue))
 })
 
 // 面板语言变化后，让已打开的内嵌 WebUI 页面立即跟随（代理上的语言 cookie 已同步更新）。
