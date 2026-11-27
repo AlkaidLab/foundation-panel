@@ -1239,7 +1239,7 @@ export const zh = {
       clients: ['客户端', '配对客户端，查看已配对的设备'], apps: ['串流应用', '管理可以串流的应用'],
       settings: ['主机设置', '常规、配置文件、网络、安全与登录'], downloads: ['下载客户端', '获取各平台的客户端'],
     },
-    input: { summary: '{count} / {total} 项已就绪', title: '输入与外设', lead: '客户端带来的设备：手柄、键盘、鼠标与触控、USB 设备。', gamepad: '手柄', keyboard: '键盘', mouse: '鼠标与触控', microphone: '麦克风', usb: 'USB 转发', usbNote: 'USB/IP 传输与已挂载设备', gamepadNote: '手柄类型与 DualSense 调校', micNote: '把客户端麦克风传到这台主机' },
+    input: { summary: '{count} / {total} 项已就绪', title: '输入与外设', lead: '客户端带来的设备：手柄、键盘、鼠标与触控、USB 设备。', gamepad: '手柄', keyboard: '键盘', mouse: '鼠标与触控', microphone: '麦克风', usb: 'USB 转发/挂载', usbNote: 'USB/IP 传输与已挂载设备', gamepadNote: '手柄类型与 DualSense 调校', micNote: '把客户端麦克风传到这台主机' },
     audio: { title: '音频', lead: '串流的声音输出与客户端麦克风。', sound: '音频输出' },
     display: { title: '显示与视频', lead: '显示器、分辨率与刷新率、HDR、画质增强、编码与码率、基地虚拟显示器。', output: '显示器', modes: '分辨率与刷新率', encoders: '编码与码率', advanced: '高级', hdr: 'HDR', vdd: '基地虚拟显示器', vddNote: '设备、常驻、无头', quality: '画质增强', qualityNote: 'RTX HDR 与 DLSS NR' },
     system: { title: '系统', lead: '驱动组件、诊断与助手。', network: '网络概览', troubleshooting: '诊断与日志', components: '组件', componentsNote: '虚拟手柄总线、USB/IP 传输等驱动', diagnostics: '诊断工具', diagnosticsNote: '手柄测试、手写笔检测、串流计时器、延迟测试', assistant: '米塔 AI', assistantNote: '帮你排查问题' },

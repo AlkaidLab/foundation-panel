@@ -23,8 +23,8 @@ test('the rail 输入与外设 lists the four pages with their names, and the se
   assert.deepEqual([...input.matchAll(/id: ROUTES\.(\w+),/g)].map((m) => m[1]), ['GAMEPAD', 'WEB_INPUT_KEYBOARD', 'WEB_INPUT_MOUSE', 'USB'])
   assert.deepEqual([...input.matchAll(/text: lines\.(\w+)/g)].map((m) => m[1]), ['gamepad', 'keyboard', 'mouse', 'usb'])
   assert.ok(nav.includes("[ROUTES.WEB_INPUT_KEYBOARD]: 'keyboard', [ROUTES.WEB_INPUT_MOUSE]: 'mouse'"))
-  assert.ok(zh.includes("gamepad: '手柄', keyboard: '键盘', mouse: '鼠标与触控', microphone: '麦克风', usb: 'USB 转发'"))
-  assert.ok(en.includes("gamepad: 'Controller', keyboard: 'Keyboard', mouse: 'Mouse and touch', microphone: 'Microphone', usb: 'USB forwarding'"))
+  assert.ok(zh.includes("gamepad: '手柄', keyboard: '键盘', mouse: '鼠标与触控', microphone: '麦克风', usb: 'USB 转发/挂载'"))
+  assert.ok(en.includes("gamepad: 'Controller', keyboard: 'Keyboard', mouse: 'Mouse and touch', microphone: 'Microphone', usb: 'USB forwarding/mounting'"))
 })
 
 test('the settings entry of the bottom bar lists every page of the five categories and of 个性化 in sections: any page is two presses away', () => {
