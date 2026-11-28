@@ -77,7 +77,13 @@ export function useVddPending({ payload, saved, ready, set, locale, onSaved, onR
     if (json === null) return
     if (!restored) {
       restored = true
-      const kept = pending.entries('vdd')
+      // A leftover entry whose "after" is an empty list and whose saved side is unknown (the
+      // key was never part of a saved snapshot) is not an edit worth keeping: restoring it
+      // wipes the loaded list on every start and shows the entry forever. Such entries are
+      // dropped; real edits keep their values.
+      const entries = pending.entries('vdd')
+      const kept = entries.filter((e) => !(e.before === undefined && Array.isArray(e.after) && e.after.length === 0))
+      if (kept.length !== entries.length) pending.sync('vdd', kept)
       if (kept.length) { for (const e of kept) set(e.key, e.after); return }
     }
     pending.sync('vdd', vddEntries(saved(), payload(), locale()))
