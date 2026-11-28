@@ -99,6 +99,10 @@ fn reveal(window: &WebviewWindow, host: &Host, reason: &str) {
         let _ = window.with_webview(|webview| unsafe {
             let _ = webview.controller().SetIsVisible(true);
         });
+        // Tauri/WebView2 can recalculate the native frame while a cloaked window becomes visible.
+        // Apply the custom-frame cleanup again after that transition so the page's title bar is not
+        // covered by a restored top edge on the first visible frame.
+        keep_fixed_size(window);
         if !test_offscreen() {
             // The shell allowed this process to come to the front (AllowSetForegroundWindow). A plain
             // SetForegroundWindow, not tao's set_focus (which synthesises an Alt key press).
@@ -623,5 +627,18 @@ mod tests {
         assert!(style_change.contains("styleNew &= !NON_CLIENT_EX_STYLE"));
         assert!(mask.contains("WS_EX_WINDOWEDGE"));
         assert!(setup.contains("SetWindowLongPtrW(hwnd, GWL_EXSTYLE"));
+    }
+
+    #[test]
+    fn the_reveal_reapplies_the_custom_frame_cleanup() {
+        let source = include_str!("main.rs");
+        let reveal = source
+            .split("fn reveal")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n\n/// Test switch").next())
+            .expect("reveal");
+        let uncloak = reveal.find("set_cloak(window, false)").expect("uncloak");
+        let cleanup = reveal.find("keep_fixed_size(window);").expect("frame cleanup");
+        assert!(uncloak < cleanup, "the frame is cleaned after the window is visible");
     }
 }
