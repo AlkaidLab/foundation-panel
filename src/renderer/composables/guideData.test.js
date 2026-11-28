@@ -36,6 +36,17 @@ test('a host with an account answers the config, one without sends a page: the a
   assert.equal(down.state.account.exists, false)
 })
 
+test('the session marker decides the account step even when the proxy reads the config as JSON', async () => {
+  const noAccount = make({ '/api/auth/session': { authenticated: false, setup_required: true }, '/api/config': { version: '1', platform: 'windows' } })
+  await noAccount.probeAccount()
+  assert.equal(noAccount.state.account.exists, false)
+  assert.ok(buildGuideSteps({ skip: noAccount.state.account.exists ? ['account'] : [] }).some((s) => s.id === 'account'))
+
+  const local = make({ '/api/auth/session': { authenticated: true, local: true, username: 'sunshine', setup_required: false } })
+  await local.probeAccount()
+  assert.equal(local.state.account.exists, true)
+})
+
 test('creating the account posts the credentials and the guide goes on: this computer needs no sign-in', async () => {
   const calls = []
   const data = make({ '/api/password': { status: 'true' } }, {}, calls)
@@ -152,6 +163,13 @@ test('a host that has no account yet sends the page for creating it: the first r
   assert.equal(await ask(), true)
   assert.equal(await ask({ dismissed: true }), false)
   assert.equal(await ask({ progress: { finished: true } }), false)
+})
+
+test('a host without an account opens the guide from the API setup_required marker', async () => {
+  const unauthorized = host({ '/api/config': () => new Response(JSON.stringify({ status: false, setup_required: true }), { status: 401, headers: { 'content-type': 'application/json' } }) })
+  const ask = (extra = {}) => shouldOpenGuide({ proxyUrl: async () => 'http://proxy', fetchImpl: unauthorized, progress: { finished: false }, ...extra })
+  assert.equal(await ask(), true)
+  assert.equal(await ask({ dismissed: true }), false)
 })
 
 test('a host that answers badly or not at all never opens the guide', async () => {
