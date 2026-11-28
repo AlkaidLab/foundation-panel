@@ -81,7 +81,9 @@ export function useVddPending({ payload, saved, ready, set, locale, onSaved, onR
       // key was never part of a saved snapshot) is not an edit worth keeping: restoring it
       // wipes the loaded list on every start and shows the entry forever. Such entries are
       // dropped; real edits keep their values.
-      const kept = pending.entries('vdd').filter((e) => !(e.before === undefined && Array.isArray(e.after) && e.after.length === 0))
+      const entries = pending.entries('vdd')
+      const kept = entries.filter((e) => !(e.before === undefined && Array.isArray(e.after) && e.after.length === 0))
+      if (kept.length !== entries.length) pending.sync('vdd', kept)
       if (kept.length) { for (const e of kept) set(e.key, e.after); return }
     }
     pending.sync('vdd', vddEntries(saved(), payload(), locale()))
