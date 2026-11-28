@@ -174,6 +174,7 @@ pub(super) enum NodeRemoval {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CleanupReason {
     /// Windows needs a restart to finish removing the controller.
+    #[allow(dead_code)] // the removal path reports it once the helper answers with the reboot code
     RebootRequired,
     /// The administrator token was refused (or lacks the privilege): the controller can be removed by hand.
     AccessDenied,

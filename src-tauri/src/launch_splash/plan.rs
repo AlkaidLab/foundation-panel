@@ -65,15 +65,18 @@ impl Plan {
         self.current.as_ref()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // the stage transitions assert through it
     pub fn is_shown(&self) -> bool {
         self.shown
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_prepared(&self) -> bool {
         self.prepared
     }
 
     /// Whether a resume is still waiting out its grace: the search has to run for it too.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_resume(&self) -> bool {
         self.current.as_ref().is_some_and(|c| c.kind == "resume")
     }

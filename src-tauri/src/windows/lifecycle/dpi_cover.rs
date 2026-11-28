@@ -266,6 +266,7 @@ pub(super) fn verify(cover: HWND, color: (u8, u8, u8), frame: Option<&Frame>) ->
             ReleaseDC(None, screen);
             return "no memory bitmap".to_string();
         };
+        // the default 1x1 bitmap is remembered so the DIB can be put back out before it is deleted
         let previous = SelectObject(memory, HGDIOBJ(dib.0));
         // The cover's own drawing routine is run into the memory bitmap (the routine WM_PAINT and WM_PRINTCLIENT use): what the window is handed, checked without the screen.
         // PrintWindow of the window itself is not used: it sends messages to the owner while the caller holds the panel's locks, and that deadlocked the window thread.
@@ -282,7 +283,14 @@ pub(super) fn verify(cover: HWND, color: (u8, u8, u8), frame: Option<&Frame>) ->
             Some(frame) => ("frame", format!("stretch x{:.2} y{:.2} of {}x{}", width as f64 / f64::from(frame.width), height as f64 / f64::from(frame.height), frame.width, frame.height)),
             None => ("colour", format!("expected #{:02x}{:02x}{:02x}", color.0, color.1, color.2)),
         };
-        format!("{}face drawn into memory (paints {}, prints {}) {}x{} shows {kind}: mean #{:02x}{:02x}{:02x}, grid difference {diff:.1}/255, {stretch}", "", PAINTS.load(Ordering::Relaxed), PRINTS.load(Ordering::Relaxed), width, height, mean[0], mean[1], mean[2])
+        let report = format!("{}face drawn into memory (paints {}, prints {}) {}x{} shows {kind}: mean #{:02x}{:02x}{:02x}, grid difference {diff:.1}/255, {stretch}", "", PAINTS.load(Ordering::Relaxed), PRINTS.load(Ordering::Relaxed), width, height, mean[0], mean[1], mean[2]);
+        // every handle with its own release: the default bitmap back in (which takes the DIB out),
+        // the DIB deleted, the memory DC deleted, and the screen DC released.
+        let _ = SelectObject(memory, previous);
+        let _ = DeleteObject(HGDIOBJ(dib.0));
+        let _ = DeleteDC(memory);
+        ReleaseDC(None, screen);
+        report
     }
 }
 

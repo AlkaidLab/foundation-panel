@@ -541,6 +541,7 @@ fn apply_dwm_rounded_corners<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// 获取或创建窗口的辅助函数
+#[cfg(debug_assertions)]
 fn get_or_create_window<R: Runtime, F>(
     app: &AppHandle<R>,
     window_id: &str,

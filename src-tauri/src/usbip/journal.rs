@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
-use super::nodes::{MarkerOp, RestartMarker};
+use super::nodes::RestartMarker;
 
 const FILE: &str = "usbip-cleanup.txt";
 /// The kept error is for the diagnostics, not for a log: it is cut here.
@@ -107,6 +107,7 @@ pub(super) fn boot_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usbip::nodes::MarkerOp;
 
     #[test]
     fn the_journal_round_trips_and_keeps_one_line_of_error() {

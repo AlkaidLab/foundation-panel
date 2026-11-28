@@ -15,6 +15,7 @@ pub(crate) enum InstallResult {
 /// Inno Setup exits with the code requested by `/RESTARTEXITCODE`, and `usbip-package.ps1`
 /// reports guard/ownership outcomes via 102..106.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(all(target_os = "windows", not(test)), allow(dead_code))]
 pub(crate) fn classify_installer_exit_code(
     exit_code: Option<i32>,
 ) -> Result<InstallResult, String> {

@@ -6,7 +6,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use url::Url;
 
 /// Shared CDN HTTP client with connection pooling.

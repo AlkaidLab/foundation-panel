@@ -94,6 +94,11 @@ export default defineConfig(() => ({
     // inspectable through the explicit dev server instead. Source:
     // panel-vite-build-options.
     sourcemap: false,
+    // The shared chunk of the pages carries the panel's component library and its texts (the
+    // dev-only modules and the about data inside it are a foundation-ui lazy-loading task, see
+    // panel-vite-chunks). Loading is local (Tauri), so the warning limit follows the real size
+    // until that split happens.
+    chunkSizeWarningLimit: 4000,
     rolldownOptions: {
       input: {
         sunshineFrame: resolve(rendererSrcPath, 'sunshine-frame.html'),
@@ -113,6 +118,10 @@ export default defineConfig(() => ({
         codeSplitting: {
           groups: [
             { name: 'ui-core', test: /foundation-ui[\\/]src[\\/](vue[\\/](MIcon|MLoading|useOnScreen)\.|icons[\\/]|launchsplash[\\/])/, priority: 20 },
+            // The framework pieces every page shares are their own cache unit each: the Vue runtime,
+            // the Material web components and the Lit runtime they build on. Source: panel-vite-chunks.
+            { name: 'vue-runtime', test: /[\\/]node_modules[\\/](@vue|vue)[\\/]/, priority: 30 },
+            { name: 'md-components', test: /[\\/]node_modules[\\/](@material|@lit|@vaadin|lit)[\\/]/, priority: 30 },
           ],
         },
       },
