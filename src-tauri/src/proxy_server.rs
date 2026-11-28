@@ -1478,6 +1478,34 @@ async fn handle_steam_api(
     }
 }
 
+/// The panel shows the host's pages in a frame on its own trusted local origin (loopback only, every request source-checked, the local token upstream). A frame refusal that names
+/// the host's web origin (`X-Frame-Options`, a CSP `frame-ancestors`) therefore arrives in that frame as a pane the WebView refuses to draw: the sign-in page sets one, and
+/// opening it from 安全与登录 blanked the whole frame. The proxy is the boundary the header stood for, so the frame guards are stripped here and the CSP keeps its other directives.
+fn frame_guard_header_value(key_str: &str, value: &axum::http::HeaderValue) -> Option<axum::http::HeaderValue> {
+    if key_str == "x-frame-options" {
+        return None;
+    }
+    if key_str != "content-security-policy" {
+        return Some(value.clone());
+    }
+    let text = value.to_str().ok()?;
+    let kept: Vec<&str> = text
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| !directive.is_empty())
+        .filter(|directive| {
+            let name = directive
+                .split_once(char::is_whitespace)
+                .map_or(*directive, |(name, _)| name);
+            !name.eq_ignore_ascii_case("frame-ancestors")
+        })
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    axum::http::HeaderValue::from_str(&kept.join("; ")).ok()
+}
+
 /// 构建经过响应头过滤的代理响应
 async fn build_filtered_proxy_response(response: reqwest::Response) -> Response {
     let status = response.status();
@@ -1497,9 +1525,13 @@ async fn build_filtered_proxy_response(response: reqwest::Response) -> Response 
     // 复制响应头（排除 CORS、长度与传输编码）
     for (key, value) in resp_headers.iter() {
         let key_str = key.as_str().to_lowercase();
-        if !key_str.starts_with("access-control-") && key_str != "transfer-encoding" {
-            builder = builder.header(key.as_str(), value);
+        if key_str.starts_with("access-control-") || key_str == "transfer-encoding" {
+            continue;
         }
+        let Some(filtered) = frame_guard_header_value(&key_str, value) else {
+            continue;
+        };
+        builder = builder.header(key.as_str(), filtered);
     }
 
     builder.body(body).unwrap_or_else(|_| {
@@ -1942,7 +1974,10 @@ async fn fetch_and_proxy(
         {
             continue;
         }
-        res = res.header(key, value);
+        let Some(filtered) = frame_guard_header_value(&key_str, value) else {
+            continue;
+        };
+        res = res.header(key, filtered);
     }
 
     // 需要注入脚本的页面添加无缓存头部
@@ -2319,6 +2354,41 @@ mod tests {
 
         std::fs::write(&path, "not-a-token").unwrap();
         assert!(read_local_auth_token_from(&path).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_sign_in_pages_frame_refusal_is_stripped_from_the_proxied_answer() {
+        // The host sends the sign-in page with X-Frame-Options: DENY. Inside the panel the page opens in the frame of 安全与登录: an unstripped refusal is a pane the WebView
+        // refuses to draw, and the frame went blank when the page was opened (regression 2026-11-28).
+        let upstream = axum::http::Response::builder()
+            .status(200)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .header("X-Frame-Options", "DENY")
+            .header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+            .body(Bytes::from_static(b"ok"))
+            .unwrap();
+        let response = build_filtered_proxy_response(reqwest::Response::from(upstream)).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(response.headers().get("x-frame-options").is_none());
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "default-src 'self'"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[test]
+    fn frame_guards_are_stripped_but_other_directives_survive() {
+        let deny = axum::http::HeaderValue::from_static("DENY");
+        assert_eq!(frame_guard_header_value("x-frame-options", &deny), None);
+        let nosniff = axum::http::HeaderValue::from_static("nosniff");
+        assert_eq!(frame_guard_header_value("x-content-type-options", &nosniff), Some(nosniff));
+        let csp = axum::http::HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'; script-src 'self'");
+        let filtered = frame_guard_header_value("content-security-policy", &csp).unwrap();
+        assert_eq!(filtered, "default-src 'self'; script-src 'self'");
+        let only = axum::http::HeaderValue::from_static("frame-ancestors 'self'");
+        assert_eq!(frame_guard_header_value("content-security-policy", &only), None);
     }
 
     #[tokio::test]
