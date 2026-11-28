@@ -43,9 +43,16 @@ export function createGuideData(deps) {
     return { response, data: await response.json().catch(() => ({})) }
   }
 
-  /** A host with an account answers the config with JSON; a host without one sends the page for creating it. */
+  /** Whether the host has an account: /api/auth/session says setup_required (the answer is honest through the panel's proxy, whose local token reads /api/config as JSON even
+   *  without an account, so the config alone cannot tell). A host without the session route (older) falls back to the config: JSON meant an account was there, the account
+   *  page of a host without one is HTML. */
   async function probeAccount() {
     try {
+      const session = await getJson('/api/auth/session').catch(() => null)
+      if (session && typeof session === 'object') {
+        state.account.exists = session.setup_required !== true
+        return state.account.exists ? session : null
+      }
       const config = await getJson('/api/config')
       state.account.exists = !!config && typeof config === 'object'
       return config
@@ -355,10 +362,14 @@ export async function shouldOpenGuide({ proxyUrl, fetchImpl, progress, dismissed
   try {
     const base = await proxyUrl()
     const configResponse = await get(`${base}/api/config`)
-    if (!configResponse.ok) return false
-    // a host that has no account yet answers with the page for creating it (a web page, not the configuration): the first run starts with the account step
-    if (/^text\/html/i.test(configResponse.headers?.get?.('content-type') || '')) return true
-    const config = await configResponse.json()
+    const contentType = configResponse.headers?.get?.('content-type') || ''
+    const config = await configResponse.json().catch(() => null)
+    // A host without an account protects /api/config with 401, while the body explicitly says setup_required.
+    // This is the first-run signal, so the panel must open its own guide and let the account step create it.
+    if (!configResponse.ok) return config?.setup_required === true
+    // Older hosts may serve the account page itself instead of returning the API marker.
+    if (/^text\/html/i.test(contentType)) return true
+    if (!config || typeof config !== 'object') return false
     const completed = isSetupCompleted(config)
     const host = hostProgressOf(config)
     const resuming = !!progress && !progress.finished && !host.finished && (progress.visited?.length > 0 || progress.done?.length > 0 || host.done.length > 0)
