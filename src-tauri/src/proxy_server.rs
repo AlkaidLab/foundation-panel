@@ -1489,21 +1489,28 @@ fn frame_guard_header_value(key_str: &str, value: &axum::http::HeaderValue) -> O
         return Some(value.clone());
     }
     let text = value.to_str().ok()?;
-    let kept: Vec<&str> = text
-        .split(';')
-        .map(str::trim)
-        .filter(|directive| !directive.is_empty())
-        .filter(|directive| {
-            let name = directive
-                .split_once(char::is_whitespace)
-                .map_or(*directive, |(name, _)| name);
-            !name.eq_ignore_ascii_case("frame-ancestors")
+    // One header value may carry several policies joined by commas; frame-ancestors is removed per policy, the rest survive.
+    let kept: Vec<String> = text
+        .split(',')
+        .filter_map(|policy| {
+            let directives: Vec<&str> = policy
+                .split(';')
+                .map(str::trim)
+                .filter(|directive| !directive.is_empty())
+                .filter(|directive| {
+                    let name = directive
+                        .split_once(char::is_whitespace)
+                        .map_or(*directive, |(name, _)| name);
+                    !name.eq_ignore_ascii_case("frame-ancestors")
+                })
+                .collect();
+            (!directives.is_empty()).then(|| directives.join("; "))
         })
         .collect();
     if kept.is_empty() {
         return None;
     }
-    axum::http::HeaderValue::from_str(&kept.join("; ")).ok()
+    axum::http::HeaderValue::from_str(&kept.join(", ")).ok()
 }
 
 /// 构建经过响应头过滤的代理响应
@@ -2387,6 +2394,12 @@ mod tests {
         let csp = axum::http::HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'; script-src 'self'");
         let filtered = frame_guard_header_value("content-security-policy", &csp).unwrap();
         assert_eq!(filtered, "default-src 'self'; script-src 'self'");
+        let joined = axum::http::HeaderValue::from_static("frame-ancestors 'none', script-src 'none'");
+        let filtered = frame_guard_header_value("content-security-policy", &joined).unwrap();
+        assert_eq!(filtered, "script-src 'none'");
+        let reverse = axum::http::HeaderValue::from_static("default-src 'self', frame-ancestors 'none'");
+        let filtered = frame_guard_header_value("content-security-policy", &reverse).unwrap();
+        assert_eq!(filtered, "default-src 'self'");
         let only = axum::http::HeaderValue::from_static("frame-ancestors 'self'");
         assert_eq!(frame_guard_header_value("content-security-policy", &only), None);
     }
