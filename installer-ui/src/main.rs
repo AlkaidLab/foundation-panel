@@ -96,13 +96,15 @@ fn reveal(window: &WebviewWindow, host: &Host, reason: &str) {
     {
         set_cloak(window, false);
         // the WebView renders and takes input for a visible controller: say so explicitly after the uncloak
-        let _ = window.with_webview(|webview| unsafe {
+        let frame_window = window.clone();
+        let _ = window.with_webview(move |webview| unsafe {
             let _ = webview.controller().SetIsVisible(true);
+            // Tauri/WebView2 can recalculate the native frame while a cloaked window becomes visible.
+            // Run the custom-frame cleanup after SetIsVisible on the same thread, so a queued
+            // visibility change cannot restore the top edge after the cleanup (reveal also runs on
+            // the watchdog thread, where with_webview queues onto the event loop).
+            keep_fixed_size(&frame_window);
         });
-        // Tauri/WebView2 can recalculate the native frame while a cloaked window becomes visible.
-        // Apply the custom-frame cleanup again after that transition so the page's title bar is not
-        // covered by a restored top edge on the first visible frame.
-        keep_fixed_size(window);
         if !test_offscreen() {
             // The shell allowed this process to come to the front (AllowSetForegroundWindow). A plain
             // SetForegroundWindow, not tao's set_focus (which synthesises an Alt key press).
@@ -638,7 +640,7 @@ mod tests {
             .and_then(|rest| rest.split("\n}\n\n/// Test switch").next())
             .expect("reveal");
         let uncloak = reveal.find("set_cloak(window, false)").expect("uncloak");
-        let cleanup = reveal.find("keep_fixed_size(window);").expect("frame cleanup");
+        let cleanup = reveal.find("keep_fixed_size(&frame_window);").expect("frame cleanup");
         assert!(uncloak < cleanup, "the frame is cleaned after the window is visible");
     }
 }
