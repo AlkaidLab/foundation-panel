@@ -410,13 +410,19 @@ fn set_cloak(window: &WebviewWindow, cloaked: bool) {
 
 /// The page draws the window's rounded shape (radius = card radius + inset) on a transparent window, so DWM must not
 /// clip it with its own 8 px corner: DWMWA_WINDOW_CORNER_PREFERENCE (33) = DWMWCP_DONOTROUND (1).
+/// The square transparent margins only stay invisible while the system draws nothing on them, and it does draw its
+/// legacy non-client frame over them whenever the window is activated or deactivated (a plain window switch makes
+/// the right-angle frame emerge over the rounded page). Switch the DWM non-client rendering of this window off
+/// entirely: DWMWA_NCRENDERING_POLICY (2) = DWMNCRENDERINGPOLICY_DISABLED (1).
 /// Authority: installer-ms-dwmwindowattribute.
 #[cfg(windows)]
 fn apply_dwm_corners(window: &WebviewWindow) {
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMNCRENDERINGPOLICY, DWMWINDOWATTRIBUTE};
     if let Some(hwnd) = hwnd_of(window) {
         let preference: u32 = 1;
         let _ = unsafe { DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(33), (&preference as *const u32).cast(), std::mem::size_of::<u32>() as u32) };
+        let no_frame = DWMNCRENDERINGPOLICY(1);
+        let _ = unsafe { DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(2), (&no_frame as *const DWMNCRENDERINGPOLICY).cast(), std::mem::size_of::<DWMNCRENDERINGPOLICY>() as u32) };
     }
 }
 
@@ -642,5 +648,20 @@ mod tests {
         let uncloak = reveal.find("set_cloak(window, false)").expect("uncloak");
         let cleanup = reveal.find("keep_fixed_size(&frame_window);").expect("frame cleanup");
         assert!(uncloak < cleanup, "the frame is cleaned after the window is visible");
+    }
+
+    #[test]
+    fn the_square_system_frame_is_switched_off_with_the_rounding() {
+        let source = include_str!("main.rs");
+        let corners = source
+            .split("fn apply_dwm_corners")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("apply_dwm_corners");
+        assert!(corners.contains("DWMWINDOWATTRIBUTE(33)"), "the window stays square under the page's rounded card");
+        assert!(
+            corners.contains("DWMNCRENDERINGPOLICY") && corners.contains("DWMWINDOWATTRIBUTE(2)"),
+            "the system's square frame over the transparent margins is switched off"
+        );
     }
 }
