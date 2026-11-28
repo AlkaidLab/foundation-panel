@@ -439,7 +439,7 @@ fn shell_execute_sparxie(
     path: &std::path::Path,
     verb: crate::sparxie_open::StartVerb,
 ) -> Result<(), crate::sparxie_open::StartFailure> {
-    use crate::sparxie_open::{StartFailure, classify_failure, win32_error_from_hresult};
+    use crate::sparxie_open::{classify_failure, win32_error_from_hresult};
     use ::windows::Win32::Foundation::HWND;
     use ::windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
     use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;

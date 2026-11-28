@@ -362,7 +362,7 @@ pub(super) fn install() {
     unsafe {
         SetUnhandledExceptionFilter(Some(unhandled_filter));
         AddVectoredExceptionHandler(1, Some(vectored_fatal));
-        signal(SIGABRT, on_sigabrt as usize);
+        signal(SIGABRT, on_sigabrt as *const () as usize);
     }
 }
 

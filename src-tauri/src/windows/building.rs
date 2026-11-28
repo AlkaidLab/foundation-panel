@@ -54,6 +54,7 @@ impl Making {
         self.labels.remove(label);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // the rebuild guards assert the set through it
     pub(crate) fn is_making(&self, label: &str) -> bool {
         self.labels.contains(label)
     }

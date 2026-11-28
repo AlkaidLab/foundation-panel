@@ -326,6 +326,7 @@ pub fn ctx_popup_loaded(app: AppHandle) {
 }
 
 /// The window can show menus now: it exists and its page has loaded.
+#[allow(dead_code)] // the tray queries it once the native menu hands the job over
 pub fn available() -> bool {
     health() == Health::Ready
 }

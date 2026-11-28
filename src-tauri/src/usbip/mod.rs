@@ -30,7 +30,11 @@ const MAX_ELEVATED_RESPONSE_BYTES: usize = 16 * 1024;
 const ELEVATED_ARG: &str = "--elevated-usbip";
 const ELEVATED_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Reserved for the installer download: staged, hashed against INSTALLER_SHA256 and run once the
+/// Device Hub wires it up (usbip/manager.rs).
+#[allow(dead_code)]
 const MAX_INSTALLER_BYTES: u64 = 48 * 1024 * 1024;
+#[allow(dead_code)]
 const INSTALLER_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 static OPERATION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
@@ -147,8 +151,7 @@ struct ElevatedResponse {
 #[cfg(target_os = "windows")]
 pub(crate) use manager::uninstall_entries as usbip_uninstall_entries;
 pub(crate) use manager::{
-    INSTALLER_SHA256 as USBIP_SHA256, INSTALLER_URL as USBIP_URL, InstallDisposition,
-    PINNED_VERSION as USBIP_VERSION, install_disposition,
+    InstallDisposition, PINNED_VERSION as USBIP_VERSION, install_disposition,
     installed_version as installed_usbip_version,
     supported_version_installed as supported_usbip_installed,
 };

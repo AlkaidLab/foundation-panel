@@ -72,6 +72,7 @@ impl Lifecycle {
         self.seen_pairing = false;
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // the tray poll asserts the lifecycle through it
     pub(crate) fn is_open(&self) -> bool {
         self.opened.is_some()
     }

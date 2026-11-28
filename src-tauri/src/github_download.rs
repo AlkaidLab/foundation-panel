@@ -18,8 +18,12 @@ pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
+// The direct-GitHub-then-mirror chain below is finished and driven by its tests; the updater
+// hands in its candidates instead, so the chain stays unwired until a caller needs it.
+#[allow(dead_code)]
 const GITHUB_RELEASE_HOST: &str = "github.com";
 const DOWNLOAD_BUFFER_BYTES: usize = 1024 * 1024;
+#[allow(dead_code)]
 const DOWNLOAD_PROXY_PREFIXES: &[(&str, &str)] = &[
     ("ghfast.top", "https://ghfast.top/"),
     ("ghproxy.com", "https://ghproxy.com/"),
@@ -62,6 +66,7 @@ pub(crate) struct DownloadOutcome {
 }
 
 pub(crate) struct DownloadRequest<'a> {
+    #[allow(dead_code)] // read by the mirror chain once it is wired
     pub(crate) url: &'a str,
     pub(crate) destination: &'a Path,
     pub(crate) expected_size: Option<u64>,
@@ -145,6 +150,7 @@ impl fmt::Display for DownloadError {
     }
 }
 
+#[allow(dead_code)]
 fn validate_github_release_url(url: &str) -> Result<(), String> {
     let parsed =
         reqwest::Url::parse(url).map_err(|error| format!("invalid download URL: {error}"))?;
@@ -157,6 +163,7 @@ fn validate_github_release_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn build_download_sources(original_url: &str) -> Result<Vec<DownloadSource>, String> {
     validate_github_release_url(original_url)?;
     let mut sources = vec![DownloadSource {
@@ -443,6 +450,7 @@ where
     .await
 }
 
+#[allow(dead_code)]
 pub(crate) async fn download_to_file_with_fallbacks<F>(
     request: DownloadRequest<'_>,
     on_progress: F,

@@ -21,6 +21,7 @@ pub enum Mode {
 }
 
 impl Mode {
+    #[cfg_attr(not(test), allow(dead_code))] // the settings mapping adopts it (the tests drive it now)
     pub fn parse(text: &str) -> Mode {
         match text.trim().to_ascii_lowercase().as_str() {
             "adaptive" | "auto" => Mode::Adaptive,

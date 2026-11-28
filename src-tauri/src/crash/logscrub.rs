@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet};
 
 pub(crate) struct Scrubbed {
     pub text: String,
-    pub lines: usize,
     /// The beginning was cut: only the tail of a very long log is kept.
     pub truncated: bool,
 }
@@ -538,8 +537,7 @@ pub(crate) fn scrub(raw: &[u8], max_chars: usize, max_line: usize) -> Scrubbed {
         }
         out.push(piece);
     }
-    let lines = out.len();
-    Scrubbed { text: out.join("\n"), lines, truncated }
+    Scrubbed { text: out.join("\n"), truncated }
 }
 
 #[cfg(test)]

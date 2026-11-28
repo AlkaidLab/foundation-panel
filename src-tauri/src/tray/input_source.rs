@@ -136,6 +136,7 @@ impl Facts {
 
 /// The density the menu opens in for a preference ("auto" | "standard" | "touch") and the facts: a person's choice wins; "auto" is touch for a finger or a pen, and for slate posture when the press is not
 /// known to be a mouse; a digitizer alone is not enough.
+#[cfg_attr(not(test), allow(dead_code))] // the density choice adopts it (the tests drive it now)
 pub fn opening_density(pref: &str, facts: Facts) -> &'static str {
     match pref {
         "touch" => "touch",

@@ -13,6 +13,11 @@ name = "text-context-probe"
 path = "src/bin/text-context-probe.rs"
 required-features = ["text-context-probe"]
 
+# The standalone tests drive the command functions without the Tauri runtime
+# (start_guide.rs); the cfg name is declared so the build stays warning-free.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(standalone_test)'] }
+
 # The release profile follows the Cargo profile reference: size optimisation,
 # whole-program LTO and one codegen unit. Keep panic handling at Cargo's
 # default for this application. No `strip`: on the MSVC target it makes rustc
@@ -83,7 +88,6 @@ xcap = "0.7"
 clipboard-rs = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 sha2 = "0.10"
-zip = { version = "4", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3.27"
 alkaidlab-native-tool-plugin-api = { path = "../native-plugins/plugin-api" }

@@ -367,6 +367,7 @@ struct TrayStrings {
     sponsor_menu: &'static str,
     // the native menu's stepped stand-ins for the menus' 码率 and 缩放 sliders (tray/menu.rs)
     bitrate_menu: &'static str,
+    #[allow(dead_code)] // the native slider stand-in shows it once tray/menu.rs wires it
     bitrate_auto: &'static str,
     dpi_menu: &'static str,
     restart: &'static str,

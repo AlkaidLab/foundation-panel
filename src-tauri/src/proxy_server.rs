@@ -1809,7 +1809,9 @@ async fn send_local_authenticated_request(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchResult {
     pub status: String,
+    #[allow(dead_code)] // the full host response shape, kept for the callers that follow
     pub app_id: Option<String>,
+    #[allow(dead_code)]
     pub app_name: Option<String>,
     pub pid: Option<String>,
 }

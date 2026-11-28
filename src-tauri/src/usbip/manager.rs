@@ -9,6 +9,8 @@
 // this driver, but must never install or replace it while creating devices.
 pub(crate) const PINNED_VERSION: &str = env!("SUNSHINE_USBIP_VERSION");
 pub(super) const REQUIRED_VERSION: &str = PINNED_VERSION;
+/// The release asset the installer download stages; used once the download is wired into the Device Hub.
+#[allow(dead_code)]
 pub(crate) const INSTALLER_URL: &str = env!("SUNSHINE_USBIP_URL");
 pub(crate) const INSTALLER_SHA256: &str = env!("SUNSHINE_USBIP_SHA256");
 

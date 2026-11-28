@@ -266,7 +266,8 @@ pub(super) fn verify(cover: HWND, color: (u8, u8, u8), frame: Option<&Frame>) ->
             ReleaseDC(None, screen);
             return "no memory bitmap".to_string();
         };
-        let previous = SelectObject(memory, HGDIOBJ(dib.0));
+        // the previous bitmap is the DC's default; the DC is deleted right after the copy
+        SelectObject(memory, HGDIOBJ(dib.0));
         // The cover's own drawing routine is run into the memory bitmap (the routine WM_PAINT and WM_PRINTCLIENT use): what the window is handed, checked without the screen.
         // PrintWindow of the window itself is not used: it sends messages to the owner while the caller holds the panel's locks, and that deadlocked the window thread.
         std::ptr::write_bytes(bits.cast::<u8>(), 0, width * height * 4);
